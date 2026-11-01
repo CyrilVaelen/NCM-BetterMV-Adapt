@@ -89,7 +89,7 @@ export async function startServer({ settings: supplied, settingsPath = SETTINGS,
     // its socket client with HMR/WS disabled; remove that unused HTML entry so
     // an unrelated local dev server cannot break a render with a socket error.
     plugins:[{name:'export-without-dev-client',transformIndexHtml:{order:'post',handler:html=>html.replace(/<script\b[^>]*\bsrc=["']\/@vite\/client["'][^>]*>\s*<\/script>/g,'')}}],
-    define:{__VERSION__:JSON.stringify('0.9.0-local-export.1')}, logLevel:'warn',
+    define:{__VERSION__:JSON.stringify(JSON.parse(fs.readFileSync(path.join(PROJECT,'plugin/manifest.json'),'utf8')).version)}, logLevel:'warn',
   }) : null;
   const save = job => {
     const snapshot=JSON.stringify(publicJob(job),null,2);

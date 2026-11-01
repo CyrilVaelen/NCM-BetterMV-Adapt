@@ -1151,7 +1151,7 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     const text = el('div');
     const name = el('div', 'bmv-set-name', 'BetterMV');
     if (VERSION) name.append(el('span', 'bmv-set-ver', VERSION));
-    text.append(name, el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建场景，按歌曲结构剪辑镜头，按曲风自动选择风格。'));
+    text.append(name, el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'));
     head.append(mark, text);
     view.append(head);
   }

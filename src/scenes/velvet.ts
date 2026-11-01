@@ -141,6 +141,8 @@ uniform float uKickPunch;      // 底鼓瞬态微推力 0..1
 uniform float uOffbeatHat;     // 反拍开镲高频微光 0..1
 uniform float uBassLevel;      // 低频持续浑厚度 0..1
 uniform float uKeysGlow;       // 电钢琴/和弦整体暖度 0..1
+uniform float uLeadGlow;       // 主旋律/合成器主音持续能量 0..1
+uniform float uLeadPulse;      // 主旋律/和弦音头脉冲 0..1
 uniform float uFilterOpen;     // 低通滤波器开合度 0..1（0 深潜朦胧，1 晶莹通透）
 uniform float uCamShift;       // 摄像机横向视差偏移
 uniform float uCamLift;        // 摄像机纵向微俯仰偏移
@@ -217,23 +219,186 @@ vec3 renderLoungeUpper(vec2 uv, bool isReflection) {
   vec3 horizonTint = mix(uCoverDeep, uWarmAmber * 0.65, 0.38 + 0.22 * uKeysGlow);
   bgCol += horizonTint * horizonBand * (0.22 + 0.14 * uBassLevel) * uSidechain;
 
-  // 远景朦胧高层建筑天际剪影（仅在地平线上方低空区域柔和浮现，带景深雾化）
+  // 远景双层立体都会天际线与动态建筑灯光（含远近视差、退台塔冠、呼吸窗格、音浪立面扫掠、竖向流光灯带、航空信标与水岸车流）
   if (skyH < 0.42) {
-    float cityCoord = (uv.x - 0.5 - uCamShift * 0.018) * uAspect * 16.0;
-    float towerCell = floor(cityCoord);
-    float towerRnd = hash12(vec2(towerCell, 7.13));
-    float towerH = (0.06 + 0.20 * towerRnd * towerRnd) * (1.0 - 0.45 * exp(-pow((uv.x - vanishX) * 4.5, 2.0)));
-    float inTower = 1.0 - smoothstep(towerH - 0.018, towerH + 0.012, skyH);
-    // 建筑体遮挡与极细微暖窗微光
-    bgCol = mix(bgCol, uNightAbyss * 0.52, inTower * 0.55 * (0.45 + 0.55 * uFilterOpen));
-    if (!isReflection && inTower > 0.05) {
-      vec2 winGrid = vec2(fract(cityCoord) * 6.0, skyH * 95.0);
-      vec2 winId = floor(winGrid);
-      float winOn = step(0.76, hash12(winId + vec2(towerCell * 3.1, 1.7)));
-      float winMask = smoothstep(0.15, 0.35, fract(winGrid.x)) * (1.0 - smoothstep(0.65, 0.85, fract(winGrid.x)))
-                    * smoothstep(0.20, 0.40, fract(winGrid.y)) * (1.0 - smoothstep(0.65, 0.85, fract(winGrid.y)));
-      vec3 winCol = mix(uWarmAmber, uCoverBright, hash12(winId + 9.2));
-      bgCol += winCol * winOn * winMask * inTower * (0.04 + 0.08 * uFilterOpen) * uSidechain;
+    float valley = 1.0 - 0.45 * exp(-pow((uv.x - vanishX) * 4.3, 2.0));
+    float sideFromCenter = uv.x - vanishX;
+
+    for (int layer = uZero; layer < 2; layer++) {
+      float fl = float(layer); // 0 = 远景天际建筑群，1 = 中景地标塔楼群（双倍视差）
+      float parallax = mix(0.011, 0.026, fl);
+      float density = mix(21.0, 13.5, fl);
+      float cityCoord = (uv.x - 0.5 - uCamShift * parallax) * uAspect * density + fl * 3.73;
+      float towerCell = floor(cityCoord);
+      float cellU = fract(cityCoord);
+
+      vec2 tSeed = hash22(vec2(towerCell, 7.13 + fl * 19.7));
+      float tRnd = hash12(vec2(towerCell * 1.73 + fl * 11.3, 3.91));
+
+      // 错落建筑间距与宽窄变化：中景塔楼留出呼吸缝隙以透出后方远景楼群灯火，消除生硬连片贴纸感
+      float present = step(mix(0.10, 0.26, fl), tSeed.x);
+      if (present < 0.5) continue;
+
+      float wSpan = mix(0.80 + 0.16 * tRnd, 0.56 + 0.30 * tRnd, fl);
+      float cMid = 0.5 + (tSeed.y - 0.5) * (0.90 - wSpan);
+      float bx = (cellU - (cMid - 0.5 * wSpan)) / wSpan;
+
+      float baseH = (mix(0.068, 0.052, fl) + mix(0.19, 0.24, fl) * pow(tSeed.y, 1.50)) * valley;
+      bool hasSetback = tSeed.y > 0.44;
+      bool hasCrownTier = fl > 0.5 && tSeed.y > 0.72;
+      float shaftH = baseH * (hasSetback ? 0.78 : 1.0);
+      float tier2H = baseH * (hasCrownTier ? 1.10 : 1.0);
+
+      // 阶梯退台轮廓：主楼身 + 退台塔冠 + 摩天楼顶层缩进段
+      // 阶梯退台轮廓：主楼身 + 退台塔冠 + 摩天楼顶层缩进段（连续盒掩码取并集，零水平断层接缝）
+      float edgeSoft = mix(0.045, 0.026, fl);
+      float topBlur = mix(0.008, 0.004, fl);
+      float boxShaft = smoothstep(0.0, edgeSoft, bx) * (1.0 - smoothstep(1.0 - edgeSoft, 1.0, bx))
+                     * (1.0 - smoothstep(shaftH - topBlur, shaftH + topBlur, skyH));
+      float boxSetback = hasSetback
+        ? smoothstep(0.15, 0.15 + edgeSoft, bx) * (1.0 - smoothstep(0.85 - edgeSoft, 0.85, bx))
+          * (1.0 - smoothstep(baseH - topBlur, baseH + topBlur, skyH))
+        : 0.0;
+      float boxCrown = hasCrownTier
+        ? smoothstep(0.28, 0.28 + edgeSoft, bx) * (1.0 - smoothstep(0.72 - edgeSoft, 0.72, bx))
+          * (1.0 - smoothstep(tier2H - topBlur, tier2H + topBlur, skyH))
+        : 0.0;
+      float inTower = max(boxShaft, max(boxSetback, boxCrown));
+      float topAtX = shaftH;
+      if (hasSetback && bx > 0.15 && bx < 0.85) topAtX = baseH;
+      if (hasCrownTier && bx > 0.28 && bx < 0.72) topAtX = tier2H;
+
+      // 绑定十二半音色度能量 + 由中心向外扩散的城市音浪波前，使天际大楼随和弦与底鼓产生空间联动
+      int towerNote = int(mod(abs(towerCell) * 5.0 + fl * 4.0, 12.0));
+      float chromaGlow = getLouverGlow(towerNote);
+      float outwardPhase = fract(abs(sideFromCenter) * uAspect * 1.15 - uFlow * 0.28);
+      float cityRipple = exp(-pow((outwardPhase - 0.35) / 0.18, 2.0)) * (0.35 * uBassLevel + 0.65 * uKeysGlow);
+      float musicDrive = clamp(0.48 * chromaGlow + 0.38 * uKeysGlow + 0.38 * uLeadGlow + 0.52 * uLeadPulse + 0.42 * cityRipple, 0.0, 1.45);
+
+      if (inTower > 0.004) {
+        float hn = clamp(skyH / max(tier2H, 0.04), 0.0, 1.0);
+        // 三维双立面受光转折：朝向中央琥珀黑胶的一侧受暖光漫射，背光侧沉入冷夜暗影，立面折角带微高光棱线
+        float ridgeX = 0.34 + 0.32 * tRnd;
+        float faceLit = sideFromCenter < 0.0 ? smoothstep(ridgeX - 0.05, ridgeX + 0.05, bx)
+                                             : 1.0 - smoothstep(ridgeX - 0.05, ridgeX + 0.05, bx);
+        float cornerRidge = exp(-pow((bx - ridgeX) / 0.036, 2.0));
+
+        vec3 darkFacade = mix(uNightAbyss * mix(0.48, 0.30, fl), uNightFog * 0.40, 0.26 * (1.0 - fl));
+        vec3 litFacade = mix(darkFacade, mix(uCoverDeep, uWarmAmber * 0.48, 0.44) * (0.36 + 0.16 * cityRipple), 0.38 + 0.36 * hn);
+        vec3 hullCol = mix(darkFacade, litFacade, faceLit * (0.55 + 0.45 * uFilterOpen));
+        hullCol += mix(uCoverPrimary, uWarmAmber, 0.58) * cornerRidge * (0.035 + 0.095 * musicDrive) * fl;
+
+        // 沿楼体自下而上流淌的聚焦音浪扫掠光带（随和弦、主旋律与横向城市波前起伏唤醒幕墙）
+        float sweepPos = fract(uFlow * (0.24 + 0.15 * tRnd) + tSeed.x);
+        float dSweep = abs(hn - sweepPos);
+        dSweep = min(dSweep, 1.0 - dSweep);
+        float sweepBand = exp(-pow(dSweep / 0.095, 2.0)) * (0.30 + 0.85 * musicDrive);
+
+        // 错落有致的动态窗格：含房间呼吸明灭、音浪扫掠逐层点亮与反拍星烁
+        float bays = floor(3.0 + 4.0 * tRnd + fl * 2.0);
+        float floorScale = mix(118.0, 88.0, fl);
+        vec2 winGrid = vec2(bx * bays, skyH * floorScale);
+        vec2 winId = floor(winGrid);
+        vec2 winFrac = fract(winGrid);
+
+        float floorHash = hash12(vec2(winId.y, towerCell * 2.3 + fl * 7.1));
+        float cellHash = hash12(winId + vec2(towerCell * 3.1, 1.7 + fl * 5.3));
+        // 双速动态窗灯：大多数房间慢速柔和呼吸，约 25% 活跃窗格随节拍与旋律灵动明灭
+        float liveRate = cellHash > 0.74 ? (1.15 + 1.35 * floorHash) : (0.38 + 0.62 * cellHash);
+        float slowWave = 0.5 + 0.5 * sin(uTime * liveRate + cellHash * TAU + floorHash * 4.0);
+        float baseOcc = step(mix(0.77, 0.69, fl), cellHash * 0.72 + floorHash * 0.38) * smoothstep(0.18, 0.58, slowWave);
+        float sweepWake = step(0.46, hash12(winId + 13.7)) * smoothstep(0.08, 0.36, sweepBand + 0.24 * chromaGlow);
+        float winActive = max(baseOcc * (0.45 + 0.55 * slowWave), sweepWake);
+
+        float winMaskX = isReflection ? 0.62
+          : smoothstep(0.12, 0.26, winFrac.x) * (1.0 - smoothstep(0.74, 0.88, winFrac.x));
+        float winMaskY = isReflection
+          ? smoothstep(0.15, 0.42, winFrac.y) * (1.0 - smoothstep(0.62, 0.90, winFrac.y))
+          : smoothstep(0.20, 0.36, winFrac.y) * (1.0 - smoothstep(0.68, 0.84, winFrac.y));
+
+        float hatShimmer = 1.0 + step(0.76, cellHash) * uOffbeatHat * (0.65 + 0.55 * sin(uTime * 6.5 + cellHash * 19.0));
+        vec3 baseWinCol = mix(uWarmAmber, mix(uCoverBright, vec3(1.0, 0.96, 0.88), 0.42), hash12(winId + 9.2) * 0.82);
+        vec3 sweepWinCol = mix(uCoverBright, vec3(1.0, 0.94, 0.80), 0.45 + 0.35 * sin(hn * 4.0 + tSeed.x * TAU));
+        vec3 winCol = mix(baseWinCol, sweepWinCol, clamp(sweepBand * 0.82, 0.0, 0.85));
+
+        float winLum = (0.052 + 0.095 * uFilterOpen + 0.22 * sweepBand + 0.11 * chromaGlow + 0.07 * cityRipple) * hatShimmer * uSidechain;
+        hullCol += winCol * winActive * winMaskX * winMaskY * winLum * mix(0.65, 1.0, fl);
+        // 音浪扫过楼层时的幕墙玻璃柔和漫射光晕
+        hullCol += sweepWinCol * sweepBand * (0.032 + 0.048 * musicDrive) * (0.45 + 0.55 * faceLit) * fl;
+
+        // 地标高楼竖向棱角流光灯条 / 观光梯流光梭（沿立面折角或内侧边缘向上游走）
+        if (fl > 0.5 && tSeed.y > 0.32 && tRnd > 0.28) {
+          float stripPos = tRnd > 0.62 ? ridgeX : (sideFromCenter < 0.0 ? 0.80 : 0.20);
+          float stripMask = exp(-pow((bx - stripPos) / (isReflection ? 0.048 : 0.022), 2.0));
+          float shuttleDir = tRnd > 0.5 ? 1.0 : -1.0;
+          float shuttlePos = fract(uFlow * shuttleDir * (0.28 + 0.16 * tRnd) + tSeed.y);
+          float dShuttle = abs(hn - shuttlePos);
+          dShuttle = min(dShuttle, 1.0 - dShuttle);
+          float shuttle = 0.18 + 0.82 * exp(-pow(dShuttle / 0.11, 2.0));
+          vec3 stripCol = mix(uWarmAmber, mix(uCoverBright, vec3(1.0, 0.96, 0.88), 0.35), 0.35 + 0.50 * chromaGlow);
+          hullCol += stripCol * stripMask * shuttle * (0.065 + 0.24 * musicDrive + 0.08 * uFilterOpen) * uSidechain;
+        }
+
+        // 高层退台露台灯带与塔冠顶部水平轮廓光（Penthouse & Setback Terrace Trim）
+        if (tSeed.y > 0.40) {
+          float crownBand = exp(-pow((skyH - topAtX + 0.0042) / 0.0048, 2.0));
+          if (hasSetback) {
+            crownBand = max(crownBand, 0.72 * exp(-pow((skyH - shaftH + 0.0038) / 0.0042, 2.0)));
+          }
+          vec3 crownCol = mix(uWarmAmber, mix(uCoverBright, vec3(1.0, 0.95, 0.85), 0.35), 0.32 + 0.52 * tRnd);
+          hullCol += crownCol * crownBand * (0.095 + 0.26 * chromaGlow + 0.18 * uLeadPulse + 0.10 * cityRipple) * mix(0.58, 1.0, fl) * uSidechain;
+        }
+
+        // 远近大气雾化遮挡融合：中景塔楼自然遮挡远景塔楼与夜空背景
+        float hullAlpha = inTower * mix(0.66, 0.88, fl) * (0.52 + 0.48 * uFilterOpen);
+        bgCol = mix(bgCol, hullCol, hullAlpha);
+      }
+
+      // 地标摩天楼顶柔和建筑天际投光束 + 航空障碍信标灯
+      if (fl > 0.5 && tSeed.y > 0.56 && bx > -0.20 && bx < 1.20) {
+        // 少数超高层塔冠向上散射的柔和建筑雾光柱（随和弦与主旋律微幅摇曳呼吸）
+        if (tSeed.y > 0.68 && tRnd > 0.52 && skyH >= tier2H - 0.004) {
+          float aboveH = skyH - tier2H;
+          float sway = sin(uTime * (0.45 + 0.25 * tRnd) + towerCell * 1.9) * 0.18;
+          float beamCenter = 0.5 + sway * aboveH * 3.2;
+          float beamHalfW = 0.12 + aboveH * 1.35;
+          float upBeam = exp(-pow((bx - beamCenter) / beamHalfW, 2.0)) * exp(-aboveH / 0.095);
+          vec3 upCol = mix(uWarmAmber, uCoverBright, 0.45);
+          bgCol += upCol * upBeam * (0.025 + 0.085 * musicDrive) * uFilterOpen * uSidechain;
+        }
+
+        bool hasSpire = tRnd > 0.44;
+        float spireTop = tier2H + (hasSpire ? 0.026 + 0.022 * tRnd : 0.004);
+        if (hasSpire && skyH >= tier2H - 0.002 && skyH <= spireTop) {
+          float spireMask = exp(-pow((bx - 0.5) / 0.022, 2.0)) * (1.0 - smoothstep(spireTop - 0.006, spireTop, skyH));
+          bgCol += mix(uNightFog, uWarmAmber, 0.58) * spireMask * (0.16 + 0.10 * musicDrive);
+        }
+        vec2 bDelta = vec2((cellU - cMid) / density * 14.0, (skyH - spireTop) * (1.0 - HORIZON_Y) * 14.0);
+        float bDist2 = dot(bDelta, bDelta);
+        if (bDist2 < 0.06) {
+          float blinkWave = 0.5 + 0.5 * sin(uTime * (2.4 + 1.2 * tRnd) + towerCell * 2.37);
+          float blink = pow(blinkWave, 6.0);
+          blink = max(blink, (0.38 + 0.62 * blinkWave) * (0.50 * uKickPunch + 0.45 * uLeadPulse));
+          float core = exp(-bDist2 / 0.0012);
+          float halo = exp(-bDist2 / 0.012);
+          vec3 beaconCol = mix(vec3(1.0, 0.38, 0.22), mix(uWarmAmber, uCoverBright, 0.5), 0.48);
+          bgCol += beaconCol * (core * 0.42 + halo * 0.11) * blink * (0.55 + 0.45 * uFilterOpen);
+        }
+      }
+    }
+
+    // 远景水岸长桥与滨水大道缓慢流动的微型车河光珠（锚定建筑底部与水面交界，增添都会烟火气）
+    if (skyH < 0.018) {
+      float roadBand = exp(-pow((skyH - 0.0055) / 0.0042, 2.0)) * (0.45 + 0.55 * valley);
+      float laneA = (uv.x - uCamShift * 0.022) * uAspect * 46.0 + uTime * 0.55;
+      float laneB = (uv.x - uCamShift * 0.022) * uAspect * 54.0 - uTime * 0.48 + 11.3;
+      float idA = floor(laneA), fA = fract(laneA);
+      float idB = floor(laneB), fB = fract(laneB);
+      float carA = step(0.62, hash12(vec2(idA, 31.7))) * exp(-pow((fA - 0.5) / 0.20, 2.0));
+      float carB = step(0.66, hash12(vec2(idB, 47.3))) * exp(-pow((fB - 0.5) / 0.20, 2.0));
+      vec3 headCol = mix(uWarmAmber, vec3(1.0, 0.96, 0.88), 0.45);
+      vec3 tailCol = mix(uCoverPrimary, vec3(1.0, 0.42, 0.28), 0.42);
+      bgCol += (headCol * carA * 0.10 + tailCol * carB * 0.085) * roadBand * (0.50 + 0.50 * uFilterOpen) * uSidechain;
     }
   }
 
@@ -661,6 +826,8 @@ export class VelvetScene implements MvScene {
   private readonly rawHatVals: Float64Array;
   private readonly keyHitTimes: Float64Array;
   private readonly keyHitVals: Float64Array;
+  private readonly leadHitTimes: Float64Array;
+  private readonly leadHitVals: Float64Array;
 
   private readonly chromaBuf = new Float32Array(12);
   readonly uniforms: Record<string, THREE.IUniform>;
@@ -691,6 +858,10 @@ export class VelvetScene implements MvScene {
     const mergedKeys = [...synthHits, ...keyHits].sort((a, b) => a[0] - b[0]);
     this.keyHitTimes = Float64Array.from(mergedKeys, h => h[0]);
     this.keyHitVals = Float64Array.from(mergedKeys, h => h[1]);
+
+    const leadHits = music.roleHits('lead', 0, music.duration);
+    this.leadHitTimes = Float64Array.from(leadHits, h => h[0]);
+    this.leadHitVals = Float64Array.from(leadHits, h => h[1]);
 
     // 构建封面自适应「都市午夜微醺」色板：
     // 暗部沉入午夜靛蓝/浓缩暖黑；若封面偏冷，辅以温润钨丝琥珀色；若封面偏暖，保留醇厚琥珀并以冷夜雾衬底
@@ -726,6 +897,8 @@ export class VelvetScene implements MvScene {
       uOffbeatHat: { value: 0 },
       uBassLevel: { value: 0 },
       uKeysGlow: { value: 0 },
+      uLeadGlow: { value: 0 },
+      uLeadPulse: { value: 0 },
       uFilterOpen: { value: 0.5 },
       uCamShift: { value: 0 },
       uCamLift: { value: 0 },
@@ -881,10 +1054,13 @@ export class VelvetScene implements MvScene {
     const offbeatWindow = Math.exp(-Math.pow((beatInfo.phase - 0.50) / 0.16, 2.0));
     const offbeatHat = clamp01(rawHat * (0.45 + 0.75 * offbeatWindow) + highEnv * offbeatWindow * 0.68);
 
-    // 3. 浑厚贝斯能量与电钢琴/切分和弦温暖混响包络 (decay = 0.52s)
+    // 3. 浑厚贝斯能量、电钢琴切分和弦与主旋律包络（共同驱动前景光栅与远景天际大楼流光）
     const bassLevel = clamp01(Math.max(lowEnv * 0.92, timbre.bassStab * 0.95));
     const keysPulse = this.evalHitPulse(this.keyHitTimes, this.keyHitVals, t, 0.52);
     const keysGlow = clamp01(Math.max(keysPulse, timbre.synthStab * 0.85, fg.level * 0.72));
+    const leadHit = this.evalHitPulse(this.leadHitTimes, this.leadHitVals, t, 0.34);
+    const leadGlow = clamp01(Math.max(fg.level * 0.92, leadHit * 0.75));
+    const leadPulse = clamp01(Math.max(leadHit, fg.attack * 0.90, keysPulse * 0.45));
 
     // 4. 低通滤波器开合度映射 (Filter Cutoff Sweep)：Intro/Break 朦胧深潜，主律动段晶莹通透
     const secLabel = shot.section.label;
@@ -917,6 +1093,8 @@ export class VelvetScene implements MvScene {
     u.uOffbeatHat.value = offbeatHat;
     u.uBassLevel.value = bassLevel;
     u.uKeysGlow.value = keysGlow;
+    u.uLeadGlow.value = leadGlow;
+    u.uLeadPulse.value = leadPulse;
     u.uFilterOpen.value = filterOpen;
     u.uCamShift.value = camShift;
     u.uCamLift.value = camLift;

@@ -1,26 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { build } from 'vite';
 import JSZip from 'jszip';
-import ffmpeg from 'ffmpeg-static';
 import { loadSettings, PROJECT } from './server.mjs';
 
-const phoenixPreview = path.join(PROJECT, 'public/previews/phoenix.webp');
-const phoenixPng = path.resolve(PROJECT, '../exports/phoenix-beautiful-creatures-drop/02_drop1_blast_downstroke.png');
-try {
-  await fs.access(phoenixPng);
-  execFileSync(ffmpeg, ['-y', '-i', phoenixPng, '-vf', 'scale=320:180', '-quality', '85', phoenixPreview], { stdio: 'ignore' });
-} catch {}
-
-const velvetPreview = path.join(PROJECT, 'public/previews/velvet.webp');
-const velvetPng = path.resolve(PROJECT, '../exports/velvet-deep-house-20261030/01_velvet_lounge_hero.png');
-try {
-  await fs.access(velvetPng);
-  execFileSync(ffmpeg, ['-y', '-i', velvetPng, '-vf', 'scale=480:270:flags=lanczos', '-quality', '85', velvetPreview], { stdio: 'ignore' });
-} catch {}
-
-const VERSION = '0.9.0-local-export.42';
+const VERSION = '0.9.0-local-export.43';
 const manifestPath = path.join(PROJECT, 'plugin/manifest.json');
 const baseManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
 if (baseManifest.version !== VERSION) {
