@@ -1,0 +1,30 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
+import JSZip from 'jszip';
+const root = path.resolve('..'), hash = b => createHash('sha256').update(b).digest('hex');
+const baseline = JSON.parse(await fs.readFile(path.join(root, 'state/before-lrc-read-fix-20261018/baseline.json'), 'utf8'));
+const previous = JSON.parse(await fs.readFile(path.join(root, 'BetterNCM/setup/local-word-alignment-20261018.json'), 'utf8'));
+const installed = path.join(root, 'BetterNCM/plugins/BetterMV-0.9.0-local-export.plugin');
+const runtime = path.join(root, 'BetterNCM/plugins_runtime/ncm-better-mv/bettermv.js');
+assert.equal(hash(await fs.readFile(installed)), baseline['../BetterNCM/plugins/BetterMV-0.9.0-local-export.plugin']);
+assert.equal(hash(await fs.readFile(runtime)), baseline['../BetterNCM/plugins_runtime/ncm-better-mv/bettermv.js']);
+const proof = JSON.parse(await fs.readFile(path.join(root, 'exports/Local-LRC-read-fix-20261018/verification.json'), 'utf8'));
+assert.equal(proof.parsedSentences, 53); assert.deepEqual(proof.errors, []); assert.deepEqual(proof.dialogs, []);
+assert.ok(proof.nativePickerFullPathPersisted && proof.missingAndEmptyReadsPreservePreviousBinding && proof.textEndpointEmptyDoesNotBlockBinaryRead);
+assert.equal(hash(await fs.readFile(proof.source)), proof.sourceSha256);
+const candidate = await fs.readFile(path.join(root, 'BetterMV-0.9.0-local-export.plugin'));
+const zip = await JSZip.loadAsync(candidate, { checkCRC32: true }), js = await zip.file('bettermv.js').async('nodebuffer');
+assert.equal(hash(js), hash(await fs.readFile('dist/plugin/bettermv.js')));
+for (const text of ['0.9.0-local-export.8', 'openFileDialog', 'utf-16be', '不能只填文件名', 'local-locked-v1', 'analysisLines']) assert.ok(js.includes(Buffer.from(text)), text);
+const sourceHashes = { ...previous.sourceHashes };
+for (const file of ['src/plugin/aligner.ts', 'src/director/music.ts', 'src/scenes/drive.ts', 'src/scenes/channel.ts', 'src/scenes/kaleido.ts', 'src/scenes/orb.ts', 'src/scenes/ripple.ts', 'src/scenes/particles.ts', 'src/scenes/fractal.ts', 'src/scenes/menger.ts']) {
+  assert.equal(hash(await fs.readFile(file)), previous.sourceHashes[file], 'Earlier feature changed: ' + file);
+}
+for (const file of ['src/lyrics/local.ts', 'src/plugin/main.ts', 'src/plugin/ui.ts', 'src/plugin/globals.d.ts', 'exporter/build-plugin.mjs', 'tools/local-lrc-read.test.ts', 'tools/probe-lrc-read-fix.mjs']) sourceHashes[file] = hash(await fs.readFile(file));
+await fs.writeFile(installed, candidate); await fs.writeFile(runtime, js);
+assert.equal(hash(await fs.readFile(installed)), hash(candidate)); assert.equal(hash(await fs.readFile(runtime)), hash(js));
+const report = { version: '0.9.0-local-export.8', installed, sha256: hash(candidate), runtime, runtimeSha256: hash(js), previousSha256: previous.sha256, sourceHashes, backup: path.join(root, 'state/before-lrc-read-fix-20261018'), checks: { typecheck: 'passed', regressions: 20, settingsReadProbe: proof }, activation: 'Restart NetEase Cloud Music, then choose the LRC again using the native picker', installedAt: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium' }).format(new Date()) + ' +08:00' };
+await fs.writeFile(path.join(root, 'BetterNCM/setup/local-lrc-read-20261018.json'), JSON.stringify(report, null, 2));
+console.log(JSON.stringify({ installed, version: report.version, sha256: report.sha256 }));

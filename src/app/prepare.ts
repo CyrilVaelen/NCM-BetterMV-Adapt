@@ -1,0 +1,214 @@
+// Everything a song needs before its MV can play: decoded audio → analysis (time-sliced), lyrics, style, palette,
+// cover texture and pixels. Shared by the plugin and the dev harness.
+import * as THREE from 'three';
+import { parseNeteaseLyric, type NeteaseLyric } from '../lyrics/parse.ts';
+import { analyzeSteps } from '../analysis/index.ts';
+import { chooseStyle, STYLES, type StyleChoice, type StyleId } from '../style/style.ts';
+import { paletteFromImage, type Palette } from '../render/palette.ts';
+import type { SongWiki } from '../meta/wiki.ts';
+import type { Analysis, LyricLine } from '../types.ts';
+import { xyMusic } from '../analysis/xy.ts';
+import type { Stereo } from '../scenes/types.ts';
+
+export interface SongInput {
+  id: number;
+  name?: string;
+  artists?: string[];
+  /** Encoded audio (FLAC / MP3 …) of the whole song. */
+  audio: ArrayBuffer;
+  lyric: NeteaseLyric | null;
+  wiki?: SongWiki;
+  /** NetEase's chorus mark, seconds (src/plugin/source.ts fetchChorus): the analysis' chorus hint. */
+  chorus?: [number, number];
+  cover: HTMLImageElement;
+}
+
+export interface PreparedSong {
+  id: number;
+  name?: string;
+  artists?: string[];
+  duration: number;
+  lines: LyricLine[];
+  /** Lyrics used by analysis, before subsequent presentation-only word calibration. */
+  analysisLines?: LyricLine[];
+  analysis: Analysis;
+  wiki?: SongWiki;
+  chorus?: [number, number];
+  choice: StyleChoice;
+  palette: Palette;
+  cover: THREE.Texture;
+  coverPixels: Uint8ClampedArray;
+  coverSize: number;
+  /** The audio for the oscilloscope plate: both channels, 16-bit, scaled together to their peak. */
+  stereo: Stereo;
+  /** Oscilloscope music (src/analysis/xy.ts): the whole MV is the scope in XY mode. */
+  xyMusic: boolean;
+  /** Milliseconds spent decoding + analysing. */
+  ms: number;
+}
+
+export type Stage = 'decode' | 'analyse';
+
+export interface PrepareOptions {
+  /** Gives the page a breath between slices of the work (yieldToPage; whenIdle for a song prepared in the background). */
+  pause: () => Promise<void>;
+  /** Milliseconds of analysis between pauses (default 8; less in the background, beside a playing MV). */
+  sliceMs?: number;
+  onProgress?: (stage: Stage, progress: number) => void;
+  /** Stops early when the song changed meanwhile. */
+  cancelled?: () => boolean;
+  /** Use an analysis made elsewhere or restored from cache; returning null falls back to fresh audio analysis. */
+  analysis?: (lines: LyricLine[], duration: number) => Promise<Analysis | null>;
+  /** Corrects the parsed lyrics in place before the analysis reads them (plugin: word times from the aligner pack). */
+  refineLines?: (lines: LyricLine[], duration: number) => Promise<void>;
+}
+
+export class Cancelled extends Error {}
+
+const channel = typeof MessageChannel === 'undefined' ? null : new MessageChannel();
+const waiting: Array<() => void> = [];
+if (channel) channel.port1.onmessage = () => waiting.shift()?.();
+/**
+ * A pause for PrepareOptions.pause that lets the page handle its input and draw (between tasks) without waiting for
+ * the next frame: waiting for one after each 8 ms slice of the analysis left the thread idle half the time, and
+ * stopped it while NetEase was minimised. (Not setTimeout: nested, it waits at least 4 ms.)
+ */
+export const yieldToPage = (): Promise<void> => new Promise(resolve => {
+  if (!channel) { setTimeout(resolve, 0); return; }
+  waiting.push(resolve);
+  channel.port2.postMessage(0);
+});
+
+/**
+ * A pause for work in the background while an MV plays (the next song prepared ahead): resumes when the page is idle
+ * after a frame, so the slices fit in the time the frames leave over (at the latest after half a second).
+ */
+export const whenIdle = (): Promise<void> => new Promise(resolve => {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: 500 });
+  else setTimeout(resolve, 16);
+});
+
+export const WAVE_RATE = 22050;
+/** Oscilloscope music keeps its channels at this rate (its pictures are drawn up to several kHz); other songs at WAVE_RATE. */
+const XY_RATE = 44100;
+
+/** The song at `rate`: the mix of its channels, its first two (a mono file gives the same signal twice), its length. */
+async function decode(buffer: ArrayBuffer, rate: number): Promise<{ mono: Float32Array; left: Float32Array; right: Float32Array; duration: number }> {
+  const audio = await new OfflineAudioContext(1, 1, rate).decodeAudioData(buffer);
+  // (The channel count in a local: read off the AudioBuffer inside the loop, it made this ten times slower.)
+  const mono = new Float32Array(audio.length), n = audio.numberOfChannels;
+  for (let c = 0; c < n; c++) {
+    const ch = audio.getChannelData(c);
+    for (let i = 0; i < mono.length; i++) mono[i] += ch[i] / n;
+  }
+  const left = audio.getChannelData(0);
+  return { mono, left, right: audio.numberOfChannels > 1 ? audio.getChannelData(1) : left, duration: audio.duration };
+}
+
+/** Both channels at `rate` (a mono file gives the same signal twice). */
+async function decodeStereo(buffer: ArrayBuffer, rate: number): Promise<{ left: Float32Array; right: Float32Array }> {
+  const audio = await new OfflineAudioContext(2, 1, rate).decodeAudioData(buffer);
+  const left = audio.getChannelData(0);
+  return { left, right: audio.numberOfChannels > 1 ? audio.getChannelData(1) : left };
+}
+
+type AnalysisOptions = Pick<PrepareOptions, 'pause' | 'sliceMs' | 'onProgress' | 'cancelled'>;
+
+/** Runs the same sliced music analysis for initial preparation and a deliberate lyric-source refresh. */
+export async function analyzeAudioSamples(samples: Float32Array, sampleRate: number, lines: LyricLine[], bpmHint: number | undefined,
+  chorusHint: [number, number] | undefined, opts: AnalysisOptions): Promise<Analysis> {
+  const check = () => { if (opts.cancelled?.()) throw new Cancelled(); };
+  const steps = analyzeSteps(samples, sampleRate, { lyrics: lines, bpmHint, chorusHint, sliceMs: opts.sliceMs });
+  for (;;) {
+    const r = steps.next();
+    if (r.done) { check(); return r.value; }
+    opts.onProgress?.('analyse', r.value);
+    await opts.pause();
+    check();
+  }
+}
+
+/** Rebuilds lyric-dependent section analysis from the exact audio already prepared for this song. */
+export async function reanalyzePreparedSong(song: PreparedSong, audio: ArrayBuffer, lines: LyricLine[], opts: AnalysisOptions): Promise<void> {
+  const { mono, duration } = await decode(audio.slice(0), WAVE_RATE);
+  if (opts.cancelled?.()) throw new Cancelled();
+  const analysis = await analyzeAudioSamples(mono, WAVE_RATE, lines, song.wiki?.bpm, song.chorus, opts);
+  if (opts.cancelled?.()) throw new Cancelled();
+  if (Math.abs(duration - song.duration) > 0.25) throw new Error('重新分析得到的音频长度与当前曲目不一致');
+  song.analysis = analysis;
+  song.analysisLines = lines.map(l => ({ ...l, words: l.words.map(w => ({ ...w })) }));
+  song.choice = chooseStyle(analysis, song.wiki, lines.length > 0);
+}
+
+/** 16-bit channels scaled together to their peak, every `step`-th pair of samples averaged in (step 1 or 2). */
+function toStereo(left: Float32Array, right: Float32Array, rate: number, step: number): Stereo {
+  let peak = 1e-6;
+  for (let i = 0; i < left.length; i++) {
+    const a = Math.abs(left[i]), b = Math.abs(right[i]);
+    if (a > peak) peak = a;
+    if (b > peak) peak = b;
+  }
+  const n = Math.floor(left.length / step), l = new Int16Array(n), r = new Int16Array(n), k = 32767 / peak / step;
+  // Math.round for |x| ≤ 32767 as floor(x + 0.5) by truncating a positive number (Math.round took 0.1 s a song here).
+  const round = (x: number) => ((x + 32768.5) | 0) - 32768;
+  if (step === 1) {
+    for (let i = 0; i < n; i++) { l[i] = round(left[i] * k); r[i] = round(right[i] * k); }
+  } else {
+    for (let i = 0; i < n; i++) {
+      let a = 0, b = 0;
+      for (let j = 0; j < step; j++) { a += left[i * step + j]; b += right[i * step + j]; }
+      l[i] = round(a * k); r[i] = round(b * k);
+    }
+  }
+  return { rate: rate / step, left: l, right: r };
+}
+
+export async function prepareSong(input: SongInput, opts: PrepareOptions): Promise<PreparedSong> {
+  const t0 = performance.now();
+  const check = () => { if (opts.cancelled?.()) throw new Cancelled(); };
+  opts.onProgress?.('decode', 0);
+  const { mono: samples, left, right, duration } = await decode(input.audio.slice(0), WAVE_RATE);
+  check();
+  await opts.pause();
+  check();
+  const lines = input.lyric ? parseNeteaseLyric(input.lyric, duration) : [];
+  if (opts.refineLines && lines.length) await opts.refineLines(lines, duration);
+  const cachedAnalysis = opts.analysis ? await opts.analysis(lines, duration) : null;
+  const analysis = cachedAnalysis ?? await analyzeAudioSamples(samples, WAVE_RATE, lines, input.wiki?.bpm, input.chorus, opts);
+  const choice = chooseStyle(analysis, input.wiki, lines.length > 0);
+
+  const palette = paletteFromImage(input.cover);
+  const coverSize = 256;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = coverSize;
+  const c2 = cv.getContext('2d', { willReadFrequently: true })!;
+  c2.drawImage(input.cover, 0, 0, coverSize, coverSize);
+  const coverPixels = c2.getImageData(0, 0, coverSize, coverSize).data;
+  await opts.pause();
+  check();
+  // The channels kept for the oscilloscope come from the same decode. Only a song whose channels differ about as much
+  // as an oscilloscope piece's (xyMusic's first test; rare) is decoded again at XY_RATE for the full test and its pictures.
+  let xy = false, stereo: Stereo;
+  if (xyMusic(left, right, WAVE_RATE).side > 0.3) {
+    const both = await decodeStereo(input.audio.slice(0), XY_RATE);
+    check();
+    xy = xyMusic(both.left, both.right, XY_RATE).xy;
+    stereo = toStereo(both.left, both.right, XY_RATE, xy ? 1 : XY_RATE / WAVE_RATE);
+  } else stereo = toStereo(left, right, WAVE_RATE, 1);
+  const cover = new THREE.Texture(input.cover);
+  cover.colorSpace = THREE.SRGBColorSpace;
+  cover.anisotropy = 8;
+  cover.needsUpdate = true;
+  return {
+    id: input.id, name: input.name, artists: input.artists, duration, lines, analysis, wiki: input.wiki, chorus: input.chorus, choice,
+    palette, cover, coverPixels, coverSize, stereo, xyMusic: xy, ms: Math.round(performance.now() - t0),
+  };
+}
+
+/** 根据是否显示歌词返回自动风格判定（关闭歌词显示时不自动选入以文字为主体的“字”风格） */
+export const styleChoiceFor = (song: PreparedSong, showLyrics = true): StyleChoice =>
+  !showLyrics && song.choice.style.id === 'word' ? chooseStyle(song.analysis, song.wiki, false) : song.choice;
+
+/** The style to play a song in: the user's choice, else (or for a setting this version doesn't know) the automatic one. */
+export const styleFor = (song: PreparedSong, override?: StyleId | 'auto', showLyrics = true) =>
+  (override && override !== 'auto' ? STYLES[override] : undefined) ?? styleChoiceFor(song, showLyrics).style;

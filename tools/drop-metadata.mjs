@@ -1,0 +1,15 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const output=path.resolve('../exports/Cant-Let-You-Go-drop-response');
+const f=JSON.parse(await fs.readFile(path.join(output,'fixture.json'),'utf8'));
+const input=JSON.parse(await fs.readFile(path.join(f.fixture,'input.json'),'utf8'));
+const id=1919116916,base='https://music.163.com',headers={Referer:base+'/'};
+const urls={detail:`${base}/api/song/detail/?ids=[${id}]`,lyric:`${base}/api/song/lyric/v1?tv=0&lv=0&rv=0&kv=0&yv=0&ytv=0&yrv=0&cp=false&id=${id}`,wiki:`${base}/api/song/play/about/block/page?songId=${id}`,chorus:`${base}/api/song/chorus?ids=[${id}]`};
+const docs=Object.fromEntries(await Promise.all(Object.entries(urls).map(async([key,url])=>{const r=await fetch(url,{headers});if(!r.ok)throw new Error(`${key}: ${r.status}`);return [key,await r.json()]})));
+await fs.writeFile(path.join(output,'metadata.json'),JSON.stringify(docs));
+const song=docs.detail.songs?.find(s=>s.id===id);if(!song||song.name!==input.song.name)throw new Error('Wrong metadata');
+const r=await fetch(song.album.picUrl.replace(/^http:/,'https:')+'?param=1024y1024');if(!r.ok)throw new Error('Cover request failed');
+await fs.writeFile(path.join(f.fixture,'cover.image'),Buffer.from(await r.arrayBuffer()));
+f.cover='Original song cover from NetEase official song metadata';
+await fs.writeFile(path.join(output,'fixture.json'),JSON.stringify(f,null,2));
+console.log(JSON.stringify({song:song.name,id,lyric:!!docs.lyric.lrc?.lyric,chorus:docs.chorus.chorus,cover:f.cover}));

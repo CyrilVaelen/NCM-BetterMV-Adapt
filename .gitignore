@@ -1,0 +1,22 @@
+node_modules/
+dist/
+# Local test media, lyrics and probe output (copyrighted songs stay out of the repo)
+/dev/
+/out/
+# Reference videos dropped in the root
+/*.mp4
+
+# Promo renders, soundtracks and the songs they cut from
+build/
+__pycache__/
+
+# Local tooling
+.claude/
+
+# 本地导出产物、临时验收缓存与备份文件
+/exports/
+tools/.*
+tools/backup-local-lrc/
+*.bak
+*.candidate
+*.plugin

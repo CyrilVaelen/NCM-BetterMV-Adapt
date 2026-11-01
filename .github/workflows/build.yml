@@ -1,0 +1,75 @@
+name: Build & Release Plugin
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check & unit test
+        run: |
+          npm run typecheck
+          npm run export:test
+      - name: Pack the plugin
+        shell: pwsh
+        run: ./scripts/pack-plugin.ps1
+      - name: Verify package & compute SHA256
+        id: meta
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path dist/*.plugin).Path)
+          try {
+            $names = $zip.Entries.FullName
+            foreach ($need in @('manifest.json', 'bettermv.js', 'preview.jpg', 'LICENSE', 'fonts/OFL.txt')) {
+              if ($names -notcontains $need) { throw "安装包缺少 $need" }
+            }
+            if (@($names | Where-Object { $_ -like 'previews/*.webp' }).Count -lt 21) { throw '场景示意图不全' }
+          } finally { $zip.Dispose() }
+          $localVerMatch = Select-String -Path exporter/build-plugin.mjs -Pattern "const VERSION = '([^']+)'"
+          $version = if ($localVerMatch) { $localVerMatch.Matches[0].Groups[1].Value } else { (Get-Content plugin/manifest.json -Raw | ConvertFrom-Json).version }
+          $hash = (Get-FileHash (Resolve-Path dist/*.plugin).Path -Algorithm SHA256).Hash
+          "version $version  sha256 $hash" | Tee-Object dist/SHA256SUMS.txt
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BetterMV
+          path: |
+            dist/*.plugin
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Update latest GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $commitMsg = git log -1 --pretty=%B
+          $notes = "### 当前构建版本：``$version```n`n**最新更新内容：**`n$commitMsg`n`n*(由 GitHub Actions 自动编译打包)*"
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -LiteralPath $notesFile -Value $notes -Encoding UTF8
+          git tag -f latest ${{ github.sha }}
+          git push origin refs/tags/latest --force
+          gh release view latest *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload latest (Resolve-Path dist/*.plugin).Path dist/SHA256SUMS.txt --clobber
+            gh release edit latest --title "BetterMV ($version)" --notes-file $notesFile
+          } else {
+            gh release create latest (Resolve-Path dist/*.plugin).Path dist/SHA256SUMS.txt --title "BetterMV ($version)" --notes-file $notesFile
+          }
