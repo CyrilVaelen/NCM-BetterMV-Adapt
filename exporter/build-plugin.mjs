@@ -4,21 +4,42 @@ import { build } from 'vite';
 import JSZip from 'jszip';
 import { loadSettings, PROJECT } from './server.mjs';
 
-const VERSION = '0.9.0-local-export.44';
+const VERSION = '0.9.0-local-export.45';
+const PLUGIN_NAME = 'BetterMV（增强定制版）';
+const PLUGIN_AUTHOR = 'CyrilVaelen';
+const PLUGIN_REPO = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+
+// 同步更新 plugin/manifest.json、package.json 与 README.md 中的版本号及仓库元数据
 const manifestPath = path.join(PROJECT, 'plugin/manifest.json');
 const baseManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
-if (baseManifest.version !== VERSION) {
+if (baseManifest.version !== VERSION || baseManifest.name !== PLUGIN_NAME || baseManifest.author !== PLUGIN_AUTHOR || baseManifest.author_link !== PLUGIN_REPO) {
+  baseManifest.name = PLUGIN_NAME;
   baseManifest.version = VERSION;
+  baseManifest.author = PLUGIN_AUTHOR;
+  baseManifest.author_link = PLUGIN_REPO;
   await fs.writeFile(manifestPath, JSON.stringify(baseManifest, null, 2) + '\n');
 }
+const pkgPath = path.join(PROJECT, 'package.json');
+const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+if (pkg.version !== VERSION) {
+  pkg.version = VERSION;
+  await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+}
+const readmePath = path.join(PROJECT, 'README.md');
+try {
+  const readme = await fs.readFile(readmePath, 'utf8');
+  const nextReadme = readme.replace(/0\.9\.0-local-export\.\d+/g, VERSION);
+  if (nextReadme !== readme) await fs.writeFile(readmePath, nextReadme);
+} catch {}
+
 const settings=await loadSettings();
 await build({root:PROJECT,configFile:path.join(PROJECT,'vite.plugin.config.ts'),define:{__BMV_EXPORT_TOKEN__:JSON.stringify(settings.token),__VERSION__:JSON.stringify(VERSION)}});
 const zip=new JSZip();
 const manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));
-manifest.name='BetterMV（本地增强版）';
+manifest.name=PLUGIN_NAME;
 manifest.version=VERSION;
-manifest.author='CyrilVaelen (基于 XIAOMING6680 原版深度定制)';
-manifest.author_link='https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+manifest.author=PLUGIN_AUTHOR;
+manifest.author_link=PLUGIN_REPO;
 manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种母风格与按曲风/声学气质动态加权的场景概率调度系统。';
 const manifestJson = JSON.stringify(manifest,null,2);
 zip.file('manifest.json',manifestJson);

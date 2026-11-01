@@ -13,7 +13,7 @@
 
 </div>
 
-> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.43`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce/releases/latest)。
+> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.45`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce/releases/latest)。
 
 ## 核心功能与定制增强
 
@@ -107,8 +107,8 @@ npm run pack             # 标准打包输出至 dist/ncm-better-mv.plugin
 
 架构设计、音频分析与验证记录详见 [docs/](docs/) 与 [STATUS.md](STATUS.md)。
 
-## 开源协议与作者致谢
+## 开源协议与仓库信息
 
 - **开源协议**：遵循 `GPL-3.0-or-later` 协议开源（详见 [LICENSE](LICENSE)）。内置字体 Archivo、Bodoni Moda、Cormorant Garamond、得意黑（Smiley Sans）、霞鹜文楷 Lite 均遵循 SIL Open Font License 1.1（`public/fonts/OFL.txt`）；打包内置的 `three.js` 使用 MIT 协议；可选对齐包中的 MMS-FA 模型来自 Meta（CC BY-NC 4.0，不可商用）。
-- **改进版开发与维护**：[**CyrilVaelen**](https://github.com/CyrilVaelen)（源码与构建发布仓库：[CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)）
-- **原版作者与致谢**：基于原作者 [**XIAOMING6680**](https://github.com/xiaoming6680) 开发的开源项目 BetterMV 进行深度定制与扩展。插件标识为 `ncm-better-mv`。
+- **改进版开发与维护**：[**CyrilVaelen**](https://github.com/CyrilVaelen)
+- **开源仓库地址**：[https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)（插件标识 `ncm-better-mv`，基于开源项目 BetterMV 进行多轮定制重构与扩展）

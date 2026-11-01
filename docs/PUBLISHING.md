@@ -1,6 +1,6 @@
 # BetterMV 发布流程
 
-源码仓库：[CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)。维护与改进作者：[CyrilVaelen](https://github.com/CyrilVaelen)（基于原作者 [XIAOMING6680](https://github.com/xiaoming6680) 开源项目深度定制）。
+源码仓库：[CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)。维护与改进作者：[CyrilVaelen](https://github.com/CyrilVaelen)。
 
 ## 构建与发布
 

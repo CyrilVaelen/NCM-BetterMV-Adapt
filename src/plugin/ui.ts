@@ -603,7 +603,20 @@ export class Overlay {
     if (which === 'settings') {
       this.panelTitle.textContent = '设置';
       this.panelAside.innerHTML = appIcon(18);
-      this.panelAside.append(VERSION ? `BetterMV ${VERSION}` : 'BetterMV');
+      const repoLink = el('a', '', VERSION ? `BetterMV ${VERSION}` : 'BetterMV');
+      repoLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+      repoLink.target = '_blank';
+      repoLink.rel = 'noopener noreferrer';
+      repoLink.title = '维护者：CyrilVaelen · 开源仓库：https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+      repoLink.style.color = 'inherit';
+      repoLink.style.textDecoration = 'none';
+      repoLink.onclick = e => {
+        if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
+          e.preventDefault();
+          void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
+        }
+      };
+      this.panelAside.append(repoLink);
       body.append(this.handlers.settings());
     } else if (which === 'export') {
       this.panelTitle.textContent = '导出视频';
@@ -1150,11 +1163,46 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     const mark = el('div', 'bmv-appicon');
     mark.innerHTML = appIcon(56);
     const text = el('div');
-    const name = el('div', 'bmv-set-name', 'BetterMV');
+    const name = el('div', 'bmv-set-name', 'BetterMV（增强定制版）');
     if (VERSION) name.append(el('span', 'bmv-set-ver', VERSION));
-    text.append(name, el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'));
+    const repoRow = el('div', 'bmv-set-desc');
+    repoRow.style.marginTop = '4px';
+    repoRow.append('维护者：CyrilVaelen · 开源仓库：');
+    const repoLink = el('a', '', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce');
+    repoLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+    repoLink.target = '_blank';
+    repoLink.rel = 'noopener noreferrer';
+    repoLink.style.color = 'inherit';
+    repoLink.style.textDecoration = 'underline';
+    repoLink.style.whiteSpace = 'nowrap';
+    repoLink.onclick = e => {
+      if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
+        e.preventDefault();
+        void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
+      }
+    };
+    repoRow.append(repoLink);
+    text.append(name, el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'), repoRow);
     head.append(mark, text);
     view.append(head);
+  } else {
+    const compactMeta = el('div', 'bmv-sec-note');
+    compactMeta.style.margin = '0 0 10px';
+    compactMeta.append('维护者：CyrilVaelen · 仓库：');
+    const compactLink = el('a', '', 'CyrilVaelen/NCM-BetterMV-Reproduce');
+    compactLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+    compactLink.target = '_blank';
+    compactLink.rel = 'noopener noreferrer';
+    compactLink.style.color = 'inherit';
+    compactLink.style.textDecoration = 'underline';
+    compactLink.onclick = e => {
+      if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
+        e.preventDefault();
+        void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
+      }
+    };
+    compactMeta.append(compactLink);
+    view.append(compactMeta);
   }
 
   /** A titled section; returns the place for its rows (a rounded group) unless `bare`. */
