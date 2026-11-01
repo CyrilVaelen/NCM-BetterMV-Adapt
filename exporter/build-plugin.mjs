@@ -20,14 +20,22 @@ try {
   execFileSync(ffmpeg, ['-y', '-i', velvetPng, '-vf', 'scale=480:270:flags=lanczos', '-quality', '85', velvetPreview], { stdio: 'ignore' });
 } catch {}
 
-const VERSION = '0.9.0-local-export.41';
+const VERSION = '0.9.0-local-export.42';
+const manifestPath = path.join(PROJECT, 'plugin/manifest.json');
+const baseManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+if (baseManifest.version !== VERSION) {
+  baseManifest.version = VERSION;
+  await fs.writeFile(manifestPath, JSON.stringify(baseManifest, null, 2) + '\n');
+}
 const settings=await loadSettings();
 await build({root:PROJECT,configFile:path.join(PROJECT,'vite.plugin.config.ts'),define:{__BMV_EXPORT_TOKEN__:JSON.stringify(settings.token),__VERSION__:JSON.stringify(VERSION)}});
 const zip=new JSZip();
-const manifest=JSON.parse(await fs.readFile(path.join(PROJECT,'plugin/manifest.json'),'utf8'));
+const manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));
 manifest.name='BetterMV（本地增强版）';
 manifest.version=VERSION;
-manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；保留全链路歌词防重影与夜城灯光效果。';
+manifest.author='CyrilVaelen (基于 XIAOMING6680 原版深度定制)';
+manifest.author_link='https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种导演风格与全链路歌词防重影。';
 const manifestJson = JSON.stringify(manifest,null,2);
 zip.file('manifest.json',manifestJson);
 for(const [source,target] of [['dist/plugin/bettermv.js','bettermv.js'],['plugin/preview.jpg','preview.jpg'],['LICENSE','LICENSE']])zip.file(target,await fs.readFile(path.join(PROJECT,source)));
