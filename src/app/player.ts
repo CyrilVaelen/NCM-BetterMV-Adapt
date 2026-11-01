@@ -49,6 +49,7 @@ import { PhoenixScene } from '../scenes/phoenix.ts';
 import { VelvetScene } from '../scenes/velvet.ts';
 import { FountainScene } from '../scenes/fountain.ts';
 import { StarryScene } from '../scenes/starry.ts';
+import { LaserScene } from '../scenes/laser.ts';
 import { FractalPlate } from '../scenes/fractal.ts';
 import { armillarySpec } from '../sigil/armillary.ts';
 import type { MvScene, SceneId, SceneInit, Shot } from '../scenes/types.ts';
@@ -253,6 +254,7 @@ export class MvPlayer {
       velvet: () => new VelvetScene(init, style.id === 'velvet' ? 'velvet' : look),
       fountain: () => new FountainScene(init, look),
       starry: () => new StarryScene(init, look),
+      laser: () => new LaserScene(init, look),
     };
     for (const id of new Set(shots.map(s => s.scene))) this.sceneFactories[id] = make[id];
     const sections = song.analysis.sections;

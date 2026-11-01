@@ -184,6 +184,7 @@ function pulsePool(s: Section): Plate[] {
       H(1.9, 2.1, 'shatter', 'wall', 'wall-close', 'wall-dutch', 'wall-edge'),
       H(1.85, 2.1, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
       H(1.95, 2.25, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
+      H(1.85, 2.05, 'laser', 'arena', 'rig', 'booth', 'tunnel'),
       H(1.8, 2.0, 'fountain', 'courtyard', 'orbit', 'skim', 'crown'),
       H(1.75, 1.9, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
       H(1.7, 1.8, 'underwater', 'canyon', 'dive', 'orbit'),
@@ -207,6 +208,7 @@ function pulsePool(s: Section): Plate[] {
     // while melodic/oriental tracks gravitate to phoenix/sunset/underwater.
     case 'drop': return [
       H(2.2, 2.5, 'drive', 'push', 'roll'),
+      H(2.25, 2.55, 'laser', 'arena', 'tunnel', 'booth', 'rig'),
       H(1.85, 2.0, 'channel', 'axis', 'roll', 'wall'),
       H(1.9, 2.1, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
       H(1.9, 2.1, 'underwater', 'dive', 'canyon', 'orbit', 'abyss'),
@@ -314,7 +316,7 @@ function velvetPool(s: Section): Plate[] {
     ];
     case 'drop': return [
       H(3.4, 4.0, 'velvet', 'lounge', 'skim', 'platter', 'gallery'), H(2.0, 2.2, 'sunset', 'horizon', 'beam', 'drift'),
-      H(1.85, 2.0, 'fountain', 'courtyard', 'skim', 'crown', 'orbit'), H(1.8, 1.9, 'underwater', 'canyon', 'orbit', 'dive'), H(1.7, 1.7, 'city', 'glide', 'canyon', 'horizon'),
+      H(1.85, 2.0, 'fountain', 'courtyard', 'skim', 'crown', 'orbit'), H(1.8, 1.9, 'underwater', 'canyon', 'orbit', 'dive'), H(1.75, 1.85, 'laser', 'arena', 'rig', 'booth'), H(1.7, 1.7, 'city', 'glide', 'canyon', 'horizon'),
       W(1.4, 'vinyl', 'groove', 'tilt'), W(1.2, 'pillars', 'orbit', 'top'), W(1.0, 'ripple', 'tilt', 'low'),
     ];
     case 'break': case 'bridge': return [
@@ -464,6 +466,7 @@ function wordPool(s: Section): Plate[] {
     ];
     case 'drop': return [
       H(2.2, 2.5, 'drive', 'push', 'roll'),
+      H(2.25, 2.55, 'laser', 'arena', 'tunnel', 'booth', 'rig'),
       H(2.0, 2.3, 'typewall', 'stack', 'solo'),
       H(1.9, 2.1, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
       H(1.8, 1.9, 'channel', 'axis', 'roll'),

@@ -168,18 +168,18 @@ export const VIBE_PRESETS: readonly VibePresetMeta[] = [
   {
     id: 'auto',
     label: '自动',
-    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 43 个场景在首镜与段内轮换中的出现概率。',
+    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 44 个场景在首镜与段内轮换中的出现概率。',
   },
   {
     id: 'melodic',
     label: '旋律电音',
-    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升星空、涅槃舞台、晚霞水台、花坛喷泉、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
+    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升星空、涅槃舞台、激光舞台、晚霞水台、花坛喷泉、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
     preferredStyle: 'pulse',
   },
   {
     id: 'cyber',
     label: '硬核电音',
-    note: '适合 Dubstep / DnB / Techno / Hardcore / 音游疾速：大幅提升推进隧道、音频通道、门格海绵、谢尔宾斯基、碎裂解构、能量球与示波器概率，压低柔光慢景。',
+    note: '适合 Dubstep / DnB / Techno / Hardcore / 音游疾速：大幅提升激光舞台、推进隧道、音频通道、门格海绵、谢尔宾斯基、碎裂解构、能量球与示波器概率，压低柔光慢景。',
     preferredStyle: 'pulse',
   },
   {
@@ -491,6 +491,7 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
   velvet:     [ 0.15, -0.85,  1.35, -0.40,  0.35, -0.25,  0.10],
   fountain:   [ 1.20, -0.75,  0.70, -0.45,  0.85,  0.55,  0.20],
   starry:     [ 1.38,  0.22,  0.45, -0.45,  0.82,  0.45,  0.10],
+  laser:      [ 1.15,  1.48,  0.45, -0.25, -1.15, -0.75, -0.20],
   // 音乐可视化
   ripple:     [ 0.40,  0.45,  0.35,  0.20,  0.05,  0.00,  0.00],
   channel:    [-0.30,  1.30,  0.15,  0.15, -0.65, -0.25,  0.00],
@@ -512,13 +513,13 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
 };
 
 const SPECTACLE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'phoenix', 'drive', 'sunset', 'fountain', 'starry', 'underwater', 'city', 'channel', 'shatter', 'aurora',
+  'phoenix', 'drive', 'laser', 'sunset', 'fountain', 'starry', 'underwater', 'city', 'channel', 'shatter', 'aurora',
 ]);
 const VOCAL_STAGE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'poster', 'typewall', 'neon', 'rain', 'lanterns', 'city', 'shatter', 'vinyl',
 ]);
 const INSTRUMENTAL_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'aurora', 'starry', 'clouds', 'underwater', 'pillars',
+  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'laser', 'aurora', 'starry', 'clouds', 'underwater', 'pillars',
 ]);
 const GRAPHIC_COVER_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'diorama', 'papercut', 'poster', 'halftone',
