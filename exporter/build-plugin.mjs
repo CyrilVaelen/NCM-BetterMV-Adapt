@@ -4,7 +4,7 @@ import { build } from 'vite';
 import JSZip from 'jszip';
 import { loadSettings, PROJECT } from './server.mjs';
 
-const VERSION = '0.9.0-local-export.43';
+const VERSION = '0.9.0-local-export.44';
 const manifestPath = path.join(PROJECT, 'plugin/manifest.json');
 const baseManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
 if (baseManifest.version !== VERSION) {
@@ -19,7 +19,7 @@ manifest.name='BetterMV（本地增强版）';
 manifest.version=VERSION;
 manifest.author='CyrilVaelen (基于 XIAOMING6680 原版深度定制)';
 manifest.author_link='https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
-manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种导演风格与全链路歌词防重影。';
+manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种母风格与按曲风/声学气质动态加权的场景概率调度系统。';
 const manifestJson = JSON.stringify(manifest,null,2);
 zip.file('manifest.json',manifestJson);
 for(const [source,target] of [['dist/plugin/bettermv.js','bettermv.js'],['plugin/preview.jpg','preview.jpg'],['LICENSE','LICENSE']])zip.file(target,await fs.readFile(path.join(PROJECT,source)));

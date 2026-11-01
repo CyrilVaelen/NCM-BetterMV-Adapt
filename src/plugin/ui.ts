@@ -125,7 +125,7 @@ export interface SongInfo { name: string; artists: string[]; cover: string | nul
 /** A track of NetEase's play list. */
 export interface QueueTrack { name: string; artists: string[]; duration: number }
 /** How the MV shows the song: its style, why it was chosen (null: chosen by hand), its tempo, the lyrics' word times. */
-export interface MvInfo { style: string; why: string | null; bpm?: number; lyrics: 'aligning' | 'aligned' | null; lyricDetail?: string; audioDetail?: string }
+export interface MvInfo { style: string; why: string | null; bpm?: number; vibeDetail?: string; lyrics: 'aligning' | 'aligned' | null; lyricDetail?: string; audioDetail?: string }
 /** What the waiting view says besides its line: how far along (0..1), or that it failed. */
 export interface StatusOptions { progress?: number; error?: boolean; hint?: string }
 /** NetEase's covers come in any size: a small one for the thumbnail, a large one for the waiting view. */
@@ -940,6 +940,7 @@ export class Overlay {
       if (info.lyrics === 'aligning') s.append(el('span', '', '正在对齐歌词'));
       s.title = [
         `风格：${info.style}（${info.why ? `自动选择，${info.why}` : '手动指定'}）`,
+        info.vibeDetail,
         info.audioDetail,
         info.lyricDetail ?? (info.lyrics === 'aligning' ? '歌词：正在按音频逐字对齐' : info.lyrics === 'aligned' ? '歌词：已完成音频对齐，不可靠的句子保留估算' : ''),
         '点击打开设置',
@@ -1011,12 +1012,12 @@ export class Overlay {
 const LATENCY_MIN = -PICTURE_DELAY_LIMIT, LATENCY_MAX = PICTURE_DELAY_LIMIT;
 
 const STYLE_NOTE: Record<Config['style'], string> = {
-  auto: '根据网易云曲风与鼓组律动选择：Deep House / 浩室为“微醺”，说唱为“字”，国风为“墨”，高能电子与摇滚为“律动”，民谣、轻音乐为“抒情”；无标签时按四四拍浩室律动、鼓点与 drop 自动识别。',
-  pulse: '踩拍硬切，细线与光效，drop 处进入推进隧道。适合高能电子、舞曲、摇滚。',
-  velvet: '暗涌水廊、磨砂玻璃和弦光栅与悬浮琥珀黑胶，四至八小节长镜头柔和叠化、光学侧链呼吸，无爆闪。适合 Deep House、浩室、微醺电音与合成器浪潮。',
-  ballad: '长镜头、柔光、缓慢推移，转场柔和、无闪烁。适合慢歌、民谣、轻音乐。',
-  word: '以歌词为画面主体：字墙、海报排版、网点印刷。适合说唱。',
-  ink: '封面呈现为宣纸水墨，歌词竖排，以墨迹晕染转场。适合国风、古风。',
+  auto: '根据网易云曲风与鼓组律动选择母风格（微醺 / 字 / 墨 / 律动 / 抒情），并结合本曲子流派与声学特征动态调整各场景出现概率。',
+  pulse: '踩拍硬切，细线与光效，高潮按歌曲气质加权开启推进隧道、涅槃舞台、晚霞水台或深海等场景；同风格内自动按曲风调节各场景概率。',
+  velvet: '暗涌水廊、磨砂玻璃和弦光栅与悬浮琥珀黑胶，四至八小节长镜头柔和叠化、光学侧链呼吸，无爆闪；自动随歌曲微调夜色场景权重。',
+  ballad: '长镜头、柔光、缓慢推移，转场柔和、无闪烁；优先呈现极光、雨窗、灯海等意境世界，并随歌曲声学特征动态调节各场景概率。',
+  word: '以歌词为画面主体：字墙、霓虹街、海报排版、网点印刷，并按伴奏律动动态调节场景出现概率。适合说唱。',
+  ink: '封面呈现为宣纸水墨，歌词竖排，以墨迹晕染转场，在宣纸水墨、云海、远山与窗花间按意境加权轮换。适合国风、古风。',
 };
 
 /** Which styles use each plate (any section, any cover, with or without lyrics); every style opens on the cards. */

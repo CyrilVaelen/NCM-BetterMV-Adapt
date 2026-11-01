@@ -15,7 +15,7 @@ import { lyricFingerprint, readAnalysisCache, writeAnalysisCache } from './analy
 import { alignSong, applyAlignment, applyLockedAlignment, cachedAlignment, checkPack, needsAlignment } from './aligner.ts';
 import { parseLocalLrc, readLocalLrcText } from '../lyrics/local.ts';
 import { parseNeteaseLyric } from '../lyrics/parse.ts';
-import { chooseStyle, LYRIC_PLATES } from '../style/style.ts';
+import { analyzeSongVibe, chooseStyle, LYRIC_PLATES } from '../style/style.ts';
 import { isRecordingKeys, keyCombo, loadConfig, mvButton, Overlay, pixelRatio, settingsView, type BarSection, type Config, type QueueTrack, type SettingsActions } from './ui.ts';
 import type { SectionLabel } from '../types.ts';
 
@@ -259,12 +259,16 @@ function start(client: Client): void {
     return false;
   };
   /** The MV's style beside the volume (and why, when chosen automatically), and how the lyrics' word times stand. */
-  const describe = (song: PreparedSong) => overlay.mvInfo({
-    style: player!.style!.name, why: config.style === 'auto' ? styleChoiceFor(song, config.showLyrics).reason : null, bpm: song.analysis.namedBpm ?? song.analysis.bpm,
-    lyrics: config.showLyrics ? (aligned.get(song) ?? null) : null,
-    lyricDetail: !config.showLyrics ? '歌词：已关闭显示' : (sectionRefresh.get(song) ?? alignmentDetail.get(song)),
-    audioDetail: AUDIO_SOURCE_LABEL[songAudioSource.get(song) ?? 'netease-stream'],
-  });
+  const describe = (song: PreparedSong) => {
+    const vibe = analyzeSongVibe(song.analysis, { graphic: song.palette.graphic, lyrics: config.showLyrics && song.lines.length > 0, wiki: song.wiki });
+    overlay.mvInfo({
+      style: player!.style!.name, why: config.style === 'auto' ? styleChoiceFor(song, config.showLyrics).reason : null, bpm: song.analysis.namedBpm ?? song.analysis.bpm,
+      vibeDetail: `场景权重：${vibe.summary}（按本曲气质动态调节场景出现概率）`,
+      lyrics: config.showLyrics ? (aligned.get(song) ?? null) : null,
+      lyricDetail: !config.showLyrics ? '歌词：已关闭显示' : (sectionRefresh.get(song) ?? alignmentDetail.get(song)),
+      audioDetail: AUDIO_SOURCE_LABEL[songAudioSource.get(song) ?? 'netease-stream'],
+    });
+  };
   /** Hands NetEase's play list to the list panel, read again only when it (or the playing track) changed. */
   const syncQueue = (): boolean => {
     const list = playList(client.store), at = playingIndex(client.store, list);

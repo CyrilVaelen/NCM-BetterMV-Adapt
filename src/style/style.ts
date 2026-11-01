@@ -1,17 +1,33 @@
 // A style is a whole visual language: which scenes, which cameras, how fast to cut, how cuts land.
 // The plugin picks one per song from the analysis (drums, drops, tempo); the user can override it.
+// Within any chosen style, each plate carries a base weight and hero-shot eligibility, further modulated
+// by the song's sub-genre & acoustic vibe (src/style/affinity.ts).
 import type { Analysis, Section } from '../types.ts';
 import type { SceneId } from '../scenes/types.ts';
 import { TransitionKind } from '../render/shots.ts';
 import type { Finish } from '../render/engine.ts';
+import { isSteadyHouseGroove } from './affinity.ts';
+export { analyzeSongVibe, isSteadyHouseGroove, sceneAffinity, type SongVibe } from './affinity.ts';
 
 export type StyleId = 'pulse' | 'velvet' | 'ballad' | 'word' | 'ink';
 
-/** A plate the director may cut to, with the camera setups it offers. */
-export interface Plate { scene: SceneId; variants: string[] }
+/** A plate the director may cut to, with the camera setups it offers and its base probability weights. */
+export interface Plate {
+  scene: SceneId;
+  variants: string[];
+  /** 在当前母风格与段落下的基础轮换权重（默认 1.0；核心重磅场景 > 1，点缀调剂场景 < 1） */
+  weight?: number;
+  /** 作为段落开场主镜头（Hero Shot）的候选权重（> 0 时进入首镜加权抽取池，未设置或 0 则仅参与段内轮换） */
+  hero?: number;
+}
 
-/** What about a song changes its plates: a flat graphic cover (paper-cut suits it), and whether it has lyrics. */
-export interface SongTraits { graphic: boolean; lyrics: boolean }
+/** What about a song changes its plates: a flat graphic cover, whether it has lyrics, and optional genre/mood metadata. */
+export interface SongTraits {
+  graphic: boolean;
+  lyrics: boolean;
+  /** 可选的网易云百科曲风、情绪标签与 BPM，供导演层细化同风格内的各场景出现概率 */
+  wiki?: { genres: string[]; tags: string[]; bpm?: number };
+}
 
 /** Plates built around the sung words. A song without lyrics (pure music) never gets them. */
 export const LYRIC_PLATES: ReadonlySet<SceneId> = new Set<SceneId>(['poster', 'typewall', 'neon']);
@@ -25,8 +41,8 @@ export interface Style {
   /** The mark before the bar counter. */
   glyph: string;
   /**
-   * Plates a section rotates through, a new one every `baseBars` (the idea of the user's 《三角》: one motif
-   * retold in many visual languages). Consecutive shots never repeat a plate while the pool has others.
+   * Plates a section draws from using weighted probability sampling with cooldowns (the idea of the user's 《三角》:
+   * one motif retold in many visual languages, weighted by the song's sub-genre and acoustic character).
    */
   pool(section: Section, song: SongTraits): Plate[];
   /** Bars per shot before any speeding up. */
@@ -54,7 +70,9 @@ export interface Style {
   finish: Finish;
 }
 
-const P = (scene: SceneId, ...variants: string[]): Plate => ({ scene, variants });
+const P = (scene: SceneId, ...variants: string[]): Plate => ({ scene, variants, weight: 1 });
+const W = (weight: number, scene: SceneId, ...variants: string[]): Plate => ({ scene, variants, weight });
+const H = (weight: number, hero: number, scene: SceneId, ...variants: string[]): Plate => ({ scene, variants, weight, hero });
 
 /** Without lyrics the word plates drop out; a pool left with a single plate is topped up from `fill`. */
 function forSong(pool: Plate[], song: SongTraits, fill: Plate[]): Plate[] {
@@ -69,14 +87,14 @@ export const PULSE: Style = {
   name: '律动',
   look: 'pulse',
   glyph: '△',
-  pool: (s, song) => forSong(pulsePool(s), song, [P('kaleido', 'petal', 'spiral'), P('flip', 'wave', 'burst')]),
+  pool: (s, song) => forSong(pulsePool(s), song, [W(1.1, 'kaleido', 'petal', 'spiral'), W(1.0, 'flip', 'wave', 'burst')]),
   baseBars: s => {
     switch (s.label) {
       case 'build': case 'pre': case 'chorus': case 'drop': return 2;
       default: return 4;
     }
   },
-  // A drop opens on the push tunnel (or the spectrum tube) and stays in it long enough to pick up speed.
+  // A drop opens on a weighted hero plate and stays in it long enough to pick up speed.
   heroBars: s => (s.label === 'drop' ? 4 : undefined),
   accelerate: true,
   transitions: { flash: true, glitch: true, dropPunch: true, dip: 0 },
@@ -86,40 +104,95 @@ export const PULSE: Style = {
 
 function pulsePool(s: Section): Plate[] {
   switch (s.label) {
-    case 'intro': return [P('relief', 'rise'), P('city', 'high', 'horizon'), P('pillars', 'orbit', 'top'), P('rings', 'front', 'tilt'), P('ridges', 'front', 'drift'), P('particles', 'hold'), P('scope', 'wave', 'xy'), P('vinyl', 'top', 'tilt'), P('aurora', 'wide'), P('ripple', 'face', 'tilt'), P('orb', 'wide', 'orbit')];
-    case 'outro': return [P('relief', 'rise'), P('aurora', 'wide', 'lake'), P('rings', 'tilt'), P('ridges', 'drift'), P('particles', 'hold', 'vortex'), P('scope', 'xy', 'wave'), P('clouds', 'over'), P('ripple', 'face', 'tilt')];
+    case 'intro': return [
+      H(1.8, 2.2, 'relief', 'rise'), H(1.8, 2.0, 'city', 'high', 'horizon'), H(1.5, 1.6, 'pillars', 'orbit', 'top'),
+      H(1.4, 1.4, 'aurora', 'wide'), W(1.3, 'ridges', 'front', 'drift'), W(1.2, 'rings', 'front', 'tilt'),
+      W(1.1, 'vinyl', 'top', 'tilt'), W(1.0, 'particles', 'hold'), W(0.95, 'ripple', 'face', 'tilt'),
+      W(0.85, 'scope', 'wave', 'xy'), W(0.85, 'orb', 'wide', 'orbit'),
+    ];
+    case 'outro': return [
+      H(1.8, 2.2, 'relief', 'rise'), H(1.7, 2.0, 'aurora', 'wide', 'lake'), H(1.5, 1.6, 'clouds', 'over'),
+      W(1.3, 'ridges', 'drift'), W(1.1, 'rings', 'tilt'), W(1.0, 'particles', 'hold', 'vortex'),
+      W(0.9, 'ripple', 'face', 'tilt'), W(0.8, 'scope', 'xy', 'wave'),
+    ];
     // Builds run down the tunnel and burst out through the cover into the chorus/drop.
-    case 'build': case 'pre': return [P('tunnel', 'rush', 'roll', 'wall')];
-    // The city powers up on a chorus's first downbeat; choruses take turns opening on it and on the shard wall.
+    case 'build': case 'pre': return [H(3.0, 3.0, 'tunnel', 'rush', 'roll', 'wall')];
+    // Choruses draw hero shots from worlds & bold cover architecture, weighted by melodic/cyber/rock vibe.
     case 'chorus': return [
-      P('city', 'canyon', 'glide', 'horizon'), P('shatter', 'wall', 'wall-close', 'wall-dutch', 'wall-edge'), P('pillars', 'orbit', 'top', 'low'), P('canvas', 'high', 'chase', 'front'),
-      P('phoenix', 'stage', 'soar', 'sonic', 'altar'),
-      P('sunset', 'horizon', 'beam', 'drift', 'halo'),
-      P('underwater', 'canyon', 'dive', 'orbit'),
-      P('kaleido', 'petal', 'spiral'), P('poster', 'stack', 'slab', 'split'), P('halftone', 'in', 'fine'), P('flip', 'wave', 'burst'), P('particles', 'burst', 'vortex'), P('debug', 'orbit', 'low', 'top'), P('align', 'swing'),
-      P('ripple', 'tilt', 'face', 'low'), P('orb', 'orbit', 'close'), P('channel', 'axis', 'roll', 'wall'),
-      P('menger', 'glide', 'look'), P('sierpinski', 'glide', 'look'), P('cantor', 'glide', 'look'),
+      H(2.0, 2.3, 'city', 'canyon', 'glide', 'horizon'),
+      H(1.9, 2.1, 'shatter', 'wall', 'wall-close', 'wall-dutch', 'wall-edge'),
+      H(1.85, 2.1, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
+      H(1.75, 1.9, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
+      H(1.7, 1.8, 'underwater', 'canyon', 'dive', 'orbit'),
+      H(1.6, 1.6, 'pillars', 'orbit', 'top', 'low'),
+      H(1.4, 1.4, 'poster', 'stack', 'slab', 'split'),
+      W(1.35, 'canvas', 'high', 'chase', 'front'),
+      W(1.25, 'channel', 'axis', 'roll', 'wall'),
+      W(1.2, 'ripple', 'tilt', 'face', 'low'),
+      W(1.15, 'halftone', 'in', 'fine'),
+      W(1.1, 'align', 'swing'),
+      W(1.0, 'particles', 'burst', 'vortex'),
+      W(0.95, 'kaleido', 'petal', 'spiral'),
+      W(0.9, 'flip', 'wave', 'burst'),
+      W(0.9, 'orb', 'orbit', 'close'),
+      W(0.85, 'debug', 'orbit', 'low', 'top'),
+      W(0.85, 'menger', 'glide', 'look'),
+      W(0.8, 'sierpinski', 'glide', 'look'),
+      W(0.75, 'cantor', 'glide', 'look'),
     ];
-    // Drops (the climaxes) take turns opening on the push tunnel of the user's 《游戏是你的解药吗？》 and on the
-    // spectrum tube, then go round the strongest plates: the sound made visible, the city, the shards bursting.
+    // Drops unlock all climax centerpieces as Hero candidates: hard/fast tracks naturally gravitate to drive/channel/shatter,
+    // while melodic/oriental tracks gravitate to phoenix/sunset/underwater.
     case 'drop': return [
-      P('phoenix', 'stage', 'soar', 'sonic', 'altar'),
-      P('sunset', 'horizon', 'beam', 'drift', 'halo'),
-      P('underwater', 'dive', 'canyon', 'orbit', 'abyss'),
-      P('drive', 'push', 'roll'), P('channel', 'axis', 'roll', 'wall'),
-      P('shatter', 'swarm-a', 'swarm-d', 'swarm-b', 'swarm-c'), P('ripple', 'tilt', 'low'), P('orb', 'close', 'orbit'), P('city', 'canyon', 'glide'),
-      P('pillars', 'top', 'orbit'), P('particles', 'burst', 'vortex'), P('kaleido', 'spiral', 'petal'),
-      P('menger', 'glide', 'look'), P('sierpinski', 'glide'),
+      H(2.2, 2.5, 'drive', 'push', 'roll'),
+      H(1.85, 2.0, 'channel', 'axis', 'roll', 'wall'),
+      H(1.9, 2.1, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
+      H(1.9, 2.1, 'underwater', 'dive', 'canyon', 'orbit', 'abyss'),
+      H(2.1, 2.4, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
+      H(1.65, 1.7, 'shatter', 'swarm-a', 'swarm-d', 'swarm-b', 'swarm-c'),
+      W(1.45, 'city', 'canyon', 'glide'),
+      W(1.3, 'ripple', 'tilt', 'low'),
+      W(1.25, 'orb', 'close', 'orbit'),
+      W(1.2, 'pillars', 'top', 'orbit'),
+      W(1.15, 'menger', 'glide', 'look'),
+      W(1.05, 'sierpinski', 'glide'),
+      W(1.0, 'particles', 'burst', 'vortex'),
+      W(0.85, 'kaleido', 'spiral', 'petal'),
     ];
-    case 'break': return [P('aurora', 'wide', 'lake'), P('poster', 'slab', 'stack'), P('pillars', 'orbit', 'low'), P('clouds', 'over', 'skim'), P('ridges', 'front', 'low'), P('rings', 'front'), P('halftone', 'pan'), P('scope', 'wave', 'xy'), P('vinyl', 'groove', 'top'), P('ripple', 'face', 'tilt'), P('orb', 'wide', 'orbit'), P('cantor', 'glide', 'look'), P('velvet', 'skim', 'gallery')];
-    case 'bridge': return [P('aurora', 'lake', 'wide'), P('poster', 'split', 'stack'), P('canvas', 'high', 'side'), P('pillars', 'orbit', 'top'), P('clouds', 'rise', 'skim'), P('ridges', 'drift', 'low'), P('kaleido', 'petal'), P('halftone', 'pan', 'out'), P('rings', 'tilt'), P('debug', 'top', 'orbit'), P('subdivide', 'ball'), P('ripple', 'face', 'tilt'), P('orb', 'wide'), P('cantor', 'glide'), P('menger', 'look'), P('velvet', 'lounge', 'platter')];
+    case 'break': return [
+      H(1.9, 2.2, 'aurora', 'wide', 'lake'), H(1.6, 1.8, 'clouds', 'over', 'skim'),
+      H(1.5, 1.6, 'pillars', 'orbit', 'low'), H(1.4, 1.5, 'poster', 'slab', 'stack'),
+      W(1.3, 'ridges', 'front', 'low'), W(1.2, 'vinyl', 'groove', 'top'), W(1.15, 'velvet', 'skim', 'gallery'),
+      W(1.0, 'rings', 'front'), W(0.95, 'halftone', 'pan'), W(0.9, 'ripple', 'face', 'tilt'),
+      W(0.8, 'orb', 'wide', 'orbit'), W(0.75, 'scope', 'wave', 'xy'), W(0.75, 'cantor', 'glide', 'look'),
+    ];
+    case 'bridge': return [
+      H(1.9, 2.2, 'aurora', 'lake', 'wide'), H(1.7, 1.9, 'canvas', 'high', 'side'),
+      H(1.6, 1.7, 'clouds', 'rise', 'skim'), H(1.5, 1.6, 'poster', 'split', 'stack'),
+      W(1.4, 'pillars', 'orbit', 'top'), W(1.3, 'ridges', 'drift', 'low'), W(1.15, 'velvet', 'lounge', 'platter'),
+      W(1.0, 'halftone', 'pan', 'out'), W(0.95, 'rings', 'tilt'), W(0.9, 'kaleido', 'petal'),
+      W(0.85, 'ripple', 'face', 'tilt'), W(0.8, 'subdivide', 'ball'), W(0.75, 'debug', 'top', 'orbit'),
+      W(0.75, 'orb', 'wide'), W(0.7, 'cantor', 'glide'), W(0.7, 'menger', 'look'),
+    ];
     default: return [
-      P('relief', 'fly', 'crane', 'side', 'dive', 'low'), P('city', 'horizon', 'canyon', 'glide', 'high'), P('canvas', 'chase', 'high', 'side', 'front'), P('pillars', 'low', 'orbit'),
-      P('underwater', 'canyon', 'orbit'),
-      P('ridges', 'front', 'low', 'drift'), P('poster', 'stack', 'split', 'slab'),
-      P('halftone', 'pan', 'in'), P('flip', 'wave'), P('rings', 'tilt', 'front'), P('particles', 'hold'), P('subdivide', 'ball'), P('align', 'swing'),
-      P('vinyl', 'tilt', 'groove', 'top'), P('ripple', 'face', 'tilt', 'low'), P('orb', 'orbit', 'wide'), P('channel', 'axis', 'wall'),
-      P('menger', 'glide', 'look'), P('cantor', 'glide'),
+      H(2.0, 2.3, 'relief', 'fly', 'crane', 'side', 'dive', 'low'),
+      H(2.0, 2.3, 'city', 'horizon', 'canyon', 'glide', 'high'),
+      H(1.7, 1.9, 'canvas', 'chase', 'high', 'side', 'front'),
+      H(1.65, 1.8, 'ridges', 'front', 'low', 'drift'),
+      H(1.55, 1.6, 'pillars', 'low', 'orbit'),
+      H(1.5, 1.6, 'underwater', 'canyon', 'orbit'),
+      W(1.35, 'vinyl', 'tilt', 'groove', 'top'),
+      W(1.3, 'poster', 'stack', 'split', 'slab'),
+      W(1.2, 'halftone', 'pan', 'in'),
+      W(1.1, 'rings', 'tilt', 'front'),
+      W(1.05, 'ripple', 'face', 'tilt', 'low'),
+      W(1.0, 'align', 'swing'),
+      W(0.9, 'flip', 'wave'),
+      W(0.9, 'particles', 'hold'),
+      W(0.85, 'channel', 'axis', 'wall'),
+      W(0.8, 'orb', 'orbit', 'wide'),
+      W(0.75, 'subdivide', 'ball'),
+      W(0.75, 'menger', 'glide', 'look'),
+      W(0.7, 'cantor', 'glide'),
     ];
   }
 }
@@ -134,7 +207,7 @@ export const VELVET: Style = {
   name: '微醺',
   look: 'ballad',
   glyph: '◇',
-  pool: (s, song) => forSong(velvetPool(s), song, [P('velvet', 'lounge', 'skim', 'platter', 'gallery'), P('vinyl', 'tilt', 'groove')]),
+  pool: (s, song) => forSong(velvetPool(s), song, [H(3.0, 3.5, 'velvet', 'lounge', 'skim', 'platter', 'gallery'), W(1.8, 'vinyl', 'tilt', 'groove')]),
   baseBars: s => {
     switch (s.label) {
       case 'intro': case 'outro': case 'break': case 'bridge': return 8;
@@ -155,37 +228,37 @@ export const VELVET: Style = {
 function velvetPool(s: Section): Plate[] {
   switch (s.label) {
     case 'intro': return [
-      P('velvet', 'lounge', 'skim'), P('vinyl', 'tilt', 'top'), P('rain', 'pane', 'clear'),
-      P('bokeh', 'haze'), P('city', 'horizon', 'high'), P('aurora', 'lake', 'wide'),
+      H(3.0, 3.6, 'velvet', 'lounge', 'skim'), H(1.8, 1.8, 'vinyl', 'tilt', 'top'), H(1.6, 1.6, 'rain', 'pane', 'clear'),
+      W(1.3, 'bokeh', 'haze'), W(1.3, 'city', 'horizon', 'high'), W(1.1, 'aurora', 'lake', 'wide'),
     ];
     case 'outro': return [
-      P('velvet', 'skim', 'lounge'), P('sunset', 'drift', 'horizon'), P('vinyl', 'tilt', 'groove'),
-      P('aurora', 'lake', 'wide'), P('rain', 'clear'),
+      H(2.8, 3.2, 'velvet', 'skim', 'lounge'), H(1.8, 2.0, 'sunset', 'drift', 'horizon'), H(1.6, 1.6, 'vinyl', 'tilt', 'groove'),
+      W(1.2, 'aurora', 'lake', 'wide'), W(1.2, 'rain', 'clear'),
     ];
     case 'build': case 'pre': return [
-      P('velvet', 'skim', 'gallery'), P('city', 'glide', 'horizon'),
-      P('rings', 'tilt', 'front'), P('pillars', 'low', 'orbit'),
+      H(2.8, 3.2, 'velvet', 'skim', 'gallery'), H(1.7, 1.8, 'city', 'glide', 'horizon'),
+      W(1.2, 'rings', 'tilt', 'front'), W(1.1, 'pillars', 'low', 'orbit'),
     ];
     case 'chorus': return [
-      P('velvet', 'lounge', 'platter', 'gallery', 'skim'), P('sunset', 'horizon', 'drift', 'halo'),
-      P('city', 'glide', 'horizon', 'high'), P('vinyl', 'groove', 'tilt', 'top'),
-      P('underwater', 'canyon', 'orbit'), P('pillars', 'orbit', 'low'),
-      P('aurora', 'lake', 'wide'), P('bokeh', 'focus', 'orbit'), P('ripple', 'tilt', 'face'),
+      H(3.2, 3.8, 'velvet', 'lounge', 'platter', 'gallery', 'skim'), H(2.0, 2.2, 'sunset', 'horizon', 'drift', 'halo'),
+      H(1.8, 1.9, 'city', 'glide', 'horizon', 'high'), H(1.6, 1.6, 'vinyl', 'groove', 'tilt', 'top'),
+      W(1.4, 'underwater', 'canyon', 'orbit'), W(1.2, 'pillars', 'orbit', 'low'),
+      W(1.15, 'aurora', 'lake', 'wide'), W(1.05, 'bokeh', 'focus', 'orbit'), W(0.9, 'ripple', 'tilt', 'face'),
     ];
     case 'drop': return [
-      P('velvet', 'lounge', 'skim', 'platter', 'gallery'), P('sunset', 'horizon', 'beam', 'drift'),
-      P('underwater', 'canyon', 'orbit', 'dive'), P('city', 'glide', 'canyon', 'horizon'),
-      P('vinyl', 'groove', 'tilt'), P('pillars', 'orbit', 'top'), P('ripple', 'tilt', 'low'),
+      H(3.4, 4.0, 'velvet', 'lounge', 'skim', 'platter', 'gallery'), H(2.0, 2.2, 'sunset', 'horizon', 'beam', 'drift'),
+      H(1.8, 1.9, 'underwater', 'canyon', 'orbit', 'dive'), H(1.7, 1.7, 'city', 'glide', 'canyon', 'horizon'),
+      W(1.4, 'vinyl', 'groove', 'tilt'), W(1.2, 'pillars', 'orbit', 'top'), W(1.0, 'ripple', 'tilt', 'low'),
     ];
     case 'break': case 'bridge': return [
-      P('velvet', 'gallery', 'skim'), P('rain', 'pane', 'close', 'clear'), P('vinyl', 'groove', 'tilt'),
-      P('bokeh', 'haze', 'rise'), P('clouds', 'skim', 'over'), P('aurora', 'lake'), P('underwater', 'abyss', 'orbit'),
+      H(2.8, 3.2, 'velvet', 'gallery', 'skim'), H(1.9, 2.0, 'rain', 'pane', 'close', 'clear'), H(1.6, 1.6, 'vinyl', 'groove', 'tilt'),
+      W(1.3, 'bokeh', 'haze', 'rise'), W(1.2, 'clouds', 'skim', 'over'), W(1.15, 'aurora', 'lake'), W(1.1, 'underwater', 'abyss', 'orbit'),
     ];
     default: return [
-      P('velvet', 'platter', 'lounge', 'skim', 'gallery'), P('vinyl', 'tilt', 'top', 'groove'),
-      P('rain', 'pane', 'clear'), P('city', 'horizon', 'high', 'glide'),
-      P('sunset', 'drift', 'horizon'), P('pillars', 'low', 'orbit'),
-      P('bokeh', 'focus', 'rise'), P('aurora', 'lake', 'wide'), P('ripple', 'face', 'tilt'),
+      H(3.2, 3.8, 'velvet', 'platter', 'lounge', 'skim', 'gallery'), H(1.9, 2.0, 'vinyl', 'tilt', 'top', 'groove'),
+      H(1.7, 1.8, 'rain', 'pane', 'clear'), H(1.6, 1.6, 'city', 'horizon', 'high', 'glide'),
+      W(1.5, 'sunset', 'drift', 'horizon'), W(1.15, 'pillars', 'low', 'orbit'),
+      W(1.1, 'bokeh', 'focus', 'rise'), W(1.05, 'aurora', 'lake', 'wide'), W(0.85, 'ripple', 'face', 'tilt'),
     ];
   }
 }
@@ -195,7 +268,7 @@ export const BALLAD: Style = {
   name: '抒情',
   look: 'ballad',
   glyph: '○',
-  pool: (s, song) => forSong(balladPool(s, song), song, [P('rings', 'front', 'tilt'), P('bokeh', 'rise')]),
+  pool: (s, song) => forSong(balladPool(s, song), song, [W(1.2, 'rings', 'front', 'tilt'), W(1.4, 'bokeh', 'rise')]),
   baseBars: s => (s.label === 'intro' || s.label === 'outro' ? 4 : 2),
   accelerate: false,
   transitions: { flash: false, glitch: false, dropPunch: false, dip: 0 },
@@ -205,15 +278,69 @@ export const BALLAD: Style = {
 
 // Paper-cut only suits flat graphic covers; photos and paintings get the slow ring tunnel instead.
 function balladPool(s: Section, song: SongTraits): Plate[] {
-  const quiet = song.graphic ? P('diorama', 'drift', 'push', 'truck', 'tilt') : P('tunnel', 'rush', 'wall', 'roll');
+  const quiet = song.graphic
+    ? H(2.2, 2.6, 'diorama', 'drift', 'push', 'truck', 'tilt')
+    : H(1.4, 1.5, 'tunnel', 'rush', 'wall', 'roll');
   switch (s.label) {
-    case 'intro': return [P('bokeh', 'haze'), P('rain', 'pane', 'clear'), P('lanterns', 'wide'), P('aurora', 'wide', 'lake'), P('pillars', 'orbit', 'top'), P('clouds', 'over'), P('particles', 'hold'), P('scope', 'xy'), P('ripple', 'face')];
-    case 'outro': return [song.graphic ? P('diorama', 'pullback') : P('tunnel', 'roll'), P('lanterns', 'rise', 'wide'), P('aurora', 'wide'), P('rain', 'clear')];
-    // Choruses take turns opening under the aurora (looking up into it) and among the lanterns the words send up.
-    case 'chorus': case 'drop': return [P('phoenix', 'stage', 'soar', 'sonic', 'altar'), P('sunset', 'horizon', 'beam', 'drift', 'halo'), P('underwater', 'canyon', 'orbit', 'dive'), P('aurora', 'up', 'wide'), P('lanterns', 'shore', 'rise', 'wide'), P('bokeh', 'focus', 'orbit', 'rise'), P('rain', 'pane', 'close'), P('pillars', 'orbit', 'top'), P('canvas', 'high', 'chase', 'side'), P('clouds', 'rise', 'over', 'skim'), P('city', 'horizon', 'high'), P('particles', 'rain', 'vortex'), P('kaleido', 'petal', 'spiral'), P('flip', 'wave'), P('poster', 'stack', 'split'), P('align', 'swing'), P('ripple', 'face', 'tilt'), P('orb', 'orbit', 'wide'), P('sierpinski', 'glide'), P('cantor', 'glide', 'look'), P('velvet', 'lounge', 'skim', 'platter')];
-    case 'bridge': case 'break': return [P('city', 'high', 'horizon'), P('poster', 'split', 'stack'), P('rain', 'clear', 'pane'), P('lanterns', 'wide', 'rise'), P('canvas', 'high', 'side'), P('pillars', 'orbit', 'low'), P('clouds', 'over', 'rise'), P('aurora', 'lake'), P('bokeh', 'rise'), P('ridges', 'drift'), P('halftone', 'pan'), P('rings', 'front'), P('subdivide', 'ball'), P('orb', 'wide', 'orbit'), P('menger', 'glide'), P('velvet', 'gallery', 'skim')];
-    // Verses take turns opening in the quiet plate and at the rainy window, where the lines are written in the fog.
-    default: return [quiet, P('rain', 'pane', 'close', 'clear'), P('lanterns', 'shore', 'wide'), P('vinyl', 'top', 'tilt'), P('canvas', 'high', 'side', 'chase'), P('pillars', 'low', 'orbit'), P('aurora', 'lake', 'wide'), P('poster', 'stack', 'split', 'slab'), P('halftone', 'in', 'pan'), P('rings', 'tilt', 'front'), P('ridges', 'front', 'drift'), P('flip', 'wave'), P('subdivide', 'ball'), P('ripple', 'face', 'tilt'), P('velvet', 'lounge', 'platter')];
+    case 'intro': return [
+      H(2.0, 2.4, 'bokeh', 'haze'), H(2.0, 2.4, 'rain', 'pane', 'clear'), H(1.8, 2.0, 'lanterns', 'wide'),
+      H(1.7, 1.9, 'aurora', 'wide', 'lake'), W(1.4, 'clouds', 'over'), W(1.2, 'pillars', 'orbit', 'top'),
+      W(1.0, 'particles', 'hold'), W(0.75, 'ripple', 'face'), W(0.65, 'scope', 'xy'),
+    ];
+    case 'outro': return [
+      song.graphic ? H(2.2, 2.5, 'diorama', 'pullback') : H(1.3, 1.4, 'tunnel', 'roll'),
+      H(2.0, 2.3, 'lanterns', 'rise', 'wide'), H(1.9, 2.1, 'aurora', 'wide'), H(1.8, 2.0, 'rain', 'clear'),
+    ];
+    // Choruses elevate poetic worlds (aurora, lanterns, sunset, clouds, rain, bokeh) while keeping geometric/fractal scenes as rare accents.
+    case 'chorus': case 'drop': return [
+      H(2.2, 2.5, 'aurora', 'up', 'wide'),
+      H(2.2, 2.5, 'lanterns', 'shore', 'rise', 'wide'),
+      H(2.0, 2.3, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
+      H(1.85, 2.0, 'clouds', 'rise', 'over', 'skim'),
+      H(1.8, 1.9, 'rain', 'pane', 'close'),
+      H(1.75, 1.8, 'bokeh', 'focus', 'orbit', 'rise'),
+      H(1.65, 1.7, 'underwater', 'canyon', 'orbit', 'dive'),
+      H(1.5, 1.6, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
+      W(1.5, 'canvas', 'high', 'chase', 'side'),
+      W(1.35, 'city', 'horizon', 'high'),
+      W(1.25, 'pillars', 'orbit', 'top'),
+      W(1.2, 'velvet', 'lounge', 'skim', 'platter'),
+      W(1.1, 'particles', 'rain', 'vortex'),
+      W(0.95, 'poster', 'stack', 'split'),
+      W(0.8, 'ripple', 'face', 'tilt'),
+      W(0.75, 'align', 'swing'),
+      W(0.65, 'kaleido', 'petal', 'spiral'),
+      W(0.6, 'flip', 'wave'),
+      W(0.55, 'orb', 'orbit', 'wide'),
+      W(0.45, 'sierpinski', 'glide'),
+      W(0.45, 'cantor', 'glide', 'look'),
+    ];
+    case 'bridge': case 'break': return [
+      H(2.0, 2.3, 'rain', 'clear', 'pane'), H(1.9, 2.2, 'lanterns', 'wide', 'rise'),
+      H(1.8, 2.0, 'clouds', 'over', 'rise'), H(1.75, 1.9, 'aurora', 'lake'),
+      H(1.6, 1.7, 'canvas', 'high', 'side'), W(1.45, 'city', 'high', 'horizon'),
+      W(1.4, 'bokeh', 'rise'), W(1.25, 'ridges', 'drift'), W(1.2, 'velvet', 'gallery', 'skim'),
+      W(1.1, 'pillars', 'orbit', 'low'), W(1.0, 'poster', 'split', 'stack'),
+      W(0.8, 'halftone', 'pan'), W(0.75, 'rings', 'front'),
+      W(0.6, 'subdivide', 'ball'), W(0.55, 'orb', 'wide', 'orbit'), W(0.45, 'menger', 'glide'),
+    ];
+    default: return [
+      quiet,
+      H(2.2, 2.5, 'rain', 'pane', 'close', 'clear'),
+      H(2.0, 2.3, 'lanterns', 'shore', 'wide'),
+      H(1.8, 2.0, 'aurora', 'lake', 'wide'),
+      H(1.75, 1.9, 'canvas', 'high', 'side', 'chase'),
+      H(1.65, 1.8, 'vinyl', 'top', 'tilt'),
+      W(1.3, 'velvet', 'lounge', 'platter'),
+      W(1.25, 'ridges', 'front', 'drift'),
+      W(1.15, 'pillars', 'low', 'orbit'),
+      W(1.0, 'poster', 'stack', 'split', 'slab'),
+      W(0.85, 'rings', 'tilt', 'front'),
+      W(0.8, 'halftone', 'in', 'pan'),
+      W(0.75, 'ripple', 'face', 'tilt'),
+      W(0.65, 'flip', 'wave'),
+      W(0.55, 'subdivide', 'ball'),
+    ];
   }
 }
 
@@ -227,7 +354,7 @@ export const WORD: Style = {
   name: '字',
   look: 'pulse',
   glyph: '□',
-  pool: (s, song) => forSong(wordPool(s), song, [P('halftone', 'pan', 'in', 'out'), P('ridges', 'front', 'low')]),
+  pool: (s, song) => forSong(wordPool(s), song, [W(1.4, 'halftone', 'pan', 'in', 'out'), W(1.2, 'ridges', 'front', 'low')]),
   baseBars: s => (s.label === 'intro' || s.label === 'outro' ? 4 : 2),
   heroBars: s => (s.label === 'verse' || s.label === 'chorus' ? 4 : undefined),
   accelerate: true,
@@ -241,18 +368,58 @@ export const WORD: Style = {
 
 function wordPool(s: Section): Plate[] {
   switch (s.label) {
-    case 'intro': return [P('halftone', 'out', 'in'), P('neon', 'walk', 'up'), P('ridges', 'front', 'low'), P('city', 'high', 'horizon'), P('vinyl', 'top'), P('scope', 'wave')];
-    case 'outro': return [P('halftone', 'out'), P('neon', 'up', 'walk'), P('ridges', 'drift'), P('city', 'horizon'), P('vinyl', 'top', 'tilt')];
-    case 'build': case 'pre': return [P('typewall', 'solo'), P('tunnel', 'rush', 'roll')];
-    case 'chorus': return [
-      P('typewall', 'stack', 'split'), P('city', 'canyon', 'glide', 'horizon'), P('neon', 'walk', 'low', 'up'), P('pillars', 'orbit', 'top', 'low'), P('poster', 'slab', 'stack', 'split'), P('halftone', 'fine', 'in'), P('vinyl', 'groove', 'top', 'tilt'),
-      P('shatter', 'wall', 'wall-close', 'wall-dutch'), P('flip', 'burst', 'wave'), P('debug', 'orbit', 'top'), P('align', 'swing'),
-      P('ripple', 'tilt', 'face'), P('channel', 'axis', 'roll'),
+    case 'intro': return [
+      H(2.0, 2.3, 'halftone', 'out', 'in'), H(2.0, 2.3, 'neon', 'walk', 'up'), H(1.6, 1.7, 'city', 'high', 'horizon'),
+      W(1.4, 'vinyl', 'top'), W(1.2, 'ridges', 'front', 'low'), W(0.9, 'scope', 'wave'),
     ];
-    case 'drop': return [P('phoenix', 'stage', 'soar', 'sonic', 'altar'), P('sunset', 'horizon', 'beam', 'drift', 'halo'), P('drive', 'push', 'roll'), P('channel', 'axis', 'roll'), P('typewall', 'stack', 'solo'), P('halftone', 'fine'), P('shatter', 'swarm-a', 'swarm-b'), P('ripple', 'tilt', 'low')];
-    case 'break': case 'bridge': return [P('halftone', 'pan', 'out'), P('neon', 'low', 'up'), P('ridges', 'front', 'drift'), P('poster', 'split', 'slab'), P('city', 'high', 'horizon'), P('vinyl', 'groove', 'top'), P('pillars', 'orbit'), P('scope', 'wave', 'xy')];
-    // Verses take turns opening on the wall of words and walking down the street of neon signs.
-    default: return [P('typewall', 'split', 'stack', 'solo'), P('neon', 'walk', 'low', 'up'), P('city', 'horizon', 'canyon', 'glide', 'high'), P('pillars', 'low', 'orbit'), P('canvas', 'chase', 'high', 'side'), P('vinyl', 'top', 'tilt', 'groove'), P('halftone', 'pan', 'in', 'fine'), P('poster', 'stack', 'slab', 'split'), P('subdivide', 'ball'), P('ripple', 'face', 'tilt')];
+    case 'outro': return [
+      H(2.0, 2.3, 'neon', 'up', 'walk'), H(1.9, 2.1, 'halftone', 'out'), H(1.6, 1.7, 'vinyl', 'top', 'tilt'),
+      W(1.5, 'city', 'horizon'), W(1.2, 'ridges', 'drift'),
+    ];
+    case 'build': case 'pre': return [H(2.6, 3.0, 'typewall', 'solo'), H(1.6, 1.6, 'tunnel', 'rush', 'roll')];
+    case 'chorus': return [
+      H(2.6, 3.0, 'typewall', 'stack', 'split'),
+      H(2.3, 2.6, 'neon', 'walk', 'low', 'up'),
+      H(2.0, 2.2, 'poster', 'slab', 'stack', 'split'),
+      H(1.9, 2.0, 'city', 'canyon', 'glide', 'horizon'),
+      W(1.65, 'halftone', 'fine', 'in'),
+      W(1.5, 'shatter', 'wall', 'wall-close', 'wall-dutch'),
+      W(1.4, 'vinyl', 'groove', 'top', 'tilt'),
+      W(1.25, 'pillars', 'orbit', 'top', 'low'),
+      W(1.0, 'flip', 'burst', 'wave'),
+      W(0.95, 'align', 'swing'),
+      W(0.9, 'channel', 'axis', 'roll'),
+      W(0.85, 'ripple', 'tilt', 'face'),
+      W(0.8, 'debug', 'orbit', 'top'),
+    ];
+    case 'drop': return [
+      H(2.2, 2.5, 'drive', 'push', 'roll'),
+      H(2.0, 2.3, 'typewall', 'stack', 'solo'),
+      H(1.9, 2.1, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
+      H(1.8, 1.9, 'channel', 'axis', 'roll'),
+      H(1.7, 1.8, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
+      W(1.5, 'shatter', 'swarm-a', 'swarm-b'),
+      W(1.3, 'halftone', 'fine'),
+      W(1.1, 'ripple', 'tilt', 'low'),
+    ];
+    case 'break': case 'bridge': return [
+      H(2.0, 2.3, 'neon', 'low', 'up'), H(1.9, 2.1, 'halftone', 'pan', 'out'),
+      H(1.7, 1.8, 'poster', 'split', 'slab'), W(1.5, 'vinyl', 'groove', 'top'),
+      W(1.4, 'city', 'high', 'horizon'), W(1.2, 'ridges', 'front', 'drift'),
+      W(1.0, 'pillars', 'orbit'), W(0.8, 'scope', 'wave', 'xy'),
+    ];
+    default: return [
+      H(2.6, 3.0, 'typewall', 'split', 'stack', 'solo'),
+      H(2.4, 2.8, 'neon', 'walk', 'low', 'up'),
+      H(1.9, 2.0, 'poster', 'stack', 'slab', 'split'),
+      H(1.8, 1.9, 'city', 'horizon', 'canyon', 'glide', 'high'),
+      W(1.65, 'halftone', 'pan', 'in', 'fine'),
+      W(1.5, 'vinyl', 'top', 'tilt', 'groove'),
+      W(1.3, 'canvas', 'chase', 'high', 'side'),
+      W(1.2, 'pillars', 'low', 'orbit'),
+      W(0.9, 'ripple', 'face', 'tilt'),
+      W(0.75, 'subdivide', 'ball'),
+    ];
   }
 }
 
@@ -268,7 +435,7 @@ export const INK: Style = {
   name: '墨',
   look: 'ballad',
   glyph: '〇',
-  pool: (s, song) => forSong(inkPool(s, song), song, [P('ink', 'scroll', 'mist'), P('bokeh', 'rise', 'haze')]),
+  pool: (s, song) => forSong(inkPool(s, song), song, [H(3.0, 3.5, 'ink', 'scroll', 'mist'), W(1.2, 'bokeh', 'rise', 'haze')]),
   baseBars: s => (s.label === 'chorus' || s.label === 'drop' ? 2 : 4),
   accelerate: false,
   // Ink seeps in from a blot, or the cover's own shapes, or a round moon gate opens; sections change by seeping.
@@ -282,15 +449,31 @@ export const INK: Style = {
 
 function inkPool(s: Section, song: SongTraits): Plate[] {
   switch (s.label) {
-    case 'intro': return [P('ink', 'bloom'), P('clouds', 'over'), P('ridges', 'front', 'drift'), P('bokeh', 'haze')];
-    case 'outro': return [P('ink', 'mist', 'scroll'), P('ridges', 'drift', 'front'), P('clouds', 'over')];
-    // Choruses take turns opening on the ink spreading and on climbing out of the clouds into the light.
-    // (No particles: they are drawn on black, which tore the paper open in the middle of a song.)
-    case 'chorus': case 'drop': return [P('ink', 'bloom', 'scroll'), P('clouds', 'rise', 'over', 'skim'), P('papercut', 'bloom', 'turn'), P('canvas', 'high', 'chase', 'side'), P('bokeh', 'focus', 'orbit')];
-    case 'bridge': case 'break': return [P('clouds', 'skim', 'over'), P('ink', 'mist'), P('ridges', 'drift', 'low'), P('papercut', 'turn'), P('bokeh', 'rise')];
+    case 'intro': return [
+      H(3.0, 3.5, 'ink', 'bloom'), H(2.0, 2.2, 'clouds', 'over'),
+      H(1.8, 1.8, 'ridges', 'front', 'drift'), W(1.0, 'bokeh', 'haze'),
+    ];
+    case 'outro': return [
+      H(2.8, 3.2, 'ink', 'mist', 'scroll'), H(2.0, 2.2, 'ridges', 'drift', 'front'), H(1.8, 1.8, 'clouds', 'over'),
+    ];
+    // Choruses focus on ink spreading, sea of clouds, red paper-cut and calligraphy brush canvas.
+    case 'chorus': case 'drop': return [
+      H(3.0, 3.5, 'ink', 'bloom', 'scroll'),
+      H(2.3, 2.6, 'clouds', 'rise', 'over', 'skim'),
+      H(2.0, 2.2, 'papercut', 'bloom', 'turn'),
+      H(1.9, 2.0, 'canvas', 'high', 'chase', 'side'),
+      W(1.0, 'bokeh', 'focus', 'orbit'),
+    ];
+    case 'bridge': case 'break': return [
+      H(2.4, 2.8, 'clouds', 'skim', 'over'), H(2.4, 2.8, 'ink', 'mist'),
+      H(1.9, 2.0, 'ridges', 'drift', 'low'), W(1.6, 'papercut', 'turn'), W(1.0, 'bokeh', 'rise'),
+    ];
     default: return [
-      P('ink', 'scroll', 'mist'), P('ridges', 'front', 'drift', 'low'), P('canvas', 'chase', 'side', 'high'), P('papercut', 'turn'),
-      song.graphic ? P('diorama', 'drift', 'truck') : P('bokeh', 'rise', 'focus'),
+      H(3.0, 3.5, 'ink', 'scroll', 'mist'),
+      H(2.1, 2.3, 'ridges', 'front', 'drift', 'low'),
+      H(1.9, 2.0, 'canvas', 'chase', 'side', 'high'),
+      W(1.7, 'papercut', 'turn'),
+      song.graphic ? W(1.4, 'diorama', 'drift', 'truck') : W(1.0, 'bokeh', 'rise', 'focus'),
     ];
   }
 }
@@ -315,83 +498,6 @@ const CALM_TAGS = /治愈|平静|伤感|浪漫|放松|安静|思念|孤独|温�
 const VELVET_MOOD_TAGS = /深夜|微醺|慵懒|放松|浪漫|安静|治愈|复古|迷幻|氛围|小酒馆|咖啡厅/;
 const RAVE_TAGS = /活力|狂欢|燃|兴奋|激昂|运动|极限运动|派对|动感|嗨/;
 const LIVELY_TAGS = /活力|狂欢|燃|兴奋|激昂|律动|派对|运动|极限运动|动感|嗨/;
-
-function nearestTimeDist(sorted: Float64Array | number[], t: number): number {
-  const n = sorted.length;
-  if (!n) return Infinity;
-  let lo = 0, hi = n - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (sorted[mid] < t) lo = mid + 1;
-    else hi = mid;
-  }
-  let best = Math.abs(sorted[lo] - t);
-  if (lo > 0) best = Math.min(best, Math.abs(sorted[lo - 1] - t));
-  return best;
-}
-
-/**
- * 声学四四拍浩室律动检测（Four-on-the-Floor Deep House Groove Detector）：
- * 仅在 4/4 拍、115–126 BPM 经典区间内触发，要求偶拍（1、3 拍）与奇拍（2、4 拍）同时具备高规律底鼓，
- * 且切分碎拍占比低、高频不过度刺耳。此判据可精准识别无标签或仅标“电子”的 Deep House，
- * 同时确保半拍律动的 Melodic Dubstep（如 125/140 BPM 半拍重音）与常规摇滚/流行保持在“律动 (pulse)”。
- */
-export function isSteadyHouseGroove(a: Analysis, bpm: number): boolean {
-  if ((a.meter || 4) !== 4 || bpm < 115 || bpm > 126 || a.beats.length < 24) return false;
-  const kicks = a.hits.kick.filter(h => h[1] > 0.22).map(h => h[0]);
-  if (kicks.length < 16) return false;
-
-  let active = a.sections.filter(s => s.label === 'drop' || s.label === 'chorus');
-  const activeSpan = active.reduce((acc, s) => acc + (s.end - s.start), 0);
-  if (activeSpan < 12) active = a.sections.filter(s => s.energy >= 0.6 && s.label !== 'intro' && s.label !== 'outro');
-  if (!active.length) active = a.sections.filter(s => s.label !== 'intro' && s.label !== 'outro');
-  if (!active.length) active = a.sections;
-
-  const inActive = (t: number) => active.some(s => t >= s.start + 0.05 && t <= s.end - 0.05);
-
-  let evenTotal = 0, evenHit = 0, oddTotal = 0, oddHit = 0;
-  for (let i = 0; i < a.beats.length; i++) {
-    const bt = a.beats[i];
-    if (!inActive(bt)) continue;
-    const pos = (a.beatInBar[i] ?? (i % 4)) % 4;
-    const hit = nearestTimeDist(kicks, bt) <= 0.095;
-    if (pos % 2 === 0) {
-      evenTotal++;
-      if (hit) evenHit++;
-    } else {
-      oddTotal++;
-      if (hit) oddHit++;
-    }
-  }
-  if (evenTotal < 8 || oddTotal < 8) return false;
-  if (evenHit / evenTotal < 0.62 || oddHit / oddTotal < 0.58) return false;
-
-  const activeKicks = kicks.filter(inActive);
-  if (activeKicks.length < 12) return false;
-  const offGrid = activeKicks.filter(kt => nearestTimeDist(a.beats, kt) > 0.11).length;
-  if (offGrid / activeKicks.length > 0.28) return false;
-
-  const { fps, low, high } = a.env;
-  if (fps > 0 && low.length && high.length) {
-    let lowSum = 0, highSum = 0, frames = 0;
-    for (const s of active) {
-      const i0 = Math.max(0, Math.floor(s.start * fps));
-      const i1 = Math.min(low.length, high.length, Math.ceil(s.end * fps));
-      for (let i = i0; i < i1; i++) {
-        lowSum += low[i];
-        highSum += high[i];
-        frames++;
-      }
-    }
-    if (frames > 0) {
-      const meanLow = lowSum / frames;
-      const meanHigh = highSum / frames;
-      if (meanLow < 0.18 || meanHigh > Math.max(0.56, meanLow * 1.08)) return false;
-    }
-  }
-
-  return true;
-}
 
 /**
  * NetEase's genre and mood tags first (they are curated and reliable); the audio only when a song has none:

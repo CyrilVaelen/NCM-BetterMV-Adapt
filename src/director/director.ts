@@ -15,7 +15,7 @@ import { MgOverlay } from './overlay.ts';
 import { Armillary, type ArmillarySpec } from '../sigil/armillary.ts';
 import { SECTION_LABELS, type LyricLine, type Section } from '../types.ts';
 import { norm } from './lyrics.ts';
-import { STYLES, type Plate, type SongTraits, type Style } from '../style/style.ts';
+import { analyzeSongVibe, sceneAffinity, STYLES, type Plate, type SongTraits, type Style } from '../style/style.ts';
 import { lastIndex } from './music.ts';
 
 /** A conservative full-mix pause detector: note gaps, missing kicks and a quieter bass are not edit points. */
@@ -74,9 +74,28 @@ function cutTimes(music: Music, style: Style, section: Section, next: Section | 
   return cuts;
 }
 
-// (Drops too: they take turns opening on the push tunnel and the spectrum tube, so a song with two drops doesn't
-// climax in the same tunnel twice; the user: “高潮段不应该只有推进”.)
-const TAKE_TURNS = new Set(['verse', 'chorus', 'break', 'bridge', 'drop']);
+/** 使用确定性伪随机数执行加权轮盘赌抽样 */
+function pickWeighted<T>(items: readonly T[], weightOf: (item: T) => number, rand: () => number): T {
+  let total = 0;
+  const weights: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const w = Math.max(0, weightOf(items[i]));
+    weights.push(w);
+    total += w;
+  }
+  if (!(total > 0)) return items[Math.floor(rand() * items.length)] ?? items[0];
+  let r = rand() * total;
+  for (let i = 0; i < items.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
+
+const STYLE_SIGNATURE: Partial<Record<Style['id'], SceneId>> = {
+  velvet: 'velvet',
+  ink: 'ink',
+};
 
 /**
  * The plates a section may use once the ones the user turned off (the settings page) are taken out. A section left
@@ -104,6 +123,8 @@ function allowed(pool: Plate[], off: ReadonlySet<string>, sections: Section[], i
 export function planShots(music: Music, style: Style, songSeed: number, song: SongTraits, off: ReadonlySet<string> = new Set()): Shot[] {
   const shots: Shot[] = [];
   const sections = music.a.sections;
+  const vibe = analyzeSongVibe(music.a, song);
+  const signature = STYLE_SIGNATURE[style.id];
   // Analysis may divide a Drop or Outro into repeated phrases. Those labels are not audible pauses: share one
   // section, scene, seed and camera clock over their whole uninterrupted span without rewriting the analysis itself.
   const spans: Array<{ section: Section; sectionIndex: number }> = [];
@@ -114,8 +135,9 @@ export function planShots(music: Music, style: Style, songSeed: number, song: So
     } else spans.push({ section, sectionIndex });
   });
   let prevScene = '', prevVariant = '';
-  const used = new Map<string, number>(); // plate -> times used, so the rotation reaches every plate
-  const seen = new Map<string, number>(); // label -> sections so far with it
+  const used = new Map<string, number>(); // 场景全曲累计出场次数
+  const usedVariants = new Map<string, number>(); // 场景机位全曲累计出场次数
+  const sectionHeroes = new Map<string, Set<SceneId>>(); // 各段落类型已使用过的首镜场景，防止连续两次高潮撞同一首镜
   const barLen = (t: number) => (60 / Math.max(40, music.at(t).bpm)) * music.meter;
   spans.forEach(({ section, sectionIndex }, spanIndex) => {
     let pool = allowed(style.pool(section, song), off, sections, sectionIndex, style, song);
@@ -134,15 +156,35 @@ export function planShots(music: Music, style: Style, songSeed: number, song: So
     }
     const cuts = cutTimes(music, style, section, spans[spanIndex + 1]?.section);
     const random = rng((songSeed ^ (sectionIndex * 2654435761)) >>> 0);
-    // Verses, choruses, breaks, bridges and drops take turns opening on their first two plates (the drop's push tunnel
-    // and spectrum tube…); the others always open on their signature (the build's tunnel…).
-    const nth = seen.get(section.label) ?? 0;
-    seen.set(section.label, nth + 1);
-    const hero = pool[TAKE_TURNS.has(section.label) ? nth % Math.min(2, pool.length) : 0];
+
+    // 段落首镜（Hero Shot）加权概率抽取：从母风格精英候选池中结合歌曲子流派/声学亲和度抽取，并规避同类型段落重复开场
+    const heroEligible = pool.filter(p => (p.hero ?? 0) > 0);
+    const rawHeroPool = heroEligible.length ? heroEligible : pool;
+    const nonPrevHero = rawHeroPool.filter(p => p.scene !== prevScene);
+    const heroCandidates = nonPrevHero.length ? nonPrevHero : rawHeroPool;
+    const priorHeroes = sectionHeroes.get(section.label);
+    let freshHeroes = priorHeroes ? heroCandidates.filter(p => !priorHeroes.has(p.scene)) : heroCandidates;
+    if (!freshHeroes.length && priorHeroes) {
+      priorHeroes.clear();
+      freshHeroes = heroCandidates;
+    }
+    const activeHeroPool = freshHeroes;
+    const sigPlate = signature && !(used.get(signature) ?? 0) && (section.label === 'chorus' || section.label === 'drop' || spanIndex >= spans.length - 2)
+      ? activeHeroPool.find(p => p.scene === signature) ?? heroCandidates.find(p => p.scene === signature)
+      : undefined;
+    const hero = sigPlate ?? (activeHeroPool.length === 1
+      ? activeHeroPool[0]
+      : pickWeighted(activeHeroPool, p => {
+        const base = p.hero ?? p.weight ?? 1;
+        const aff = sceneAffinity(p.scene, section, style, vibe, song);
+        const songDecay = Math.pow(0.72, used.get(p.scene) ?? 0);
+        const sigBoost = signature === p.scene && !(used.get(p.scene) ?? 0) ? 1.8 : 1;
+        return base * aff * songDecay * sigBoost;
+      }, random));
+    if (!priorHeroes) sectionHeroes.set(section.label, new Set<SceneId>([hero.scene]));
+    else priorHeroes.add(hero.scene);
+
     let plate = hero;
-    // Plates shown in this section so far: a section goes round its whole pool before it shows one twice (the drop's
-    // push tunnel, the least used across the song since only drops have it, used to come back mid-drop for another
-    // four bars — 40 % of every drop).
     const here = new Map<string, number>([[hero.scene, 1]]);
     for (let i = 0; i + 1 < cuts.length; i++) {
       if (cuts[i + 1] - cuts[i] < 0.12) continue;
@@ -150,18 +192,28 @@ export function planShots(music: Music, style: Style, songSeed: number, song: So
       const short = cuts[i + 1] - cuts[i] < barLen(cuts[i]) * 0.9;
       if (i === 0) plate = hero; // a section opens on its hero plate
       else if (!short) {
-        // The plate least used in this section, then in the song, that isn't the one just shown; ties broken by the
-        // seeded shuffle.
-        const order = pool.map(p => ({ p, r: random() }))
-          .filter(o => pool.length === 1 || o.p.scene !== prevScene)
-          .sort((a, b) => (here.get(a.p.scene) ?? 0) - (here.get(b.p.scene) ?? 0) || (used.get(a.p.scene) ?? 0) - (used.get(b.p.scene) ?? 0) || a.r - b.r);
-        plate = order.length ? order[0].p : pool[0];
+        // 段内后续镜头：结合母风格基础权重、歌曲声学/曲风亲和度、本段强冷却（0.16^n）与全曲温和冷却（0.68^n）加权采样
+        const candidates = pool.length > 1 ? pool.filter(p => p.scene !== prevScene) : pool;
+        plate = candidates.length <= 1
+          ? (candidates[0] ?? pool[0])
+          : pickWeighted(candidates, p => {
+            const base = p.weight ?? 1;
+            const aff = sceneAffinity(p.scene, section, style, vibe, song);
+            const sectionDecay = Math.pow(0.16, here.get(p.scene) ?? 0);
+            const songDecay = Math.pow(0.76, used.get(p.scene) ?? 0);
+            return base * aff * sectionDecay * songDecay;
+          }, random);
         here.set(plate.scene, (here.get(plate.scene) ?? 0) + 1);
       }
       const variants = plate.variants;
-      let variant = variants[Math.floor(random() * variants.length)];
-      if (plate.scene === prevScene && variant === prevVariant && variants.length > 1) variant = variants[(variants.indexOf(variant) + 1) % variants.length];
+      const validVariants = plate.scene === prevScene && variants.length > 1
+        ? variants.filter(v => v !== prevVariant)
+        : variants;
+      const variant = validVariants.length <= 1
+        ? (validVariants[0] ?? variants[0])
+        : pickWeighted(validVariants, v => Math.pow(0.45, usedVariants.get(`${plate.scene}:${v}`) ?? 0), random);
       used.set(plate.scene, (used.get(plate.scene) ?? 0) + 1);
+      usedVariants.set(`${plate.scene}:${variant}`, (usedVariants.get(`${plate.scene}:${variant}`) ?? 0) + 1);
       prevScene = plate.scene;
       prevVariant = variant;
       shots.push({ scene: plate.scene, start: cuts[i], end: cuts[i + 1], section, sectionIndex, variant, seed: (songSeed * 131 + shots.length * 7919) >>> 0 });

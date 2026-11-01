@@ -226,7 +226,7 @@ export class MvPlayer {
       music, lyrics, aspect: this.engine.aspect, title: song.name, artists: song.artists, stereo: song.stereo, xyMusic: song.xyMusic, armillary: armillarySpec(song.analysis, song.id), seed: this.seed,
     };
     // Pure music, a song whose lyrics NetEase doesn't have, or hidden lyrics gets no word plates.
-    let shots = planShots(music, style, this.seed, { graphic: song.palette.graphic, lyrics: showLyrics && song.lines.length > 0 }, off);
+    let shots = planShots(music, style, this.seed, { graphic: song.palette.graphic, lyrics: showLyrics && song.lines.length > 0, wiki: song.wiki }, off);
     if (only) shots.forEach((sh, i) => { sh.scene = only.scene; sh.variant = only.variants[i % only.variants.length]; });
     else if (song.xyMusic) shots = scopeOnly(shots);
     if (retake) shots = retake(shots, music);
