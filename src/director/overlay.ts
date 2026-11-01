@@ -31,7 +31,7 @@ const NAMES: Record<SectionLabel, string> = {
 };
 
 /** The plates filmed like a film (and the push tunnel): a hairline shape over them reads as a sticker on the lens. */
-const FILMED = new Set(['drive', 'city', 'aurora', 'pillars', 'canvas', 'phoenix', 'velvet', 'fountain']);
+const FILMED = new Set(['drive', 'city', 'aurora', 'pillars', 'canvas', 'phoenix', 'velvet', 'fountain', 'starry']);
 
 /** A drum's hits that put a shape up: their times and strengths, at least `gap` seconds apart. */
 interface Hits { t: Float64Array; s: Float64Array }
@@ -167,7 +167,7 @@ export class MgOverlay {
       }
     };
     const big = sec.label === 'chorus' || sec.label === 'drop';
-    if(busy&&this.style.id==='pulse'&&shot.scene!=='phoenix'&&shot.scene!=='fountain') {
+    if(busy&&this.style.id==='pulse'&&shot.scene!=='phoenix'&&shot.scene!=='fountain'&&shot.scene!=='starry') {
     drawLeadRibbons(L,this.aspect,info.pos,m.foregroundAt(t),signal,vis);
     }
 

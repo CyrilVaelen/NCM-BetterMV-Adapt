@@ -466,6 +466,7 @@ const MOTION: Record<SceneId, TransitionKind[]> = {
   phoenix: [zoom, TransitionKind.matte],
   velvet: [TransitionKind.matte, zoom],
   fountain: [zoom, TransitionKind.matte],
+  starry: [zoom, TransitionKind.matte],
 };
 const SOFT: TransitionKind[] = [zoom, TransitionKind.matte, TransitionKind.iris, spin];
 
@@ -698,7 +699,7 @@ export class Director {
       // The bars slide in over a bar and out over a bar (not at the very start or end of the song).
       const ramp = Math.min(beat * this.music.meter, (b - a) / 4);
       const din = a <= 0.1 ? 1 : smooth((t - a) / ramp), dout = b >= this.music.a.duration - 0.1 ? 1 : smooth((b - t) / ramp);
-      fx.letterbox = Math.min(din, dout);
+      if (shot.scene !== 'starry') fx.letterbox = Math.min(din, dout);
     }
     // A plate on paper: trails and the duotone would grey its darks, and the overlay's glowing lines would vanish.
     const bg = scene.scene.background;
@@ -798,8 +799,8 @@ export class Director {
         }
         break;
       }
-      case 'break': fx.duotone = Math.max(fx.duotone, 0.6); fx.scan = Math.max(fx.scan, 0.15); break;
-      case 'bridge': fx.duotone = Math.max(fx.duotone, 0.4); break;
+      case 'break': if (shot.scene !== 'starry') fx.duotone = Math.max(fx.duotone, 0.6); fx.scan = Math.max(fx.scan, 0.15); break;
+      case 'bridge': if (shot.scene !== 'starry') fx.duotone = Math.max(fx.duotone, 0.4); break;
       case 'chorus': {
         const sinceDown = (info.inBar % m.meter) * beat;
         if (sparse && sinceDown < beat) fx.echo = Math.max(fx.echo, 0.6 * (1 - sinceDown / beat));

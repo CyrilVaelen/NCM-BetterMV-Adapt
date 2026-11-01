@@ -85,6 +85,64 @@ export function isSteadyHouseGroove(a: Analysis, bpm: number): boolean {
   return true;
 }
 
+/**
+ * 声学四四拍出神舞曲推进检测（Four-on-the-Floor Trance Hypnotic Drive Detector）：
+ * 在 4/4 拍、126.5–144 BPM 经典 Progressive / Uplifting Trance 速度区间内触发，
+ * 要求偶拍与奇拍同时具备高规律四四拍底鼓（排除半拍重音的 140 BPM Dubstep 与碎拍 DnB），
+ * 且中频/旋律合成器能量充沛，精准识别无百科标签的纯电音或人声 Trance。
+ */
+export function isTranceHypnoticDrive(a: Analysis, bpm: number): boolean {
+  if ((a.meter || 4) !== 4 || bpm <= 126 || bpm > 144 || a.beats.length < 28) return false;
+  const kicks = a.hits.kick.filter(h => h[1] > 0.22).map(h => h[0]);
+  if (kicks.length < 20) return false;
+
+  let active = a.sections.filter(s => s.label === 'drop' || s.label === 'chorus');
+  const activeSpan = active.reduce((acc, s) => acc + (s.end - s.start), 0);
+  if (activeSpan < 12) active = a.sections.filter(s => s.energy >= 0.62 && s.label !== 'intro' && s.label !== 'outro');
+  if (!active.length) active = a.sections.filter(s => s.label !== 'intro' && s.label !== 'outro');
+  if (!active.length) active = a.sections;
+
+  const inActive = (t: number) => active.some(s => t >= s.start + 0.05 && t <= s.end - 0.05);
+
+  let evenTotal = 0, evenHit = 0, oddTotal = 0, oddHit = 0;
+  for (let i = 0; i < a.beats.length; i++) {
+    const bt = a.beats[i];
+    if (!inActive(bt)) continue;
+    const pos = (a.beatInBar[i] ?? (i % 4)) % 4;
+    const hit = nearestTimeDist(kicks, bt) <= 0.095;
+    if (pos % 2 === 0) {
+      evenTotal++;
+      if (hit) evenHit++;
+    } else {
+      oddTotal++;
+      if (hit) oddHit++;
+    }
+  }
+  if (evenTotal < 8 || oddTotal < 8) return false;
+  if (evenHit / evenTotal < 0.58 || oddHit / oddTotal < 0.54) return false;
+
+  const activeKicks = kicks.filter(inActive);
+  if (activeKicks.length < 14) return false;
+  const offGrid = activeKicks.filter(kt => nearestTimeDist(a.beats, kt) > 0.11).length;
+  if (offGrid / activeKicks.length > 0.30) return false;
+
+  const { fps, mid } = a.env;
+  if (fps > 0 && mid.length) {
+    let midSum = 0, frames = 0;
+    for (const s of active) {
+      const i0 = Math.max(0, Math.floor(s.start * fps));
+      const i1 = Math.min(mid.length, Math.ceil(s.end * fps));
+      for (let i = i0; i < i1; i++) {
+        midSum += mid[i];
+        frames++;
+      }
+    }
+    if (frames > 0 && midSum / frames < 0.24) return false;
+  }
+
+  return true;
+}
+
 /** 用户可在设置面板「画面 → 音乐风格」中手动选择的音乐曲风预设（驱动各场景出现概率） */
 export type VibePresetId =
   | 'auto'
@@ -110,12 +168,12 @@ export const VIBE_PRESETS: readonly VibePresetMeta[] = [
   {
     id: 'auto',
     label: '自动',
-    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 42 个场景在首镜与段内轮换中的出现概率。',
+    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 43 个场景在首镜与段内轮换中的出现概率。',
   },
   {
     id: 'melodic',
     label: '旋律电音',
-    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升涅槃舞台、晚霞水台、花坛喷泉、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
+    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升星空、涅槃舞台、晚霞水台、花坛喷泉、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
     preferredStyle: 'pulse',
   },
   {
@@ -258,6 +316,7 @@ export function analyzeSongVibe(a: Analysis, song?: Partial<SongTraits>): SongVi
   const sections = a.sections ?? [];
   const drops = sections.filter(s => s.label === 'drop').length;
   const houseGroove = isSteadyHouseGroove(a, gridBpm);
+  const tranceDrive = isTranceHypnoticDrive(a, gridBpm);
 
   // 计算活跃段落的频段均值、旋律在场度与动态起伏
   const meanLow = sampledMean(a.env?.low);
@@ -294,6 +353,7 @@ export function analyzeSongVibe(a: Analysis, song?: Partial<SongTraits>): SongVi
   // 1. 恢弘旋律 / 史诗感
   let melodicEpic = 0;
   if (isMelodicGenre) melodicEpic += 0.65;
+  else if (tranceDrive && !isHardGenre) melodicEpic += 0.48;
   if (EPIC_MOOD_TAGS.test(allMeta)) melodicEpic += 0.28;
   if (drops > 0 || maxEnergy >= 0.82) {
     melodicEpic += 0.30 * clamp01((leadPresence - 0.16) / 0.42);
@@ -312,6 +372,7 @@ export function analyzeSongVibe(a: Analysis, song?: Partial<SongTraits>): SongVi
   hardCyber += 0.18 * clamp01((meanHigh - 0.38) / 0.34);
   hardCyber += 0.18 * clamp01(stabIntensity);
   if (houseGroove && !isHardGenre) hardCyber *= 0.32;
+  else if (tranceDrive && !isHardGenre) hardCyber *= 0.55;
   if (ACOUSTIC_WARM_GENRES.test(genres) && !isHardGenre) hardCyber *= 0.25;
   hardCyber = clamp01(hardCyber);
 
@@ -429,6 +490,7 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
   phoenix:    [ 1.35, -0.10, -0.30,  0.25, -0.50,  1.10,  0.05],
   velvet:     [ 0.15, -0.85,  1.35, -0.40,  0.35, -0.25,  0.10],
   fountain:   [ 1.20, -0.75,  0.70, -0.45,  0.85,  0.55,  0.20],
+  starry:     [ 1.38,  0.22,  0.45, -0.45,  0.82,  0.45,  0.10],
   // 音乐可视化
   ripple:     [ 0.40,  0.45,  0.35,  0.20,  0.05,  0.00,  0.00],
   channel:    [-0.30,  1.30,  0.15,  0.15, -0.65, -0.25,  0.00],
@@ -450,13 +512,13 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
 };
 
 const SPECTACLE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'phoenix', 'drive', 'sunset', 'fountain', 'underwater', 'city', 'channel', 'shatter', 'aurora',
+  'phoenix', 'drive', 'sunset', 'fountain', 'starry', 'underwater', 'city', 'channel', 'shatter', 'aurora',
 ]);
 const VOCAL_STAGE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'poster', 'typewall', 'neon', 'rain', 'lanterns', 'city', 'shatter', 'vinyl',
 ]);
 const INSTRUMENTAL_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'aurora', 'clouds', 'underwater', 'pillars',
+  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'aurora', 'starry', 'clouds', 'underwater', 'pillars',
 ]);
 const GRAPHIC_COVER_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'diorama', 'papercut', 'poster', 'halftone',

@@ -62,6 +62,7 @@ const PLAN: Record<SceneId, { style: string; variants: string; in: SectionLabel;
   phoenix: { style: 'pulse', variants: 'stage', in: 'drop', at: 0.25 },
   velvet: { style: 'velvet', variants: 'lounge', in: 'drop', at: 0.35 },
   fountain: { style: 'pulse', variants: 'courtyard', in: 'drop', at: 0.25 },
+  starry: { style: 'pulse', variants: 'mirror', in: 'drop', at: 0.25 },
 };
 
 /** The looks: a plate drawn in each. */
