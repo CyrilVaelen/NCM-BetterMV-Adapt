@@ -225,11 +225,17 @@ try {
   await fs.writeFile(path.join(outDir, '02_fountain_pink_orbit_lyrics.png'), Buffer.from(rPinkOrbitLyrics.b64, 'base64'));
   console.log('02_pink_orbit_lyrics uniforms:', JSON.stringify(rPinkOrbitLyrics.uniforms));
 
-  // 3. 粉色封面：crown 高机位花冠俯瞰（检验池底圆形琉璃封面清晰折射与 12 音阶放射水拱）
-  await page.evaluate(() => window.FOUNTAIN_TEST.loadFountain(window.FOUNTAIN_TEST.pinkSong, 'crown', false));
-  const rPinkCrown = await page.evaluate(t => window.FOUNTAIN_TEST.renderPng(t, true), meta.dropKick + 0.16);
+  // 3. 粉色封面：crown 高机位花冠俯瞰（开启完整真机 Overlay 检验无 2D 粉线杂波、池面镜面反光与清澈液丝）
+  await page.evaluate(() => window.FOUNTAIN_TEST.loadFountain(window.FOUNTAIN_TEST.pinkSong, 'crown', true));
+  const rPinkCrown = await page.evaluate(t => window.FOUNTAIN_TEST.renderPng(t, false), meta.dropKick + 0.16);
   await fs.writeFile(path.join(outDir, '03_fountain_pink_crown_medallion.png'), Buffer.from(rPinkCrown.b64, 'base64'));
   console.log('03_pink_crown uniforms:', JSON.stringify(rPinkCrown.uniforms));
+
+  // 3b. 红黑花体封面（用户截图同款封面 + crown 同款俯视机位 + 真机完整 Overlay）：1:1 复核水面镜面反光与清澈细腻水丝
+  await page.evaluate(() => window.FOUNTAIN_TEST.loadFountain(window.FOUNTAIN_TEST.warmSong, 'crown', true));
+  const rWarmCrown = await page.evaluate(t => window.FOUNTAIN_TEST.renderPng(t, false), meta.dropKick + 0.16);
+  await fs.writeFile(path.join(outDir, '03b_fountain_warm_crown_medallion.png'), Buffer.from(rWarmCrown.b64, 'base64'));
+  console.log('03b_warm_crown uniforms:', JSON.stringify(rWarmCrown.uniforms));
 
   // 4. 暖金封面：skim 低角度掠水穿拱视角（同时可作预览候选）
   await page.evaluate(() => window.FOUNTAIN_TEST.loadFountain(window.FOUNTAIN_TEST.warmSong, 'skim', false));
@@ -255,6 +261,73 @@ try {
   await fs.writeFile(path.join(outDir, '07_fountain_calm_verse.png'), Buffer.from(rCalm.b64, 'base64'));
   console.log('07_calm_verse uniforms:', JSON.stringify(rCalm.uniforms));
   assert.ok(rCoolCourtyard.uniforms.sectionEnergy > rCalm.uniforms.sectionEnergy, 'Drop 段落水舞能量应高于主歌段落');
+
+  // 7b. 连续 240 帧（覆盖 PULSE 风格段落边界切入、4 机位轮换与高频鼓点）防闪黑与防 NaN 扫描
+  const sweepResult = await page.evaluate(async () => {
+    const { player, pinkSong, styleFor, yieldToPage } = window.FOUNTAIN_TEST;
+    player.load(
+      pinkSong,
+      styleFor(pinkSong, 'pulse'),
+      new Set(['cards', 'crystal', 'canvas']),
+      { scene: 'fountain', variants: ['courtyard', 'orbit', 'skim', 'crown'] },
+      'none',
+      0,
+      20261101,
+      undefined,
+      true,
+    );
+    await player.warm(yieldToPage);
+    player.director.overlay.scene.visible = true;
+
+    const gl = player.engine.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const rowBuf = new Uint8Array(w * 4);
+    const sampleRows = [Math.floor(h * 0.25), Math.floor(h * 0.5), Math.floor(h * 0.72)];
+
+    // 采集段落切入前后敏感窗口 + Drop 连续帧，共 240 帧
+    const testTimes = [];
+    for (const sec of pinkSong.analysis.sections.slice(0, 6)) {
+      for (let k = -4; k <= 12; k++) {
+        const tt = Math.max(0.1, sec.start + k * (1 / 60));
+        testTimes.push(tt);
+      }
+    }
+    const baseT = pinkSong.analysis.sections[Math.floor(pinkSong.analysis.sections.length / 2)]?.start ?? 45;
+    while (testTimes.length < 240) {
+      testTimes.push(baseT + testTimes.length * (1 / 30));
+    }
+
+    let minLuma = 1.0;
+    let maxLuma = 0.0;
+    let blackFrames = 0;
+    let worstTime = 0;
+
+    for (let i = 0; i < testTimes.length; i++) {
+      const t = testTimes[i];
+      player.frame(t, 1 / 60);
+      let sum = 0;
+      let cnt = 0;
+      for (const ry of sampleRows) {
+        gl.readPixels(0, ry, w, 1, gl.RGBA, gl.UNSIGNED_BYTE, rowBuf);
+        for (let x = 0; x < w * 4; x += 16) {
+          const lum = (0.2126 * rowBuf[x] + 0.7152 * rowBuf[x + 1] + 0.0722 * rowBuf[x + 2]) / 255;
+          sum += lum;
+          cnt++;
+        }
+      }
+      const meanLuma = sum / Math.max(1, cnt);
+      if (meanLuma < minLuma) {
+        minLuma = meanLuma;
+        worstTime = t;
+      }
+      if (meanLuma > maxLuma) maxLuma = meanLuma;
+      if (meanLuma < 0.03) blackFrames++;
+    }
+    return { frames: testTimes.length, blackFrames, minLuma: +minLuma.toFixed(4), maxLuma: +maxLuma.toFixed(4), worstTime: +worstTime.toFixed(3) };
+  });
+  console.log('连续 240 帧防闪黑扫描结果:', JSON.stringify(sweepResult));
+  assert.equal(sweepResult.blackFrames, 0, `检测到 ${sweepResult.blackFrames} 帧异常闪黑 (worstTime=${sweepResult.worstTime}s, minLuma=${sweepResult.minLuma})`);
 
   // 8. 生成 480x270 的 public/previews/fountain.webp 预览缩略图
   const previewWebp = path.resolve('public/previews/fountain.webp');

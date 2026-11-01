@@ -452,7 +452,8 @@ const echoShader = /* glsl */ `
     // (This is the one loop in the chain: a stray non-finite or runaway pixel from a plate would be kept and spread
     // by the drift until the whole frame is white or black. Held to finite light here.)
     vec3 c = max(now, old);
-    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+    uvec3 bits = floatBitsToUint(c);
+    c = max(mix(c, vec3(0.0), equal(bits & 0x7f800000u, uvec3(0x7f800000u))), vec3(0.0));
     gl_FragColor = vec4(min(c, vec3(16.0)), 1.0);
   }`;
 

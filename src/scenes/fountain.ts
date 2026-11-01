@@ -306,23 +306,24 @@ function buildSinglePetalGeometry(): THREE.InstancedBufferGeometry {
   return geo;
 }
 
-/** 构建三翼交叉 + 外包薄雾壳体的 3D 体积水柱几何体（保证任意平视或俯瞰角度均立体饱满） */
+/** 构建 5 翼黄金角错位修长流线水束簇几何体（任意平视或俯瞰角度均纤秀立体，无扁平纸片或肥大圆锥感） */
 function buildWaterColumnGeometry(): THREE.InstancedBufferGeometry {
   const positions: number[] = [];
-  const uvs: number[] = []; // x: 横向[-1..1], y: 高度[0..1]
+  const uvs: number[] = []; // x: 横向[0..1], y: 高度[0..1]
   const indices: number[] = [];
 
-  const planes = 3;
-  const ySegs = 20;
+  const planes = 5;
+  const ySegs = 28;
   for (let p = 0; p < planes; p++) {
     const base = positions.length / 3;
-    const ang = (p / planes) * Math.PI;
+    const ang = (p / planes) * Math.PI + (p % 2) * 0.11;
     const ca = Math.cos(ang);
     const sa = Math.sin(ang);
+    const widthVar = 0.88 + 0.22 * ((p * 3) % 5) / 4;
     for (let y = 0; y <= ySegs; y++) {
       const v = y / ySegs;
-      // 喷口紧凑，向上微散成柔和水雾花冠
-      const halfW = 0.22 + 0.46 * Math.pow(v, 1.35);
+      // 喷口纤细凝练，中段修长挺拔，仅顶端受重力自然微散成细碎水珠冠
+      const halfW = (0.085 + 0.125 * Math.pow(v, 0.88) + 0.085 * v * v * v) * widthVar;
       for (let s = -1; s <= 1; s += 2) {
         positions.push(ca * s * halfW, v, sa * s * halfW);
         uvs.push(s * 0.5 + 0.5, v);
@@ -341,10 +342,10 @@ function buildWaterColumnGeometry(): THREE.InstancedBufferGeometry {
   return geo;
 }
 
-/** 构建屏幕朝向展宽的抛物线水拱丝带基础网格（沿轨迹参数 s ∈ [0..1] 细分 42 段） */
-function buildParabolicRibbonGeometry(segs = 42): THREE.InstancedBufferGeometry {
+/** 构建屏幕朝向展宽的抛物线水晶水束基础网格（沿轨迹参数 s ∈ [0..1] 加密细分 56 段，曲线丝滑圆润） */
+function buildParabolicRibbonGeometry(segs = 56): THREE.InstancedBufferGeometry {
   const positions: number[] = [];
-  const uvs: number[] = []; // x: side(-1..+1), y: s(0..1)
+  const uvs: number[] = []; // x: side(0..1), y: s(0..1)
   const indices: number[] = [];
 
   for (let i = 0; i <= segs; i++) {
@@ -363,13 +364,12 @@ function buildParabolicRibbonGeometry(segs = 42): THREE.InstancedBufferGeometry 
   return geo;
 }
 
-/** 构建双层环绕石砌花坛与水池边沿旋转体几何体（带材质分区标记 aZone） */
+/** 构建双层环绕石砌花坛与水池边沿旋转体几何体（从池壁 r=8.32 起步，彻底消除 r=0 极点退化三角形） */
 function buildCourtyardStoneGeometry(): THREE.BufferGeometry {
-  // 轮廓点：[radius, y, zone]  zone: 0=池底暗石, 1=水池挑檐石栏, 2=隐藏洗墙灯槽, 3=花坛坡面植壤, 4=外围庭院石坪
+  // 轮廓点：[radius, y, zone]  zone: 1=水池挑檐石栏, 2=隐藏洗墙灯槽, 3=花坛坡面植壤, 4=外围庭院石坪
   const profile: Array<[number, number, number]> = [
-    [0.0, -0.66, 0],
-    [8.38, -0.66, 0],
-    [8.46, -0.06, 1],
+    [8.32, -0.38, 1],
+    [8.46, -0.04, 1],
     [8.42, 0.34, 1],
     [8.72, 0.44, 1],
     [8.98, 0.42, 2], // 一层内侧洗墙灯槽
@@ -384,6 +384,7 @@ function buildCourtyardStoneGeometry(): THREE.BufferGeometry {
     [16.32, 0.92, 1],
     [16.55, -0.12, 4],
     [28.0, -0.18, 4],
+    [56.0, -0.24, 4],
   ];
 
   const radialSegs = 96;
@@ -436,9 +437,16 @@ function buildCourtyardStoneGeometry(): THREE.BufferGeometry {
   return geo;
 }
 
-// ── GLSL 着色器（模块级静态常量，保障 WebGL 着色器池跨曲目零重编译） ───────────────────────────────────────────────
+// ── GLSL 着色器（模块级静态常量，全链路零 NaN/Inf 防护，保障 WebGL 着色器池跨曲目零重编译） ────────────────────────
 
 const GLSL_NOISE = /* glsl */ `
+float safePow(float b, float e) {
+  return pow(max(b, 1e-5), e);
+}
+vec3 safeNorm(vec3 v) {
+  float l = length(v);
+  return l > 1e-5 ? v / l : vec3(0.0, 1.0, 0.0);
+}
 float hash21(vec2 p) {
   p = fract(p * vec2(127.1, 311.7));
   p += dot(p, p + 34.23);
@@ -461,9 +469,19 @@ float fbm3(vec2 p) {
   v += 0.15 * vnoise(p * 4.13 + vec2(8.3, 2.8));
   return v;
 }
+// 双层平滑干涉水底光学焦散网（连续液态光网，无孤立噪点）
+float waterCausticNet(vec2 p, float t) {
+  vec2 q1 = p * 2.15 + vec2(t * 0.42, -t * 0.31);
+  vec2 q2 = vec2(p.x * 1.65 - p.y * 1.48, p.x * 1.48 + p.y * 1.65) - vec2(t * 0.36, t * 0.44);
+  float w1 = abs(sin(q1.x + 0.65 * sin(q1.y * 1.3)) + cos(q1.y + 0.65 * cos(q1.x * 1.2)));
+  float w2 = abs(sin(q2.x + 0.55 * cos(q2.y * 1.4)) + cos(q2.y - 0.55 * sin(q2.x * 1.3)));
+  float c1 = 1.0 - smoothstep(0.0, 0.52, w1 * 0.5);
+  float c2 = 1.0 - smoothstep(0.0, 0.56, w2 * 0.5);
+  return safePow(c1 * 0.58 + c2 * 0.42, 2.2);
+}
 `;
 
-// 1. 封面色调天穹与远景花园散景穹顶
+// 1. 封面色调天穹、月华/晴空柔光区与远景花园散景穹顶
 const SKY_VERT = /* glsl */ `
 varying vec3 vDir;
 void main() {
@@ -486,12 +504,17 @@ uniform float uCoverMood;
 varying vec3 vDir;
 ${GLSL_NOISE}
 void main() {
-  vec3 d = normalize(vDir);
+  vec3 d = safeNorm(vDir);
   float elev = clamp(d.y, -0.15, 1.0);
-  float hMix1 = smoothstep(-0.04, 0.26, elev);
-  float hMix2 = smoothstep(0.18, 0.78, elev);
+  float hMix1 = smoothstep(-0.04, 0.28, elev);
+  float hMix2 = smoothstep(0.20, 0.80, elev);
   vec3 col = mix(uSkyHorizon, uSkyMid, hMix1);
   col = mix(col, uSkyTop, hMix2);
+
+  // 庭院正前方高空柔和月华/云隙天光漫射亮区（为下方水池提供物理自洽的天光反射源）
+  vec3 skyLightDir = safeNorm(vec3(0.14, 0.42, -0.89));
+  float keyGlow = safePow(max(0.0, dot(d, skyLightDir)), 5.5);
+  col += mix(uMistGlow, vec3(0.96, 0.98, 1.0), 0.45) * keyGlow * (0.28 + 0.18 * uCoverMood);
 
   // 随封面色流动的轻柔庭院流云与水雾霞光
   float az = atan(d.x, -d.z);
@@ -502,36 +525,36 @@ void main() {
 
   // 喷泉中心冲天水柱激起的天际丁达尔水雾光晕
   float centerGlow = exp(-abs(d.x) * 3.2) * exp(-max(0.0, elev - 0.10) * 3.6) * smoothstep(-0.08, 0.08, elev);
-  col += uMistGlow * centerGlow * (0.16 + 0.28 * uCenterSurge) * uSidechain;
+  col += uMistGlow * centerGlow * (0.14 + 0.24 * uCenterSurge) * uSidechain;
 
-  // 远景柔焦花园树冠剪影与浪漫庭院水雾地平线（消除花坛外缘与天穹的生硬交界）
+  // 远景柔焦花园树冠剪影与浪漫庭院水雾地平线
   float treeHeight = 0.045 + 0.038 * fbm3(vec2(az * 4.5, 1.7)) + 0.018 * sin(az * 11.0);
   float canopyMask = 1.0 - smoothstep(treeHeight - 0.028, treeHeight + 0.035, elev);
   vec3 canopyShade = mix(uSkyTop * 0.52, uSkyMid * 0.72, 0.45);
   col = mix(col, canopyShade, canopyMask * smoothstep(-0.08, 0.01, elev) * 0.62);
 
   // 地平线空气透视柔光晨雾/暮霭
-  float horizonMist = exp(-pow(max(0.0, elev + 0.01) / 0.085, 2.0));
-  col = mix(col, mix(uSkyHorizon, uMistGlow, 0.38), horizonMist * (0.34 + 0.16 * uCenterSurge));
+  float horizonMist = exp(-safePow(max(0.0, elev + 0.01) / 0.085, 2.0));
+  col = mix(col, mix(uSkyHorizon, uMistGlow, 0.38), horizonMist * (0.32 + 0.14 * uCenterSurge));
 
   // 远景庭院拱廊柔和散景灯火与高空微光星尘
-  float horizonBand = exp(-pow((elev - 0.026) / 0.034, 2.0));
-  float archLights = pow(0.5 + 0.5 * cos(az * 20.0), 10.0) * (0.65 + 0.35 * sin(az * 7.0 + uTime * 0.8));
-  col += uMistGlow * horizonBand * archLights * (0.32 - 0.10 * uCoverMood) * uSidechain;
+  float horizonBand = exp(-safePow(abs(elev - 0.026) / 0.034, 2.0));
+  float archLights = safePow(clamp(0.5 + 0.5 * cos(az * 20.0), 0.0, 1.0), 10.0) * (0.65 + 0.35 * sin(az * 7.0 + uTime * 0.8));
+  col += uMistGlow * horizonBand * archLights * max(0.0, 0.30 - 0.10 * uCoverMood) * uSidechain;
 
   vec2 starGrid = vec2(az * 95.0, elev * 95.0);
   float starCell = hash21(floor(starGrid));
   if (starCell > 0.986 && elev > 0.12) {
     float dist = length(fract(starGrid) - 0.5);
     float twinkle = 0.65 + 0.35 * sin(uTime * 2.4 + starCell * 40.0);
-    col += uMistGlow * (1.0 - smoothstep(0.05, 0.34, dist)) * twinkle * (0.55 - 0.35 * uCoverMood);
+    col += uMistGlow * (1.0 - smoothstep(0.05, 0.34, dist)) * twinkle * max(0.0, 0.52 - 0.35 * uCoverMood);
   }
 
-  gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(10.0)), 1.0);
 }
 `;
 
-// 2. 双层环形石砌花坛、隐藏洗墙灯带与 12 音阶径向光槽
+// 2. 双层环形石砌花坛、湿润水岸石栏与隐藏洗墙灯带
 const STONE_VERT = /* glsl */ `
 attribute float aZone;
 varying vec3 vWorldPos;
@@ -541,7 +564,9 @@ varying float vZone;
 void main() {
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vWorldPos = wp.xyz;
-  vNormal = normalize(mat3(modelMatrix) * normal);
+  vec3 wn = mat3(modelMatrix) * normal;
+  float nl = length(wn);
+  vNormal = nl > 1e-5 ? wn / nl : vec3(0.0, 1.0, 0.0);
   vUv = uv;
   vZone = aZone;
   gl_Position = projectionMatrix * viewMatrix * wp;
@@ -586,51 +611,62 @@ void main() {
   float ang = atan(vWorldPos.z, vWorldPos.x);
   float grain = fbm3(vWorldPos.xz * 2.4);
 
-  vec3 N = normalize(vNormal);
-  vec3 L = normalize(vec3(0.0, 4.5, 0.0) - vWorldPos);
+  vec3 N = safeNorm(vNormal);
+  vec3 V = safeNorm(cameraPosition - vWorldPos);
+  vec3 L = safeNorm(vec3(0.0, 4.5, 0.0) - vWorldPos);
   float ndl = clamp(dot(N, L), 0.0, 1.0);
 
   vec3 baseCol = mix(uStoneDark, uStoneLight, 0.35 + 0.45 * clamp(N.y, 0.0, 1.0));
-  baseCol *= 0.86 + 0.28 * grain;
+  baseCol *= 0.88 + 0.24 * grain;
 
-  // 花坛植壤苔藓层（zone == 3）：温润深翠苔藓混合封面暗调，承托上方繁茂花丛
+  // 紧邻水池的挑檐石栏（r < 8.85）带有水雾浸润的湿石镜面光泽，与水面反光自然呼应
+  if (vZone < 1.5 && r < 8.95) {
+    vec3 skyKey = safeNorm(vec3(0.12, 0.68, -0.72));
+    vec3 H = safeNorm(skyKey + V);
+    float wetSpec = safePow(max(0.0, dot(N, H)), 28.0) * clamp(N.y, 0.0, 1.0);
+    baseCol *= 0.90; // 湿润石材底色微沉，高光清亮
+    baseCol += mix(vec3(0.95, 0.97, 1.0), uPetalBright, 0.25) * wetSpec * 0.28;
+  }
+
+  // 花坛植壤苔藓层（zone == 3）
   if (vZone > 2.5 && vZone < 3.5) {
     baseCol = mix(uFoliageDeep * 0.58, uStoneDark * 0.72, 0.28) * (0.82 + 0.35 * grain);
   }
 
-  // 外围庭院环形石砖拼缝与水泽微反光（zone == 4）
+  // 外围庭院环形石砖拼缝（zone == 4）
   if (vZone > 3.5) {
     float ringSeam = smoothstep(0.94, 0.995, cos(r * 5.2));
     float radSeam = smoothstep(0.96, 0.998, cos(ang * 24.0));
     baseCol *= 1.0 - 0.24 * max(ringSeam, radSeam);
-    float fadeOut = 1.0 - smoothstep(17.0, 27.5, r);
+    float fadeOut = 1.0 - smoothstep(18.0, 48.0, r);
     baseCol *= fadeOut;
   }
 
-  // 喷泉中心光柱对石栏内壁的暖色漫反射洗亮
-  float poolLight = exp(-max(0.0, r - 8.4) * 0.32) * (0.35 + 0.65 * ndl);
-  baseCol += uWaterGlow * poolLight * (0.16 + 0.18 * uKickPunch) * uSidechain;
+  // 喷泉水光对石栏内壁的漫反射与水波焦散映照
+  float poolLight = exp(-max(0.0, r - 8.4) * 0.36) * (0.35 + 0.65 * ndl);
+  baseCol += mix(vec3(0.88, 0.94, 1.0), uWaterGlow, 0.55) * poolLight * (0.14 + 0.16 * uKickPunch) * uSidechain;
 
   // 隐藏式阶梯洗墙灯带（zone == 2）与 12 音阶径向嵌灯槽
   float coveMask = 1.0 - clamp(abs(vZone - 2.0), 0.0, 1.0);
   float chromaVal = chromaByAngle(ang);
-  float radialSlot = pow(0.5 + 0.5 * cos(ang * 12.0), 18.0) * smoothstep(8.5, 9.0, r) * (1.0 - smoothstep(15.6, 16.3, r));
-  vec3 ledCol = mix(uWaterGlow, uPetalBright, 0.42);
-  baseCol += ledCol * coveMask * (0.55 + 0.55 * chromaVal + 0.45 * uKickPunch) * uSidechain;
-  baseCol += ledCol * radialSlot * (0.20 + 0.65 * chromaVal) * (1.0 - clamp(abs(vZone - 1.0), 0.0, 1.0));
+  float radialSlot = safePow(clamp(0.5 + 0.5 * cos(ang * 12.0), 0.0, 1.0), 18.0)
+                   * smoothstep(8.5, 9.0, r) * (1.0 - smoothstep(15.6, 16.3, r));
+  vec3 ledCol = mix(uWaterGlow, uPetalBright, 0.45);
+  baseCol += ledCol * coveMask * (0.48 + 0.50 * chromaVal + 0.40 * uKickPunch) * uSidechain;
+  baseCol += ledCol * radialSlot * (0.18 + 0.55 * chromaVal) * (1.0 - clamp(abs(vZone - 1.0), 0.0, 1.0));
 
   // 底鼓向外扩散的环形流光波掠过双层石砌花坛
   if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
     float waveR = 8.4 + uKickWaveAge * 6.5;
-    float ringGlow = exp(-pow((r - waveR) / 0.85, 2.0)) * exp(-uKickWaveAge * 1.35);
-    baseCol += uPetalBright * ringGlow * 0.38;
+    float ringGlow = exp(-safePow(abs(r - waveR) / 0.85, 2.0)) * exp(-uKickWaveAge * 1.35);
+    baseCol += uPetalBright * ringGlow * 0.34;
   }
 
-  gl_FragColor = vec4(max(baseCol, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(clamp(baseCol, vec3(0.0), vec3(10.0)), 1.0);
 }
 `;
 
-// 3. 圆形镜面水池 + 池底圆形琉璃镶嵌专辑封面 + 解析式落水同心涟漪
+// 3. 真实光学镜面反光水池 + 三维喷泉摇曳倒影 + 水底琉璃封面清澈折射与焦散
 const BASIN_VERT = /* glsl */ `
 varying vec3 vWorldPos;
 void main() {
@@ -648,12 +684,16 @@ uniform float uFlow;
 uniform float uKickPunch;
 uniform float uHatSparkle;
 uniform float uCenterSurge;
+uniform float uSectionEnergy;
 uniform float uSidechain;
 uniform float uCoverMood;
 uniform vec3 uSkyTop;
+uniform vec3 uSkyMid;
 uniform vec3 uSkyHorizon;
+uniform vec3 uMistGlow;
 uniform vec3 uWaterDeep;
 uniform vec3 uWaterGlow;
+uniform vec3 uFoamWhite;
 uniform vec3 uPetalPrimary;
 uniform vec3 uPetalBright;
 uniform vec4 uRippleA[${MAX_RIPPLES}]; // x, z, age, amp
@@ -670,119 +710,236 @@ float chromaAtIdx(int idx) {
   return idx == 8 ? uChroma2.x : idx == 9 ? uChroma2.y : idx == 10 ? uChroma2.z : uChroma2.w;
 }
 
+float chromaByAngle(float ang) {
+  float normA = fract(ang / 6.2831853 + 1.0) * 12.0;
+  float fl = floor(normA);
+  int idx = int(mod(fl, 12.0));
+  int nextIdx = int(mod(fl + 1.0, 12.0));
+  return mix(chromaAtIdx(idx), chromaAtIdx(nextIdx), fract(normA));
+}
+
+// Trowbridge-Reitz GGX 微表面水面镜面高光分布函数
+float ggxDistribution(vec3 N, vec3 H, float roughness) {
+  float a = roughness * roughness;
+  float a2 = a * a;
+  float ndh = max(0.0, dot(N, H));
+  float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+  return a2 / max(3.14159265 * denom * denom, 1e-4);
+}
+
+// 多尺度真实液态水面重力波与微风细浪解析梯度场（平滑连续，切分出真实横向水波倒影条）
+vec2 evalPoolLiquidWaves(vec2 xz, float r, float flow) {
+  vec2 g = vec2(0.0);
+  // 1) 主交叉液态涌浪（形成温润饱满的波面起伏）
+  float p1 = xz.x * 1.85 + xz.y * 2.95 - flow * 2.35;
+  g += vec2(1.85, 2.95) * cos(p1) * 0.0155;
+  float p2 = -xz.x * 2.35 + xz.y * 3.30 - flow * 2.75;
+  g += vec2(-2.35, 3.30) * cos(p2) * 0.0135;
+
+  // 2) 池心主喷泉持续激起的径向荡漾环形水波
+  vec2 radDir = r > 1e-3 ? xz / r : vec2(1.0, 0.0);
+  float centerWave = cos(r * 5.2 - flow * 4.4) * smoothstep(0.25, 1.4, r) * exp(-r * 0.14);
+  g += radDir * centerWave * (0.024 + 0.026 * uCenterSurge);
+
+  // 3) 中高频微风鳞浪（为天光与喷泉反光赋予灵动细碎的液面闪烁，无任何静态颗粒感）
+  float p3 = xz.x * 5.4 + xz.y * 7.8 + flow * 3.6;
+  g += vec2(5.4, 7.8) * cos(p3) * 0.0046;
+  float p4 = -xz.x * 7.2 + xz.y * 9.6 - flow * 4.2;
+  g += vec2(-7.2, 9.6) * cos(p4) * 0.0034;
+  return g;
+}
+
 void main() {
   vec2 xz = vWorldPos.xz;
   float r = length(xz);
   float ang = atan(xz.y, xz.x);
 
-  // 1. 细腻微风毛细水纹 + 最多 14 组确定性水拱落水/底鼓同心涟漪（解析高度与梯度）
-  float h = 0.0;
-  vec2 grad = vec2(0.0);
+  // 1. 构建真实三维液态水波梯度与法线（环境涌浪 + 水拱落水同心波包，纯靠法线高光与折射呈现，零粉笔白圈）
+  float waveActivity = 0.78 + 0.34 * uSectionEnergy;
+  vec2 grad = evalPoolLiquidWaves(xz, r, uFlow) * waveActivity;
+  float splashFoam = 0.0;
+  float waveCurvature = 0.0;
 
-  vec2 w1 = xz * 2.6 + vec2(uFlow * 0.55, -uFlow * 0.42);
-  vec2 w2 = xz * 4.1 + vec2(-uFlow * 0.48, uFlow * 0.62);
-  grad += vec2(cos(w1.x) * sin(w1.y), sin(w1.x) * cos(w1.y)) * 0.010;
-  grad += vec2(cos(w2.x + w2.y), cos(w2.x + w2.y)) * 0.007;
-
-  float rippleCaustic = 0.0;
   for (int i = uZero; i < ${MAX_RIPPLES}; i++) {
     vec4 ra = uRippleA[i];
     if (ra.w <= 0.001) continue;
     vec4 rb = uRippleB[i];
     vec2 dVec = xz - ra.xy;
-    float dist = length(dVec) + 1e-4;
-    if (dist > rb.x + 0.8) continue;
+    float dist = length(dVec);
+    if (dist > rb.x + 0.75) continue;
 
-    float front = ra.z * (rb.x / max(0.35, rb.z * 1.35));
-    float env = exp(-ra.z / rb.z) * exp(-pow((dist - front) / 0.68, 2.0)) * (1.0 - smoothstep(rb.x * 0.78, rb.x, dist));
-    float phase = dist * rb.y - ra.z * 11.5;
-    float s = sin(phase);
-    float c = cos(phase);
-    float amp = ra.w * 0.032 * env;
-    h += s * amp;
-    grad += (dVec / dist) * (c * rb.y * amp);
-    rippleCaustic += max(0.0, c) * env * ra.w;
+    // 真实扩散波前包络：圆润的 2~3 圈同心水波凹凸
+    float rad = rb.x * (1.0 - exp(-ra.z / max(0.25, rb.z * 0.95)));
+    float packetW = 0.34 + 0.26 * (rad / max(rb.x, 0.5));
+    float dFront = dist - rad;
+    float env = ra.w * exp(-(dFront * dFront) / (packetW * packetW))
+              * exp(-ra.z / (rb.z * 1.45))
+              * smoothstep(0.0, 0.03, ra.z)
+              * smoothstep(0.0, 0.14, dist);
+
+    if (env > 0.0004) {
+      float phase = dFront * rb.y * 1.25;
+      float waveCos = cos(phase);
+      float waveSin = sin(phase);
+      vec2 dir = dVec / max(dist, 1e-4);
+      // 仅写入三维波面斜率，由真实光线反射与池底折射自然显现晶莹水环
+      grad += dir * (waveCos * rb.y * 0.022 * env);
+      waveCurvature += waveSin * env;
+    }
+
+    // 仅在水柱刚落入池面的极小核心点 (dist < 0.22m, age < 0.24s) 产生转瞬即逝的清透水花微沫
+    if (ra.z < 0.26 && dist < 0.26) {
+      float dropSplash = (1.0 - smoothstep(0.04, 0.24, dist)) * exp(-ra.z * 11.0) * ra.w;
+      splashFoam += dropSplash * 0.55;
+    }
   }
 
-  vec3 N = normalize(vec3(-grad.x, 1.0, -grad.y));
-  vec3 V = normalize(cameraPosition - vWorldPos);
+  vec3 N = safeNorm(vec3(-grad.x, 1.0, -grad.y));
+  vec3 V = safeNorm(cameraPosition - vWorldPos);
+  float ndv = clamp(dot(N, V), 0.02, 1.0);
 
-  // 2. 视线经水波真实折射至池底 (depth = 0.65m)：呈现池底圆形琉璃马赛克镶嵌专辑封面
+  // 2. 清澈深水斯涅尔折射（Snell's Refraction + 微光学色散 + 双层流动水底焦散光网）
   vec3 refr = refract(-V, N, 0.75);
-  vec2 floorXZ = xz + refr.xz * (0.65 / max(0.24, -refr.y)) + grad * 1.45;
+  float waterDepth = 0.62;
+  vec2 refrOffset = refr.xz * (waterDepth / max(0.26, -refr.y)) + grad * 0.85;
+  vec2 floorXZ = xz + refrOffset;
   float rFloor = length(floorXZ);
 
-  vec3 floorCol = uWaterDeep * (0.65 + 0.35 * fbm3(floorXZ * 1.8));
-  if (rFloor < ${MEDALLION_RADIUS.toFixed(2)} + 0.28) {
-    // 端正无拉伸映射圆形琉璃封面（世界 +X 向右，-Z 向上朝向正面观众）
-    vec2 coverUv = vec2(
+  // 池底深翠/暗琉璃石底与流动水波焦散
+  float floorDetail = fbm3(floorXZ * 1.6);
+  vec3 floorCol = uWaterDeep * (0.52 + 0.28 * floorDetail);
+
+  if (rFloor < ${MEDALLION_RADIUS.toFixed(2)} + 0.26) {
+    vec2 baseUv = vec2(
       floorXZ.x / (${(MEDALLION_RADIUS * 2).toFixed(2)}) + 0.5,
       0.5 - floorXZ.y / (${(MEDALLION_RADIUS * 2).toFixed(2)})
     );
-    vec2 clampedUv = clamp(coverUv, 0.004, 0.996);
-    vec3 coverTex = texture2D(uCover, clampedUv).rgb;
+    // 水波斜率引发的细微清澈光学色散（波纹划过时边缘泛起晶莹水光折射感）
+    vec2 disp = grad * 0.018;
+    vec3 coverTex = vec3(
+      texture2D(uCover, clamp(baseUv + disp, 0.004, 0.996)).r,
+      texture2D(uCover, clamp(baseUv,        0.004, 0.996)).g,
+      texture2D(uCover, clamp(baseUv - disp, 0.004, 0.996)).b
+    );
 
-    // 精致琉璃马赛克微晶格倒角高光（既保留封面清晰画面，又赋予水下琉璃砖镶嵌质感）
-    vec2 tileGrid = abs(fract(floorXZ * 5.5) - 0.5);
-    float grout = smoothstep(0.43, 0.49, max(tileGrid.x, tileGrid.y));
-    float tileBevel = 1.0 + 0.08 * (1.0 - 2.0 * length(tileGrid)) - 0.14 * grout;
+    float innerMask = 1.0 - smoothstep(${MEDALLION_RADIUS.toFixed(2)} - 0.06, ${MEDALLION_RADIUS.toFixed(2)} + 0.03, rFloor);
+    // 精致双圈水晶金属压环（无粗糙黑缝，完整保留专辑封面通透细腻质感）
+    float ringBezel = exp(-safePow(abs(rFloor - ${MEDALLION_RADIUS.toFixed(2)}) / 0.055, 2.0))
+                    + 0.48 * exp(-safePow(abs(rFloor - (${MEDALLION_RADIUS.toFixed(2)} - 0.20)) / 0.035, 2.0));
 
-    float innerMask = 1.0 - smoothstep(${MEDALLION_RADIUS.toFixed(2)} - 0.08, ${MEDALLION_RADIUS.toFixed(2)} + 0.02, rFloor);
-    // 双层鎏金/琉璃圆环镶边
-    float ringBezel = exp(-pow((rFloor - ${MEDALLION_RADIUS.toFixed(2)}) / 0.075, 2.0))
-                    + 0.55 * exp(-pow((rFloor - (${MEDALLION_RADIUS.toFixed(2)} - 0.22)) / 0.045, 2.0));
-
-    vec3 mosaicCol = coverTex * tileBevel * (0.78 + 0.26 * uSidechain + 0.16 * uCenterSurge);
-    floorCol = mix(floorCol, mosaicCol, innerMask);
-    floorCol += mix(uWaterGlow, uPetalBright, 0.5) * ringBezel * (0.55 + 0.35 * uKickPunch);
+    // 水波凹凸带来的池底明暗聚光感，并对浅亮封面自动做水深浸润衰减，杜绝池心泛白过曝并突显水面波光反光
+    float crestFocus = 1.0 + clamp(waveCurvature * 0.24, -0.16, 0.26);
+    float coverWaterGain = mix(0.82, 0.48, uCoverMood) * (0.84 + 0.16 * uSidechain + 0.08 * uCenterSurge);
+    vec3 medallionCol = coverTex * crestFocus * coverWaterGain;
+    floorCol = mix(floorCol, medallionCol, innerMask);
+    floorCol += mix(vec3(0.92, 0.96, 1.0), uPetalBright, 0.45) * ringBezel * (0.42 + 0.28 * uKickPunch);
   }
 
-  // 水池底部 12 组音阶水下射灯与中心主射灯焦散光斑
-  float centerLamp = exp(-rFloor * rFloor * 0.32) * (0.45 + 0.75 * uCenterSurge);
-  float normAng = fract(ang / 6.2831853 + 1.0) * 12.0;
-  int nozzleIdx = int(mod(floor(normAng + 0.5), 12.0));
-  float nozzleAng = float(nozzleIdx) * (6.2831853 / 12.0);
-  vec2 nozzlePos = vec2(cos(nozzleAng), sin(nozzleAng)) * 6.75;
-  vec2 innerNozzlePos = vec2(cos(nozzleAng + 0.2618), sin(nozzleAng + 0.2618)) * 4.45;
-  float cVal = chromaAtIdx(nozzleIdx);
-  float lampGlow = exp(- dot(floorXZ - nozzlePos, floorXZ - nozzlePos) * 0.85) * (0.28 + 0.85 * cVal)
-                 + exp(- dot(floorXZ - innerNozzlePos, floorXZ - innerNozzlePos) * 1.1) * (0.22 + 0.70 * cVal);
+  // 池底柔和流动的水波光学焦散网 + 喷嘴水下射灯柔光
+  float caustics = waterCausticNet(floorXZ, uFlow);
+  float centerLamp = exp(-rFloor * rFloor * 0.34) * (0.28 + 0.52 * uCenterSurge) * mix(1.0, 0.42, uCoverMood);
+  float cAngVal = chromaByAngle(atan(floorXZ.y, floorXZ.x));
+  float ringLamp = (exp(-safePow(abs(rFloor - 6.75) / 0.62, 2.0)) + 0.75 * exp(-safePow(abs(rFloor - 4.45) / 0.55, 2.0)))
+                 * (0.18 + 0.50 * cAngVal) * mix(1.0, 0.62, uCoverMood);
 
-  floorCol += uWaterGlow * (centerLamp * 0.55 + lampGlow * 0.48) * uSidechain;
-  floorCol += mix(uWaterGlow, uPetalBright, 0.45) * rippleCaustic * 0.28;
+  vec3 crispAqua = mix(vec3(0.84, 0.93, 1.0), uWaterGlow, 0.42);
+  floorCol += crispAqua * caustics * (0.12 + 0.18 * uCenterSurge + 0.10 * cAngVal) * mix(1.0, 0.68, uCoverMood) * uSidechain;
+  floorCol += mix(uWaterGlow, crispAqua, 0.35) * (centerLamp * 0.36 + ringLamp * 0.30) * uSidechain;
 
-  // 薄水深吸收与清澈透射
-  vec3 underWater = mix(floorCol, uWaterDeep, 0.18);
+  // 比尔-朗伯定律（Beer-Lambert）清澈水体透射吸收：视角越倾斜水程越长，呈现深邃通透的液态层次
+  float opticalPath = waterDepth / max(0.28, -refr.y);
+  vec3 waterTint = mix(uWaterDeep * 0.76, uWaterDeep * 1.10 + vec3(0.01, 0.025, 0.04), 0.45);
+  float transmit = exp(-opticalPath * 0.32);
+  vec3 underWater = mix(waterTint, floorCol, transmit);
 
-  // 3. 菲涅尔镜面反射：倒映封面色天穹、中心冲天发光水柱与池畔双层花海流光
+  // 3. 真实物理镜面反射（Analytical 3D Ray-Scene Water Reflection + 双瓣 GGX 液态波面反光）
   vec3 R = reflect(-V, N);
-  float fresnel = 0.06 + 0.86 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
-  vec3 reflSky = mix(uSkyHorizon, uSkyTop, smoothstep(0.0, 0.55, max(0.0, R.y)));
+  vec3 reflDir = safeNorm(vec3(R.x, max(0.025, R.y), R.z));
 
-  // 水面上的中心水柱与花坛花海长倒影（随水波自然摇曳拉长）
-  float jetRefl = exp(-pow(r * 0.38, 2.0)) * (0.35 + 0.85 * uCenterSurge);
-  float flowerRefl = smoothstep(5.2, 8.45, r) * (0.32 + 0.25 * sin(ang * 8.0 + grad.x * 18.0));
-  vec3 reflCol = reflSky
-    + mix(uWaterGlow, vec3(1.0), 0.45) * jetRefl * 0.55 * uSidechain
-    + mix(uPetalPrimary, uPetalBright, 0.4) * flowerRefl * 0.42 * uSidechain;
+  // 3a) 倒映天空渐变、流云与前方月华/霞光亮带
+  float rElev = clamp(reflDir.y, 0.0, 1.0);
+  vec3 reflSky = mix(uSkyHorizon, uSkyMid, smoothstep(0.0, 0.32, rElev));
+  reflSky = mix(reflSky, uSkyTop, smoothstep(0.24, 0.82, rElev));
+  float rAz = atan(reflDir.x, -reflDir.z);
+  float rClouds = fbm3(vec2(rAz * 2.2 + uFlow * 0.035, rElev * 3.8 - uFlow * 0.015));
+  reflSky += mix(uSkyHorizon, uMistGlow, 0.55) * smoothstep(0.40, 0.84, rClouds) * (1.0 - smoothstep(0.55, 0.95, rElev)) * 0.36;
+  // 增强天空反射中的通透天光银辉，确保深暗封面下水面依然有清晰镜面反光对比
+  vec3 skySheenCol = mix(vec3(0.76, 0.84, 0.96), mix(uMistGlow, vec3(1.0), 0.48), 0.62);
+  float backSlope = clamp(-grad.y * 4.5 + length(grad) * 1.8, 0.0, 1.0);
+  reflSky = mix(reflSky, skySheenCol * (0.42 + 0.32 * uCoverMood + 0.18 * uCenterSurge), 0.28 + 0.36 * backSlope);
 
-  vec3 col = mix(underWater, reflCol, clamp(fresnel, 0.06, 0.84));
+  // 3b) 反射射线与上方池心冲天水柱簇的三维真实光线求交（被水波自然切分为晃动的晶莹长倒影！）
+  vec2 rHoriz = reflDir.xz;
+  float rHorizLen2 = max(dot(rHoriz, rHoriz), 1e-4);
+  float tClosest = max(0.0, -dot(xz, rHoriz) / rHorizLen2);
+  vec2 closestPt = xz + rHoriz * tClosest;
+  float distToCenterAxis = length(closestPt);
+  float hitCenterY = tClosest * reflDir.y;
+  float activeJetH = 2.4 + 5.6 * uCenterSurge;
+  float colHit = exp(-safePow(distToCenterAxis / (0.62 + 0.22 * hitCenterY), 2.0))
+               * smoothstep(-0.1, 0.35, hitCenterY)
+               * (1.0 - smoothstep(activeJetH * 0.65, activeJetH * 1.15, hitCenterY));
+  vec3 fountainCrystal = mix(vec3(0.95, 0.98, 1.0), uWaterGlow, 0.22);
+  vec3 reflFountain = fountainCrystal * colHit * (0.65 + 0.85 * uCenterSurge) * uSidechain;
 
-  // 波峰高光镶边与反拍开镲星芒微闪
-  float crestSpec = pow(clamp(length(grad) * 12.5, 0.0, 1.0), 1.75);
-  col += mix(uWaterGlow, vec3(1.0), 0.55) * crestSpec * (0.22 + 0.28 * uCenterSurge);
+  // 3c) 反射射线与上方 24 道抛物线水拱及外圈 36 道水冠的三维平面求交倒影
+  float tArcPlane = 1.45 / max(0.10, reflDir.y);
+  vec2 arcHitXZ = xz + reflDir.xz * tArcPlane;
+  float arcHitR = length(arcHitXZ);
+  float arcHitAng = atan(arcHitXZ.y, arcHitXZ.x);
+  float arcSpokes = safePow(clamp(0.5 + 0.5 * cos(arcHitAng * 12.0 + grad.x * 8.0), 0.0, 1.0), 4.0);
+  float arcBand = exp(-safePow(abs(arcHitR - 4.5) / 1.85, 2.0)) * arcSpokes * (0.25 + 0.75 * uSectionEnergy);
+  float outerCrownRefl = exp(-safePow(abs(arcHitR - 7.55) / 0.55, 2.0))
+                       * (0.55 + 0.45 * cos(arcHitAng * 36.0)) * (0.30 + 0.60 * uSectionEnergy);
+  reflFountain += fountainCrystal * (arcBand * 0.48 + outerCrownRefl * 0.42) * uSidechain;
 
-  if (uHatSparkle > 0.02) {
-    float glintNoise = vnoise(xz * 14.0 + vec2(uTime * 2.5, -uTime * 1.9));
-    float glint = smoothstep(0.84, 0.985, glintNoise) * (0.35 + 2.5 * length(grad));
-    col += mix(uPetalBright, vec3(1.0), 0.65) * glint * uHatSparkle * 1.35;
+  // 3d) 池边双层石砌花海与洗墙灯带的柔和近岸倒影
+  float tBankPlane = 0.85 / max(0.08, reflDir.y);
+  vec2 bankHitXZ = xz + reflDir.xz * tBankPlane;
+  float bankHitR = length(bankHitXZ);
+  float bankMask = smoothstep(8.2, 9.6, bankHitR) * (1.0 - smoothstep(14.5, 18.0, bankHitR));
+  vec3 bankReflCol = mix(uPetalPrimary, uPetalBright, 0.5 + 0.5 * sin(atan(bankHitXZ.y, bankHitXZ.x) * 7.0));
+  vec3 reflTotal = reflSky + reflFountain + bankReflCol * bankMask * 0.36 * uSidechain;
+
+  // 改良液态水体菲涅尔系数：正视清澈透出池底封面，斜视与波浪背面平滑涌现清亮镜面反光
+  float schlick = safePow(1.0 - ndv, 4.2);
+  float fresnel = clamp(0.10 + 0.76 * schlick + 0.16 * backSlope, 0.08, 0.88);
+  vec3 col = mix(underWater, reflTotal, fresnel);
+
+  // 4. 关键光学灵魂：多光源 GGX 微表面镜面波光（确保平视与 crown 高俯视下水面均有极真实的晶莹高光反光！）
+  // 光源 A：前方天际主霞光/月光（驱动平视与斜视波光大道）
+  vec3 L_horizon = safeNorm(vec3(0.16, 0.40, -0.90));
+  vec3 H_horizon = safeNorm(L_horizon + V);
+  // 光源 B：庭院前上方晴空/月华漫射主光（专为 crown 俯视与 orbit 中景提供波面与涟漪月牙高光！）
+  vec3 L_zenith = safeNorm(vec3(-0.14, 0.80, -0.58));
+  vec3 H_zenith = safeNorm(L_zenith + V);
+  // 光源 C：池心冲天发光水柱近场点光源（让每一圈同心涟漪朝向池心的波坡闪耀灵动水光！）
+  vec3 fountainLightPos = vec3(0.0, 2.6 + 2.2 * uCenterSurge, 0.0);
+  vec3 L_fountain = safeNorm(fountainLightPos - vWorldPos);
+  vec3 H_fountain = safeNorm(L_fountain + V);
+
+  float specSharp = ggxDistribution(N, H_horizon, 0.065) * 0.22
+                  + ggxDistribution(N, H_zenith, 0.075) * 0.20
+                  + ggxDistribution(N, H_fountain, 0.095) * (0.12 + 0.24 * uCenterSurge) * exp(-r * 0.14);
+  float specSilky = ggxDistribution(N, H_horizon, 0.24) * 0.12
+                  + ggxDistribution(N, H_zenith, 0.26) * 0.14;
+
+  // 仅在存在波面起伏与涟漪斜率时绽放灵动碎银波光，避免平水死白遮挡池底封面
+  float waveSparkleGate = 0.32 + 0.68 * smoothstep(0.008, 0.055, length(grad));
+  vec3 specTint = mix(vec3(0.96, 0.985, 1.0), uMistGlow, 0.22);
+  col += specTint * (min(specSharp, 3.2) * waveSparkleGate + min(specSilky, 0.85)) * (0.78 + 0.28 * uHatSparkle);
+
+  // 水拱落点中心瞬时清透水花微沫
+  if (splashFoam > 0.002) {
+    col += vec3(0.95, 0.98, 1.0) * min(splashFoam, 0.85);
   }
 
-  // 池沿石壁内侧柔和暗影接触过渡
-  float edgeShadow = 1.0 - 0.28 * smoothstep(7.95, 8.55, r);
-  col *= edgeShadow;
+  // 池沿石壁内侧水深微暗角与弯液面高光边（Meniscus Rim）
+  float meniscus = exp(-safePow(abs(r - 8.42) / 0.06, 2.0));
+  col += specTint * meniscus * 0.18;
+  col *= 1.0 - 0.22 * smoothstep(8.05, 8.55, r);
 
-  gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(10.0)), 1.0);
 }
 `;
 
@@ -804,12 +961,12 @@ void main() {
   vPetal = aPetal;
   vColorSeed = vec2(aInstStyle.y, aInstStyle.w);
 
-  // 底鼓径向绽放波：掠过花坛时花瓣微张、花冠轻抬
   float r = length(aInstPos.xz);
   float waveBloom = 0.0;
   if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
     float waveR = 8.4 + uKickWaveAge * 6.5;
-    waveBloom = exp(-pow((r - waveR) / 0.95, 2.0)) * exp(-uKickWaveAge * 1.25);
+    float dR = (r - waveR) / 0.95;
+    waveBloom = exp(-dR * dR) * exp(-uKickWaveAge * 1.25);
   }
 
   vec3 lp = position;
@@ -820,20 +977,19 @@ void main() {
   }
   lp *= aInstPos.w * (1.0 + 0.09 * waveBloom);
 
-  // 绕 Y 轴实例旋转 + 朝向水池中心的自然倾角
   float yaw = aInstStyle.x;
   float cy = cos(yaw), sy = sin(yaw);
   vec3 rp = vec3(lp.x * cy - lp.z * sy, lp.y, lp.x * sy + lp.z * cy);
   vec3 rn = vec3(normal.x * cy - normal.z * sy, normal.y, normal.x * sy + normal.z * cy);
 
-  // 庭院微风轻拂摇曳（纯时间函数）
   float breeze = 0.045 + 0.035 * uSectionEnergy;
   float sx = sin(uTime * 1.45 + aInstStyle.z + aInstPos.x * 0.35) * breeze * (0.35 + rp.y * 2.5);
   float sz = cos(uTime * 1.22 + aInstStyle.z * 1.3 + aInstPos.z * 0.35) * breeze * (0.35 + rp.y * 2.5);
 
   vec3 wp = aInstPos.xyz + rp + vec3(sx, 0.025 * waveBloom, sz);
   vWorldPos = wp;
-  vNormalW = normalize(rn);
+  float rnl = length(rn);
+  vNormalW = rnl > 1e-5 ? rn / rnl : vec3(0.0, 1.0, 0.0);
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -852,38 +1008,34 @@ varying vec3 vPetal;
 varying vec3 vNormalW;
 varying vec3 vWorldPos;
 varying vec2 vColorSeed;
+${GLSL_NOISE}
 
 void main() {
   float u = vPetal.x;
   float v = vPetal.y;
   float layer = vPetal.z;
 
-  vec3 N = normalize(vNormalW);
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  // 喷泉池心主光源方向
+  vec3 N = safeNorm(vNormalW);
+  vec3 V = safeNorm(cameraPosition - vWorldPos);
   vec3 toCenter = vec3(0.0, 2.6, 0.0) - vWorldPos;
-  float distCenter = length(toCenter) + 1e-3;
-  vec3 L = toCenter / distCenter;
+  vec3 L = safeNorm(toCenter);
 
   float r = length(vWorldPos.xz);
   float waveGlow = 0.0;
   if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
     float waveR = 8.4 + uKickWaveAge * 6.5;
-    waveGlow = exp(-pow((r - waveR) / 0.95, 2.0)) * exp(-uKickWaveAge * 1.25);
+    waveGlow = exp(-safePow(abs(r - waveR) / 0.95, 2.0)) * exp(-uKickWaveAge * 1.25);
   }
 
   vec3 col;
   if (layer > 1.5) {
-    // 发光暖金/封面高光花蕊核心，与深邃花心暗影形成精致反差
-    col = mix(uPetalBright, vec3(1.0, 0.94, 0.76), 0.48) * (1.15 + 0.45 * uSectionEnergy + 0.55 * waveGlow);
+    col = mix(uPetalBright, vec3(1.0, 0.94, 0.76), 0.48) * (1.10 + 0.40 * uSectionEnergy + 0.48 * waveGlow);
   } else {
-    // 封面主色、邻近辅色与奶油亮瓣的自然混种过渡，叠加单朵微明暗差以凸显近景花朵立体层次
     vec3 speciesCol = vColorSeed.x < 0.56
       ? mix(uPetalPrimary, uPetalAccent, vColorSeed.x / 0.56)
       : mix(uPetalAccent, uPetalBright, (vColorSeed.x - 0.56) / 0.44);
     float bloomVar = 0.84 + 0.30 * fract(vColorSeed.x * 13.7 + vColorSeed.y * 5.3);
 
-    // 花心杯状环境光遮蔽 (Cup AO)：令每朵花瓣根部深邃浓郁、瓣尖晶莹透亮，拒绝近景糊成一片
     float cupAo = 0.36 + 0.64 * smoothstep(0.02, 0.68, v);
     float edgeSoft = smoothstep(0.55, 0.98, abs(u));
     float vein = 0.92 + 0.08 * cos(u * 18.0);
@@ -891,24 +1043,22 @@ void main() {
     vec3 tipCol = mix(speciesCol, uPetalBright, 0.42 + 0.24 * layer + 0.18 * edgeSoft);
     col = mix(baseRoot, tipCol, smoothstep(0.10, 0.92, v)) * vein * cupAo * bloomVar;
 
-    // 次表面半透明背光透射 (Subsurface Translucency) + 菲涅尔柔光瓣缘
     float ndl = clamp(dot(N, L), 0.0, 1.0);
     float backTrans = clamp(dot(-N, L), 0.0, 1.0) * (0.28 + 0.72 * v);
-    float rim = pow(1.0 - clamp(abs(dot(N, V)), 0.0, 1.0), 2.5) * smoothstep(0.15, 0.85, v);
+    float rim = safePow(1.0 - clamp(abs(dot(N, V)), 0.0, 1.0), 2.5) * smoothstep(0.15, 0.85, v);
     float fountainFalloff = exp(-max(0.0, r - 8.6) * 0.16);
 
     float lightGain = 0.48 + 0.46 * ndl + 0.42 * backTrans * fountainFalloff;
     col *= lightGain * uSidechain;
-    col += mix(speciesCol, uPetalBright, 0.65) * (rim * 0.26 + backTrans * 0.20 * fountainFalloff + waveGlow * 0.48);
+    col += mix(speciesCol, uPetalBright, 0.65) * (rim * 0.24 + backTrans * 0.18 * fountainFalloff + waveGlow * 0.42);
 
-    // 花瓣边缘露珠在高频开镲时的晶莹微闪
     if (uHatSparkle > 0.04 && v > 0.68) {
-      float dew = fract(sin(dot(floor(vWorldPos.xz * 28.0), vec2(12.9898, 78.233))) * 43758.5453);
-      if (dew > 0.93) col += vec3(0.95) * uHatSparkle * 0.55;
+      float dew = hash21(floor(vWorldPos.xz * 28.0));
+      if (dew > 0.94) col += vec3(0.92, 0.96, 1.0) * uHatSparkle * 0.48;
     }
   }
 
-  gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+  gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(10.0)), 1.0);
 }
 `;
 
@@ -932,7 +1082,8 @@ void main() {
   float sway = sin(uTime * 1.25 + aInstRot.y + aInstPos.x * 0.3) * (0.03 + 0.025 * uSectionEnergy) * uv.y;
   vec3 wp = aInstPos.xyz + rp + vec3(sway, 0.0, sway * 0.7);
   vWorldPos = wp;
-  vNormalW = normalize(rn);
+  float rnl = length(rn);
+  vNormalW = rnl > 1e-5 ? rn / rnl : vec3(0.0, 1.0, 0.0);
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -945,24 +1096,25 @@ uniform float uSidechain;
 varying vec2 vUv;
 varying vec3 vNormalW;
 varying vec3 vWorldPos;
+${GLSL_NOISE}
 
 void main() {
-  vec3 N = normalize(vNormalW);
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  vec3 L = normalize(vec3(0.0, 3.0, 0.0) - vWorldPos);
+  vec3 N = safeNorm(vNormalW);
+  vec3 V = safeNorm(cameraPosition - vWorldPos);
+  vec3 L = safeNorm(vec3(0.0, 3.0, 0.0) - vWorldPos);
   float ndl = clamp(dot(N, L), 0.0, 1.0);
-  float rim = pow(1.0 - clamp(abs(dot(N, V)), 0.0, 1.0), 2.6);
+  float rim = safePow(1.0 - clamp(abs(dot(N, V)), 0.0, 1.0), 2.6);
   float r = length(vWorldPos.xz);
   float poolReach = exp(-max(0.0, r - 8.6) * 0.18);
 
   vec3 col = mix(uFoliageDeep, uFoliageRim, smoothstep(0.05, 0.92, vUv.y));
   col *= (0.48 + 0.52 * ndl) * uSidechain;
-  col += mix(uFoliageRim, uWaterGlow, 0.45) * rim * 0.24 * poolReach;
-  gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
+  col += mix(uFoliageRim, uWaterGlow, 0.45) * rim * 0.22 * poolReach;
+  gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(8.0)), 1.0);
 }
 `;
 
-// 6. 池心主水柱、内冠副柱与外圈 36 道波浪水冠通用流线体积水舞着色器
+// 6. 池心多层皇冠清澈水柱簇着色器（细密高速液丝 + 清透折射水色 + 顶端瑞利微水珠剥离）
 const JET_VERT = /* glsl */ `
 attribute vec4 aNozzle;  // x, z, radiusScale, indexNorm(0..1)
 attribute vec4 aJetDyn;  // x: height, y: tiltOut, z: glowIntensity, w: phaseSeed
@@ -976,18 +1128,18 @@ void main() {
   vUv = uv;
   vGlow = aJetDyn.z;
   vSeed = aJetDyn.w;
-  float h = max(0.25, aJetDyn.x);
+  float h = max(0.30, aJetDyn.x);
   vHeightNorm = clamp(h / 8.5, 0.08, 1.0);
 
   vec3 lp = position;
   lp.xz *= aNozzle.z;
   lp.y *= h;
 
-  // 外圈水冠沿径向向外优雅微倾成盛开水莲状
+  // 护卫副水柱沿径向优雅向外舒展弯曲，顶端呈自然抛物线微垂
   float rNoz = length(aNozzle.xy);
-  vec2 radDir = rNoz > 0.05 ? aNozzle.xy / rNoz : vec2(0.0);
-  float flare = aJetDyn.y * uv.y * uv.y * h * 0.22;
-  vec3 wp = vec3(aNozzle.x + radDir.x * flare, lp.y - 0.03, aNozzle.y + radDir.y * flare) + vec3(lp.x, 0.0, lp.z);
+  vec2 radDir = rNoz > 0.04 ? aNozzle.xy / rNoz : vec2(0.0);
+  float flare = aJetDyn.y * (0.45 * uv.y + 0.55 * uv.y * uv.y) * h * 0.24;
+  vec3 wp = vec3(aNozzle.x + radDir.x * flare, lp.y - 0.02, aNozzle.y + radDir.y * flare) + vec3(lp.x, 0.0, lp.z);
 
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
@@ -1007,52 +1159,83 @@ varying float vHeightNorm;
 ${GLSL_NOISE}
 
 void main() {
-  float across = abs(vUv.x * 2.0 - 1.0); // 0 为水柱中轴，1 为水雾外缘
+  float signedX = vUv.x * 2.0 - 1.0;
+  float across = abs(signedX);
   float v = vUv.y;
 
-  // 高速向上喷射的多尺度液丝与雾化泡沫纹理
-  vec2 streakUv1 = vec2(vUv.x * 5.5 + vSeed * 7.1, v * (5.5 + 4.5 * vHeightNorm) - uTime * 8.6);
-  vec2 streakUv2 = vec2(vUv.x * 11.0 - vSeed * 3.7, v * 11.0 - uTime * 12.4);
-  float n1 = vnoise(streakUv1);
-  float n2 = vnoise(streakUv2);
-  float filament = 0.58 * n1 + 0.42 * n2;
+  // 1. 高速向上蹿升的细密液态水丝场（18~32 股清晰可辨的纤细水线，拒绝糊成一团白雾）
+  float speed = 9.5 + 3.5 * vHeightNorm;
+  vec2 fineUv1 = vec2(vUv.x * 16.0 + vSeed * 11.3, v * (7.5 + 5.5 * vHeightNorm) - uTime * speed);
+  vec2 fineUv2 = vec2(vUv.x * 30.0 - vSeed * 7.7, v * 15.0 - uTime * (speed * 1.32));
+  float s1 = vnoise(fineUv1);
+  float s2 = vnoise(fineUv2);
 
-  // 水柱向上逐渐雾化破碎，绝无生硬圆柱顶盖截断
-  float radialMask = 1.0 - smoothstep(0.15, 0.98, across + 0.24 * v * (1.0 - n1));
-  float topBreakup = 1.0 - smoothstep(0.66 + 0.18 * n1, 0.99, v);
-  float baseSoft = smoothstep(0.0, 0.06, v);
-  float alpha = radialMask * topBreakup * baseSoft * (0.42 + 0.55 * filament);
-  if (alpha < 0.012) discard;
+  // 提取锐利纤细的高速液丝（Liquid Strands）与中后段断裂的晶莹小水珠（Micro-Droplets）
+  float strandPattern = smoothstep(0.38, 0.88, 0.56 * s1 + 0.44 * s2);
+  vec2 dropGrid = vec2(vUv.x * 24.0 + vSeed * 19.0, v * 34.0 - uTime * (speed * 1.18));
+  vec2 dropId = floor(dropGrid);
+  vec2 dropF = fract(dropGrid) - 0.5;
+  float dropRnd = hash21(dropId);
+  float droplet = step(0.56, dropRnd) * (1.0 - smoothstep(0.08, 0.36, length(dropF * vec2(1.1, 0.75))));
 
-  // 水下射灯次表面透光：基座浓郁封面亮色，向上渐变为晶莹白沫与星点水珠
-  float coreMask = exp(-across * across * 5.2) * smoothstep(0.35, 0.92, filament);
-  vec3 baseLight = mix(uWaterGlow, uPetalBright, 0.35 + 0.35 * sin(vSeed * 6.28));
-  vec3 col = mix(baseLight, uFoamWhite, clamp(0.28 + 0.52 * v + 0.45 * coreMask, 0.0, 1.0));
+  // 2. 流体物理分段轮廓：底部喷口层流晶莹凝练，向上逐渐拉丝并散落为细碎水珠冠
+  float taperWidth = mix(0.46, 0.96, smoothstep(0.0, 0.85, v));
+  float normR = across / max(taperWidth, 0.1);
+  if (normR > 1.02) discard;
 
-  float hdrGain = (0.78 + 0.95 * vGlow + 0.55 * coreMask) * (0.82 + 0.24 * uSidechain);
-  // 顶端细碎水珠受反拍开镲点亮微闪
-  if (uHatSparkle > 0.03 && v > 0.55) {
-    hdrGain += smoothstep(0.75, 0.96, n2) * uHatSparkle * 0.95;
+  float radialEnvelope = 1.0 - smoothstep(0.28, 1.0, normR);
+  float topFeather = 1.0 - smoothstep(0.68 + 0.22 * s1, 0.995, v);
+  float baseEntry = smoothstep(0.0, 0.035, v);
+
+  // 核心高速水脊线 + 细密水丝 + 顶部飞散微水珠，间隙保持通透清澈！
+  float laminarCore = exp(-normR * normR * 9.5) * (1.0 - 0.45 * v);
+  float breakupMix = smoothstep(0.22, 0.78, v);
+  float detailStructure = mix(
+    0.35 + 0.65 * strandPattern,
+    0.55 * strandPattern + 0.85 * droplet,
+    breakupMix
+  );
+
+  float alpha = radialEnvelope * topFeather * baseEntry * clamp(laminarCore * 0.72 + detailStructure * 0.58, 0.0, 1.0);
+  if (alpha < 0.015) discard;
+
+  // 3. 清澈水体光学着色：纯净冰白镜面高光为主，仅喷口基座微染清透水下灯光，绝不浑浊发粉！
+  vec3 crystalWhite = mix(vec3(0.96, 0.985, 1.0), uFoamWhite, 0.24);
+  vec3 clearAqua = mix(vec3(0.80, 0.90, 1.0), uWaterGlow, 0.38);
+  float baseUplight = exp(-v * 4.2); // 仅底部 25% 折射池底封面色水下灯
+  vec3 bodyTint = mix(clearAqua, mix(uWaterGlow, uPetalBright, 0.35), baseUplight * 0.72);
+
+  // 镜面折射亮丝（水束两侧菲涅尔亮边 + 中心纯白水芯 + 水珠闪点）
+  float fresnelRim = exp(-safePow(abs(normR - 0.56) / 0.18, 2.0)) * strandPattern;
+  float specHighlight = clamp(laminarCore * 0.85 + strandPattern * 0.52 + droplet * 0.90 + fresnelRim * 0.45, 0.0, 1.0);
+  vec3 col = mix(bodyTint * 0.88, crystalWhite, smoothstep(0.18, 0.82, specHighlight));
+
+  float hdrGain = (0.72 + 0.68 * vGlow + 0.55 * specHighlight) * (0.86 + 0.18 * uSidechain);
+  if (uHatSparkle > 0.03) {
+    hdrGain += droplet * uHatSparkle * 0.85;
   }
 
-  gl_FragColor = vec4(col * hdrGain, clamp(alpha * (0.62 + 0.38 * vGlow), 0.0, 0.92));
+  // 控制透明叠加上限（保持水流清澈透景，不糊成死白块）
+  float outAlpha = clamp(alpha * (0.42 + 0.34 * specHighlight) * (0.75 + 0.25 * vGlow), 0.0, 0.78);
+  gl_FragColor = vec4(clamp(col * hdrGain, vec3(0.0), vec3(10.0)), outAlpha);
 }
 `;
 
-// 7. 中圈 12×2 音阶抛物线交织水拱着色器（屏幕法线叉乘展宽，支持发光水包脉冲追逐）
+// 7. 抛物线水晶水束着色器（统一驱动中圈 24 道交织音阶水拱 + 外圈 36 道向心水晶水冠，共 60 道纤细清澈水弧）
 const ARC_VERT = /* glsl */ `
 attribute vec4 aArcGeom;  // x: rStart, y: rEnd, z: thetaStart, w: thetaEnd
-attribute vec4 aArcState; // x: apexHeight, y: baseFlowLevel, z: pulsePos(-1..1.3), w: pulseAmp
+attribute vec4 aArcState; // x: apexHeight, y: baseFlowLevel, z: pulsePos(-1..1.3), w: pulseAmp (负值标记外圈纤巧水冠)
 uniform float uTime;
 varying vec2 vUv;
 varying float vFlowLevel;
 varying float vPulse;
 varying float vSeed;
+varying float vIsOuterCrown;
 
 vec3 evalParabola(float s, float r0, float r1, float a0, float a1, float hMax) {
   float r = mix(r0, r1, s);
   float a = mix(a0, a1, s);
-  float y = 4.0 * hMax * s * (1.0 - s) - 0.02;
+  float y = 4.0 * hMax * s * (1.0 - s) - 0.015;
   return vec3(cos(a) * r, y, sin(a) * r);
 }
 
@@ -1063,27 +1246,39 @@ void main() {
   vFlowLevel = aArcState.y;
   vSeed = fract(aArcGeom.z * 0.731 + aArcGeom.x * 0.17);
 
-  // 计算主旋律音头触发的水包沿抛物线轨迹推进的高斯包络
+  // aArcState.w < 0 用于标记外圈 36 道纤巧向心水冠（喷射到抛物线前 72% 自然垂落散成微水珠，如盛开水晶莲瓣）
+  float isOuter = aArcState.w < -0.5 ? 1.0 : 0.0;
+  vIsOuterCrown = isOuter;
+  float sEff = isOuter > 0.5 ? s * 0.76 : s;
+
   float pPos = aArcState.z;
-  float pEnv = (pPos >= -0.25 && pPos <= 1.25)
-    ? exp(-pow((s - pPos) / 0.16, 2.0)) * aArcState.w
+  float rawAmp = max(0.0, aArcState.w);
+  float pEnv = (isOuter < 0.5 && pPos >= -0.25 && pPos <= 1.25)
+    ? exp(-((s - pPos) * (s - pPos)) / 0.022) * rawAmp
     : 0.0;
   vPulse = pEnv;
 
-  float hMax = max(0.35, aArcState.x * (1.0 + 0.18 * pEnv));
-  vec3 center = evalParabola(s, aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
-  vec3 ahead = evalParabola(min(1.0, s + 0.02), aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
-  vec3 behind = evalParabola(max(0.0, s - 0.02), aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
-  vec3 tangent = normalize(ahead - behind);
+  float hMax = max(0.32, aArcState.x * (1.0 + 0.16 * pEnv));
+  vec3 center = evalParabola(sEff, aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
+  vec3 ahead = evalParabola(min(1.0, sEff + 0.018), aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
+  vec3 behind = evalParabola(max(0.0, sEff - 0.018), aArcGeom.x, aArcGeom.y, aArcGeom.z, aArcGeom.w, hMax);
+  vec3 diff = ahead - behind;
+  float dl = length(diff);
+  vec3 tangent = dl > 1e-5 ? diff / dl : vec3(0.0, 1.0, 0.0);
 
-  vec3 toCam = normalize(cameraPosition - center);
+  vec3 toCam = cameraPosition - center;
+  float tcl = length(toCam);
+  toCam = tcl > 1e-5 ? toCam / tcl : vec3(0.0, 0.0, 1.0);
   vec3 right = cross(tangent, toCam);
   float rl = length(right);
   right = rl > 1e-4 ? right / rl : vec3(1.0, 0.0, 0.0);
 
-  // 水束宽度：喷口纤细凝练，拱顶与落水段微散成晶莹水珠带，脉冲经过处饱满鼓起
-  float width = (0.065 + 0.075 * sin(s * 3.14159265) + 0.065 * pEnv) * (0.65 + 0.45 * clamp(vFlowLevel + pEnv, 0.0, 1.2));
-  vec3 wp = center + right * (side * width);
+  // 凝练纤细且柔顺抗锯齿的水晶水束宽度：内含玻璃折射细芯，外裹微透明水膜柔边
+  float baseW = isOuter > 0.5
+    ? (0.032 + 0.028 * sin(s * 3.14159265)) * (0.76 + 0.34 * vFlowLevel)
+    : (0.042 + 0.038 * sin(s * 3.14159265) + 0.036 * pEnv) * (0.72 + 0.38 * clamp(vFlowLevel + pEnv, 0.0, 1.2));
+
+  vec3 wp = center + right * (side * baseW);
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -1099,71 +1294,66 @@ varying vec2 vUv;
 varying float vFlowLevel;
 varying float vPulse;
 varying float vSeed;
+varying float vIsOuterCrown;
 ${GLSL_NOISE}
 
 void main() {
   float across = abs(vUv.x * 2.0 - 1.0);
+  if (across > 0.99) discard;
   float s = vUv.y;
 
-  // 沿抛物线高速飞跃的液滴流线纹理
-  vec2 flowUv = vec2(vUv.x * 3.5 + vSeed * 9.0, s * 9.5 - uTime * 5.8);
-  float stream = 0.60 * vnoise(flowUv) + 0.40 * vnoise(flowUv * 2.3 + vec2(3.1, -uTime * 2.4));
+  // 1. 高速层流液丝与屏幕空间抗锯齿瑞利（Rayleigh-Plateau）圆润液滴串
+  float flowRate = vIsOuterCrown > 0.5 ? 6.4 : 5.8;
+  vec2 filamentUv = vec2(vUv.x * 7.5 + vSeed * 13.0, s * 13.5 - uTime * flowRate);
+  float filament = 0.60 * vnoise(filamentUv) + 0.40 * vnoise(filamentUv * 2.1 + vec2(4.7, -uTime * 2.8));
+  float crispStrands = smoothstep(0.32, 0.84, filament);
 
-  float radial = 1.0 - smoothstep(0.10, 0.96, across);
-  float ends = smoothstep(0.0, 0.05, s) * (1.0 - smoothstep(0.92, 1.0, s));
-  float vis = clamp(vFlowLevel * 0.85 + vPulse * 1.15, 0.0, 1.35);
-  float alpha = radial * ends * (0.35 + 0.65 * stream) * vis;
+  // 连续平滑的瑞利波包液珠串 + fwidth 距离自适应抗锯齿（近景颗颗晶莹水滴，远景丝滑清亮水线零锯齿）
+  float beadCoord = s * 28.0 - uTime * (flowRate * 1.32) + vSeed * 31.0;
+  float fw = fwidth(beadCoord);
+  float aaFade = 1.0 - smoothstep(0.28, 0.85, fw);
+  float waveBead1 = 0.5 + 0.5 * sin(beadCoord * 6.2831853 + filament * 2.6);
+  float waveBead2 = 0.5 + 0.5 * sin(beadCoord * 3.71 - uTime * 3.4 + vSeed * 11.0);
+  float radialDrop = exp(-across * across * 6.5);
+  float rawBead = smoothstep(0.46, 0.92, waveBead1 * (0.55 + 0.45 * waveBead2)) * radialDrop;
+  float bead = mix(0.42 * radialDrop, rawBead, aaFade);
+
+  // 2. 初段清透玻璃层流管（柔滑菲涅尔双折射亮边 + 纯白高光银芯） -> 中后段柔顺拉丝液珠链
+  float glassCore = exp(-across * across * 14.0);
+  float glassRim = exp(-safePow(abs(across - 0.56) / 0.18, 2.0));
+  float laminarGlass = clamp(glassCore * 0.90 + glassRim * 0.62 + 0.22 * (1.0 - across), 0.0, 1.0);
+
+  float breakup = vIsOuterCrown > 0.5
+    ? smoothstep(0.26, 0.84, s)
+    : smoothstep(0.32, 0.82, s);
+  float liquidDetail = mix(laminarGlass, 0.54 * crispStrands + 0.78 * bead + 0.42 * glassCore, breakup);
+
+  float radialSoft = 1.0 - smoothstep(0.56, 0.99, across);
+  float endFade = vIsOuterCrown > 0.5
+    ? smoothstep(0.0, 0.045, s) * (1.0 - smoothstep(0.66, 0.99, s))
+    : smoothstep(0.0, 0.045, s) * (1.0 - smoothstep(0.92, 1.0, s));
+
+  float activity = clamp(vFlowLevel * 0.90 + vPulse * 1.22, 0.0, 1.4);
+  float alpha = radialSoft * endFade * liquidDetail * activity;
   if (alpha < 0.012) discard;
 
-  float core = exp(-across * across * 6.0);
-  vec3 tint = mix(uWaterGlow, uPetalBright, 0.35 + 0.45 * s);
-  vec3 col = mix(tint, uFoamWhite, clamp(0.32 + 0.48 * core + 0.35 * vPulse, 0.0, 1.0));
+  // 3. 清澈透明水晶着色：剔除乳白粉雾，仅喷口微带封面折射光，水拱通体冰清晶亮
+  vec3 crystalWhite = mix(vec3(0.97, 0.99, 1.0), uFoamWhite, 0.18);
+  vec3 nozzleTint = mix(vec3(0.82, 0.91, 1.0), mix(uWaterGlow, uPetalBright, 0.32), exp(-s * 4.5) * 0.72);
+  float specMask = clamp(glassCore * 0.85 + glassRim * 0.45 + bead * 0.88 + vPulse * 0.45, 0.0, 1.0);
+  vec3 col = mix(nozzleTint, crystalWhite, smoothstep(0.14, 0.74, specMask));
 
-  float gain = (0.85 + 1.25 * vPulse + 0.55 * vFlowLevel + 0.40 * core) * (0.85 + 0.22 * uSidechain);
+  float gain = (0.76 + 1.02 * vPulse + 0.42 * vFlowLevel + 0.50 * specMask) * (0.88 + 0.18 * uSidechain);
   if (uHatSparkle > 0.03) {
-    gain += smoothstep(0.78, 0.97, stream) * uHatSparkle * 0.75;
+    gain += bead * uHatSparkle * 0.75;
   }
 
-  gl_FragColor = vec4(col * gain, clamp(alpha * 0.86, 0.0, 0.94));
+  float outAlpha = clamp(alpha * (0.48 + 0.34 * specMask), 0.0, 0.80);
+  gl_FragColor = vec4(clamp(col * gain, vec3(0.0), vec3(10.0)), outAlpha);
 }
 `;
 
-// 8. 水下射灯丁达尔体积光束锥着色器
-const CONE_VERT = /* glsl */ `
-attribute vec4 aConeSpec; // x, z, radiusScale, heightScale
-varying vec2 vUv;
-varying vec3 vWorldPos;
-varying vec3 vNormalW;
-void main() {
-  vUv = uv;
-  vec3 lp = position * vec3(aConeSpec.z, aConeSpec.w, aConeSpec.z);
-  vec3 wp = lp + vec3(aConeSpec.x, 0.0, aConeSpec.y);
-  vWorldPos = wp;
-  vNormalW = normalize(normal);
-  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
-}
-`;
-
-const CONE_FRAG = /* glsl */ `
-uniform vec3 uMistGlow;
-uniform vec3 uWaterGlow;
-uniform float uCenterSurge;
-uniform float uSidechain;
-varying vec2 vUv;
-varying vec3 vWorldPos;
-varying vec3 vNormalW;
-void main() {
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  float edgeSoft = pow(abs(dot(normalize(vNormalW), V)), 1.8);
-  float vertFade = smoothstep(0.0, 0.14, vUv.y) * pow(1.0 - vUv.y, 2.2);
-  float a = edgeSoft * vertFade * (0.08 + 0.14 * uCenterSurge) * uSidechain;
-  if (a < 0.004) discard;
-  vec3 col = mix(uWaterGlow, uMistGlow, vUv.y);
-  gl_FragColor = vec4(col * a, 1.0);
-}
-`;
-
-// 9. 弹道雾化水珠散景粒子着色器（纯时间函数）
+// 8. 细腻晶莹微水珠飞沫粒子着色器（5200 颗锐利微水滴，杜绝近景糊脸大雾球，尽显清澈水珠颗粒感）
 const SPRAY_VERT = /* glsl */ `
 attribute vec4 aSpraySeed; // x: baseRadius, y: angle, z: speedScale, w: phaseOffset
 uniform float uTime;
@@ -1174,25 +1364,27 @@ varying float vLife;
 varying float vSpark;
 
 void main() {
-  float rate = 0.62 + 0.35 * aSpraySeed.z;
+  float rate = 0.68 + 0.42 * aSpraySeed.z;
   float life = fract(uTime * rate + aSpraySeed.w);
   vLife = life;
   vSpark = fract(aSpraySeed.w * 37.3);
 
-  float energyScale = 0.42 + 0.78 * max(uSectionEnergy, uCenterSurge);
-  float angle = aSpraySeed.y + uTime * 0.12;
-  float outVel = (0.65 + 1.85 * aSpraySeed.z) * (0.55 + 0.55 * energyScale);
-  float upVel = (3.4 + 4.8 * aSpraySeed.z) * energyScale;
+  float energyScale = 0.40 + 0.76 * max(uSectionEnergy, uCenterSurge);
+  bool isOuter = aSpraySeed.x > 7.1;
+  float dirSign = isOuter ? -1.0 : 1.0; // 外圈水冠微水珠向池内抛洒，池心与水拱微水珠自然散落
+  float angle = aSpraySeed.y + uTime * (isOuter ? 0.05 : 0.10);
+  float outVel = (0.45 + 1.45 * aSpraySeed.z) * (0.55 + 0.50 * energyScale) * dirSign;
+  float upVel = (isOuter ? (1.8 + 2.4 * aSpraySeed.z) : (3.0 + 4.8 * aSpraySeed.z)) * energyScale;
 
-  float r = aSpraySeed.x + outVel * life;
-  float y = max(0.02, upVel * life - 4.6 * life * life);
+  float r = max(0.08, aSpraySeed.x + outVel * life);
+  float y = max(0.02, upVel * life - 4.9 * life * life);
   vec3 wp = vec3(cos(angle) * r, y, sin(angle) * r);
 
   vec4 mv = viewMatrix * vec4(wp, 1.0);
-  float dist = max(1.2, -mv.z);
-  // 近镜头粒子自然化为柔和景深虚化光斑（Bokeh）
-  float bokehBoost = dist < 4.5 ? (4.5 - dist) * 3.2 : 0.0;
-  gl_PointSize = clamp((18.0 * aSpraySeed.z / dist + bokehBoost) * uPixelRatio, 1.5, 28.0);
+  float dist = max(1.8, -mv.z);
+  // 精细微水珠尺寸（1.2px ~ 5.5px），颗颗晶莹分明，绝不化作浑浊大白团
+  float dropletPx = (14.0 + 10.0 * aSpraySeed.z) / dist;
+  gl_PointSize = clamp(dropletPx * uPixelRatio, 1.15, 5.8);
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -1204,19 +1396,25 @@ uniform float uHatSparkle;
 uniform float uSidechain;
 varying float vLife;
 varying float vSpark;
+${GLSL_NOISE}
+
 void main() {
   vec2 d = gl_PointCoord - 0.5;
   float r2 = dot(d, d) * 4.0;
-  if (r2 > 1.0) discard;
-  float softDisc = pow(1.0 - r2, 1.8);
+  if (r2 >= 1.0) discard;
+  // 真实球形微水滴光学特征：边缘清透微折射 + 偏心镜面纯白星点高光核
+  float specDot = exp(-dot(d - vec2(-0.12, -0.12), d - vec2(-0.12, -0.12)) * 28.0);
+  float rim = safePow(max(1.0 - r2, 0.0), 1.6);
   float env = sin(vLife * 3.14159265);
-  float spark = vSpark > 0.72 ? (1.0 + uHatSparkle * 1.6) : 1.0;
-  vec3 col = mix(uWaterGlow, uFoamWhite, 0.58) * spark * uSidechain;
-  gl_FragColor = vec4(col * softDisc * env * 0.52, 1.0);
+  float spark = vSpark > 0.68 ? (1.0 + uHatSparkle * 1.45) : 1.0;
+
+  vec3 dropletCol = mix(mix(vec3(0.84, 0.93, 1.0), uWaterGlow, 0.30), vec3(1.0), 0.55 + 0.45 * specDot);
+  vec3 outCol = dropletCol * spark * uSidechain * (0.28 * rim + 0.82 * specDot) * env;
+  gl_FragColor = vec4(clamp(outCol, vec3(0.0), vec3(6.0)), 1.0);
 }
 `;
 
-// 10. 随喷泉气流盘旋上升的飘飞花瓣着色器（纯时间函数）
+// 9. 随喷泉气流盘旋上升的飘飞花瓣着色器（纯时间函数）
 const PETAL_DRIFT_VERT = /* glsl */ `
 attribute vec4 aDriftSeed; // x: baseRadius, y: baseAngle, z: heightSpan, w: phase
 uniform float uTime;
@@ -1236,7 +1434,6 @@ void main() {
   float rad = mix(aDriftSeed.x, aDriftSeed.x * 0.68, cycle) + 0.45 * sin(uTime * 0.9 + aDriftSeed.w * 8.0);
   float y = 0.65 + cycle * aDriftSeed.z + 0.18 * sin(uTime * 1.6 + aDriftSeed.w * 20.0);
 
-  // 花瓣空中三维翻飞旋转
   float rx = uTime * 1.8 + aDriftSeed.w * 30.0;
   float rz = uTime * 1.3 + aDriftSeed.w * 17.0;
   float cx = cos(rx), sx = sin(rx);
@@ -1247,7 +1444,6 @@ void main() {
 
   vec3 wp = vec3(cos(ang) * rad, y, sin(ang) * rad) + p;
   vec4 mv = viewMatrix * vec4(wp, 1.0);
-  // 贴近镜头前方的花瓣自然柔化隐去，避免近景遮挡镜头
   vFade *= smoothstep(2.2, 5.2, -mv.z);
   gl_Position = projectionMatrix * mv;
 }
@@ -1261,19 +1457,19 @@ uniform float uSidechain;
 varying vec2 vUv;
 varying float vTint;
 varying float vFade;
+${GLSL_NOISE}
 
 void main() {
   if (vFade < 0.02) discard;
-  // 圆润水滴花瓣轮廓裁剪（顶端微带樱瓣柔和弧口，零多边形折线感）
   float px = (vUv.x - 0.5) * 2.0;
   float py = vUv.y;
-  float halfW = sin(pow(clamp(py, 0.0, 1.0), 0.68) * 3.14159265);
-  float petalMask = 1.0 - smoothstep(halfW * 0.72, halfW, abs(px));
+  float halfW = sin(safePow(clamp(py, 0.001, 1.0), 0.68) * 3.14159265);
+  float petalMask = 1.0 - smoothstep(halfW * 0.72, max(halfW, 0.01), abs(px));
   if (petalMask < 0.05) discard;
 
   vec3 base = vTint < 0.5 ? mix(uPetalPrimary, uPetalBright, vTint * 2.0) : mix(uPetalAccent, uPetalBright, (vTint - 0.5) * 2.0);
-  vec3 col = mix(base, uPetalBright, vUv.y * 0.55) * (0.95 + 0.25 * uSidechain);
-  gl_FragColor = vec4(col, clamp(vFade * petalMask * 0.86, 0.0, 0.90));
+  vec3 col = mix(base, uPetalBright, vUv.y * 0.55) * (0.95 + 0.22 * uSidechain);
+  gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(6.0)), clamp(vFade * petalMask * 0.86, 0.0, 0.90));
 }
 `;
 
@@ -1302,7 +1498,6 @@ export class FountainScene implements MvScene {
 
   // 动态更新的 GPU 实例属性缓冲
   private readonly crownJetDynAttr: THREE.InstancedBufferAttribute;
-  private readonly ringJetDynAttr: THREE.InstancedBufferAttribute;
   private readonly arcStateAttr: THREE.InstancedBufferAttribute;
 
   readonly uniforms: Record<string, THREE.IUniform>;
@@ -1527,48 +1722,19 @@ export class FountainScene implements MvScene {
     flowerMesh.renderOrder = 3;
     this.scene.add(flowerMesh);
 
-    // 7. 水下射灯丁达尔光束锥（中心主光锥 + 12 音阶外环光锥）
-    const coneBase = new THREE.CylinderGeometry(0.85, 0.22, 1.0, 20, 1, true);
-    coneBase.translate(0, 0.5, 0);
-    const coneGeo = new THREE.InstancedBufferGeometry();
-    coneGeo.index = coneBase.index;
-    coneGeo.setAttribute('position', coneBase.getAttribute('position'));
-    coneGeo.setAttribute('normal', coneBase.getAttribute('normal'));
-    coneGeo.setAttribute('uv', coneBase.getAttribute('uv'));
-    const coneSpecs = new Float32Array(13 * 4);
-    coneSpecs.set([0, 0, 2.2, 5.2], 0);
-    for (let k = 0; k < 12; k++) {
-      const a = (k / 12) * Math.PI * 2;
-      coneSpecs.set([Math.cos(a) * 6.75, Math.sin(a) * 6.75, 0.95, 2.8], (k + 1) * 4);
-    }
-    coneGeo.setAttribute('aConeSpec', new THREE.InstancedBufferAttribute(coneSpecs, 4));
-    coneGeo.instanceCount = 13;
-    const coneMesh = new THREE.Mesh(
-      coneGeo,
-      new THREE.ShaderMaterial({
-        vertexShader: CONE_VERT,
-        fragmentShader: CONE_FRAG,
-        uniforms: this.uniforms,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        toneMapped: false,
-      }),
-    );
-    coneMesh.frustumCulled = false;
-    coneMesh.renderOrder = 5;
-    this.scene.add(coneMesh);
-
-    // 8a. 喷泉第一阶：池心冲天主水柱 (1) + 内冠护卫水柱 (6) = 7 道核心水柱
-    const crownCount = 7;
+    // 7a. 喷泉第一阶：池心三层水晶皇冠液丝水柱簇（中心主晶柱 1 + 内冠修长水柱 6 + 外护冠纤细水柱 12 = 19 道清澈水柱）
+    const crownCount = 19;
     const crownGeo = buildWaterColumnGeometry();
     const crownNozzles = new Float32Array(crownCount * 4);
     const crownDyn = new Float32Array(crownCount * 4);
-    crownNozzles.set([0, 0, 1.45, 0], 0);
+    crownNozzles.set([0, 0, 1.12, 0], 0);
     for (let k = 0; k < 6; k++) {
       const a = (k / 6) * Math.PI * 2;
-      crownNozzles.set([Math.cos(a) * 1.38, Math.sin(a) * 1.38, 0.82, (k + 1) / 6], (k + 1) * 4);
+      crownNozzles.set([Math.cos(a) * 0.78, Math.sin(a) * 0.78, 0.66, (k + 1) / 19], (k + 1) * 4);
+    }
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2 + Math.PI / 12;
+      crownNozzles.set([Math.cos(a) * 1.54, Math.sin(a) * 1.54, 0.45, (k + 7) / 19], (k + 7) * 4);
     }
     crownGeo.setAttribute('aNozzle', new THREE.InstancedBufferAttribute(crownNozzles, 4));
     this.crownJetDynAttr = new THREE.InstancedBufferAttribute(crownDyn, 4);
@@ -1590,29 +1756,9 @@ export class FountainScene implements MvScene {
     crownMesh.renderOrder = 7;
     this.scene.add(crownMesh);
 
-    // 8b. 喷泉第三阶：外圈 36 道环状波浪水冠（r = 7.72m）
-    const ringJetCount = 36;
-    const ringJetGeo = buildWaterColumnGeometry();
-    const ringNozzles = new Float32Array(ringJetCount * 4);
-    const ringDyn = new Float32Array(ringJetCount * 4);
-    for (let k = 0; k < ringJetCount; k++) {
-      const a = (k / ringJetCount) * Math.PI * 2;
-      ringNozzles.set([Math.cos(a) * 7.72, Math.sin(a) * 7.72, 0.52, k / ringJetCount], k * 4);
-    }
-    ringJetGeo.setAttribute('aNozzle', new THREE.InstancedBufferAttribute(ringNozzles, 4));
-    this.ringJetDynAttr = new THREE.InstancedBufferAttribute(ringDyn, 4);
-    this.ringJetDynAttr.setUsage(THREE.DynamicDrawUsage);
-    ringJetGeo.setAttribute('aJetDyn', this.ringJetDynAttr);
-    ringJetGeo.instanceCount = ringJetCount;
-
-    const ringJetMesh = new THREE.Mesh(ringJetGeo, jetMaterial);
-    ringJetMesh.frustumCulled = false;
-    ringJetMesh.renderOrder = 6;
-    this.scene.add(ringJetMesh);
-
-    // 8c. 喷泉第二阶：中圈 24 道（12 外向内螺旋交织 + 12 内向外绽放）抛物线音乐水拱
-    const arcCount = 24;
-    const arcGeo = buildParabolicRibbonGeometry(42);
+    // 7b. 喷泉第二阶与第三阶：中圈 24 道交织音阶抛物线水拱 + 外圈 36 道纤巧向心水晶水冠（统一 60 道清澈液丝抛物线）
+    const arcCount = 60;
+    const arcGeo = buildParabolicRibbonGeometry(56);
     const arcGeomData = new Float32Array(arcCount * 4);
     const arcStateData = new Float32Array(arcCount * 4);
     for (let k = 0; k < 12; k++) {
@@ -1622,6 +1768,11 @@ export class FountainScene implements MvScene {
       // 内环 12 道：从 r=4.45m 反向旋转向外池 r=6.72m 优雅舒展
       const a1 = a0 + Math.PI / 12;
       arcGeomData.set([4.45, 6.72, a1, a1 - 0.44], (k + 12) * 4);
+    }
+    for (let k = 0; k < 36; k++) {
+      const a = (k / 36) * Math.PI * 2;
+      // 外圈 36 道纤细向心水帘：从池沿 r=7.86m 向池内 r=6.38m 划出晶莹抛物线并自然散落微水珠
+      arcGeomData.set([7.86, 6.38, a, a], (24 + k) * 4);
     }
     arcGeo.setAttribute('aArcGeom', new THREE.InstancedBufferAttribute(arcGeomData, 4));
     this.arcStateAttr = new THREE.InstancedBufferAttribute(arcStateData, 4);
@@ -1645,17 +1796,23 @@ export class FountainScene implements MvScene {
     arcMesh.renderOrder = 8;
     this.scene.add(arcMesh);
 
-    // 9a. 喷泉飞沫雾化散景粒子（2200 颗）
-    const sprayCount = 2200;
+    // 8a. 细腻晶莹微水珠飞沫粒子（5200 颗锐利清透微水滴，折射点点银白星芒）
+    const sprayCount = 5200;
     const sprayGeo = new THREE.BufferGeometry();
     const sprayPos = new Float32Array(sprayCount * 3);
     const spraySeeds = new Float32Array(sprayCount * 4);
     for (let i = 0; i < sprayCount; i++) {
-      const isCenter = i < 1300;
-      const baseR = isCenter ? random() * 1.45 : (i % 2 === 0 ? 4.45 : 6.75) + (random() - 0.5) * 0.4;
+      let baseR: number;
+      if (i < 2200) {
+        baseR = Math.pow(random(), 0.72) * 1.62;
+      } else if (i < 3600) {
+        baseR = (i % 2 === 0 ? 4.45 : 6.75) + (random() - 0.5) * 0.36;
+      } else {
+        baseR = 7.76 + (random() - 0.5) * 0.24;
+      }
       spraySeeds[i * 4] = baseR;
       spraySeeds[i * 4 + 1] = random() * Math.PI * 2;
-      spraySeeds[i * 4 + 2] = 0.35 + 0.65 * random();
+      spraySeeds[i * 4 + 2] = 0.25 + 0.75 * random();
       spraySeeds[i * 4 + 3] = random();
     }
     sprayGeo.setAttribute('position', new THREE.Float32BufferAttribute(sprayPos, 3));
@@ -1831,9 +1988,9 @@ export class FountainScene implements MvScene {
     for (let k = 0; k < 12; k++) if (this.chromaBuf[k] > maxC) maxC = this.chromaBuf[k];
     const normChroma = (k: number) => clamp01((this.chromaBuf[k] / maxC) * (0.35 + 0.65 * this.chromaBuf[k]));
 
-    // 2. 更新池心冲天主水柱 (0) 与 6 道内冠副水柱 (1..6)
+    // 2. 更新池心三层水晶皇冠液丝水柱簇（0: 中心主晶柱, 1..6: 内冠护卫水柱, 7..18: 外护冠纤细水柱）
     const centerSurge = clamp01(0.22 + 0.56 * energy + 0.34 * kickPulse + 0.26 * fg.level);
-    const mainHeight = (this.soft ? 0.86 : 1.0) * (1.55 + 5.65 * energy + 2.15 * kickPulse + 1.25 * fg.level);
+    const mainHeight = (this.soft ? 0.86 : 1.0) * (1.70 + 5.60 * energy + 2.10 * kickPulse + 1.20 * fg.level);
     const crownArr = this.crownJetDynAttr.array as Float32Array;
     crownArr[0] = mainHeight;
     crownArr[1] = 0.0;
@@ -1843,16 +2000,27 @@ export class FountainScene implements MvScene {
     for (let k = 0; k < 6; k++) {
       const cVal = normChroma((k * 2) % 12);
       const wave = 0.5 + 0.5 * Math.sin(beat.pos * Math.PI * 0.5 + (k / 6) * Math.PI * 2);
-      const subH = (0.85 + 3.15 * energy + 1.25 * cVal + 0.95 * kickPulse) * (0.78 + 0.32 * wave);
+      const subH = (1.10 + 3.45 * energy + 1.20 * cVal + 0.95 * kickPulse) * (0.80 + 0.30 * wave);
       const base = (k + 1) * 4;
       crownArr[base] = subH;
-      crownArr[base + 1] = 0.24 + 0.18 * snarePulse;
-      crownArr[base + 2] = clamp01(0.30 + 0.55 * cVal + 0.35 * kickPulse);
+      crownArr[base + 1] = 0.16 + 0.12 * snarePulse;
+      crownArr[base + 2] = clamp01(0.32 + 0.52 * cVal + 0.35 * kickPulse);
       crownArr[base + 3] = (k + 1) * 0.17;
+    }
+
+    for (let k = 0; k < 12; k++) {
+      const cVal = normChroma(k);
+      const wave = 0.5 + 0.5 * Math.cos(beat.pos * Math.PI * 0.5 - (k / 12) * Math.PI * 2);
+      const outerSubH = (0.68 + 2.15 * energy + 0.95 * cVal + 0.62 * kickPulse) * (0.76 + 0.34 * wave);
+      const base = (k + 7) * 4;
+      crownArr[base] = outerSubH;
+      crownArr[base + 1] = 0.28 + 0.16 * snarePulse;
+      crownArr[base + 2] = clamp01(0.28 + 0.50 * cVal + 0.30 * snarePulse);
+      crownArr[base + 3] = (k + 7) * 0.23;
     }
     this.crownJetDynAttr.needsUpdate = true;
 
-    // 3. 更新中圈 24 道音阶抛物线交织水拱（读取最近活跃水包脉冲位置）
+    // 3. 更新中圈 24 道音阶抛物线交织水拱 + 外圈 36 道纤巧向心水晶水冠（共 60 道清澈液丝抛物线）
     const arcArr = this.arcStateAttr.array as Float32Array;
     const pulsePos = new Float32Array(24).fill(-1);
     const pulseAmp = new Float32Array(24).fill(0);
@@ -1889,28 +2057,27 @@ export class FountainScene implements MvScene {
       arcArr[idx2 + 2] = pulsePos[k + 12];
       arcArr[idx2 + 3] = pulseAmp[k + 12];
     }
-    this.arcStateAttr.needsUpdate = true;
 
-    // 4. 更新外圈 36 道环状波浪水冠（正弦花冠旋转波 + 军鼓齐射水莲绽放）
-    const ringArr = this.ringJetDynAttr.array as Float32Array;
+    // 外圈 36 道向心水晶水冠（正弦花冠旋转波 + 军鼓齐射水莲绽放，w=-1 标记纤巧向心水帘模式）
     for (let k = 0; k < 36; k++) {
       const ang = (k / 36) * Math.PI * 2;
       const cVal = normChroma(k % 12);
       const petalWave = 0.5 + 0.5 * Math.sin(ang * 6.0 - beat.pos * (Math.PI * 0.75));
       const counterWave = 0.5 + 0.5 * Math.cos(ang * 3.0 + beat.pos * (Math.PI * 0.5));
       const envMix = k % 3 === 0 ? lowEnv : k % 3 === 1 ? midEnv : highEnv;
-      const h = (0.38 + 1.85 * energy) * (0.42 + 0.42 * petalWave + 0.26 * counterWave)
-        + 0.78 * cVal * energy
-        + 0.92 * snarePulse;
-      const base = k * 4;
-      ringArr[base] = h;
-      ringArr[base + 1] = -0.32 - 0.35 * snarePulse; // 略向池心聚拢并在军鼓时优雅起伏
-      ringArr[base + 2] = clamp01(0.22 + 0.52 * envMix + 0.45 * snarePulse + 0.25 * cVal);
-      ringArr[base + 3] = k * 0.113;
+      const crownApex = (0.46 + 1.48 * energy) * (0.46 + 0.38 * petalWave + 0.24 * counterWave)
+        + 0.52 * cVal * energy
+        + 0.68 * snarePulse;
+      const crownFlow = clamp01(0.42 + 0.46 * envMix + 0.36 * snarePulse + 0.22 * cVal);
+      const base = (24 + k) * 4;
+      arcArr[base] = crownApex;
+      arcArr[base + 1] = crownFlow;
+      arcArr[base + 2] = -1.0;
+      arcArr[base + 3] = -1.0;
     }
-    this.ringJetDynAttr.needsUpdate = true;
+    this.arcStateAttr.needsUpdate = true;
 
-    // 5. 填充池面活跃落水同心涟漪
+    // 4. 填充池面活跃落水同心涟漪
     let rCount = 0;
     for (let i = lastIndex(this.rippleTimes, t); i >= 0 && rCount < MAX_RIPPLES; i--) {
       const rp = this.ripples[i];
@@ -1928,7 +2095,7 @@ export class FountainScene implements MvScene {
       this.rippleB[i].set(0, 0, 0, 0);
     }
 
-    // 6. 同步全局着色器 Uniforms
+    // 5. 同步全局着色器 Uniforms
     const u = this.uniforms;
     u.uTime.value = t;
     u.uFlow.value = t * 0.85 + music.foregroundMotion(t, 0.25) * 0.22;
@@ -1942,14 +2109,15 @@ export class FountainScene implements MvScene {
     (u.uChroma1.value as THREE.Vector4).set(normChroma(4), normChroma(5), normChroma(6), normChroma(7));
     (u.uChroma2.value as THREE.Vector4).set(normChroma(8), normChroma(9), normChroma(10), normChroma(11));
 
-    // 7. 后期效果调优：柔和晶莹的电影级水雾辉光，抑制破坏花海色彩的负片与刺眼双色闪白
+    // 6. 后期效果调优：晶莹清澈的电影级微辉光，关闭 PULSE 段落切入暗墨闪黑（impact=0）与负片/双色闪白
+    fx.impact = 0;
     fx.invert = 0;
     fx.duotone = 0;
-    fx.glitch = Math.min(fx.glitch, 0.08);
-    fx.zoom = Math.min(fx.zoom, 0.05);
-    fx.bloom = (this.soft ? 0.26 : 0.24) + 0.08 * centerSurge + 0.04 * hatSparkle;
-    fx.vignette = 0.42;
-    fx.grain = 0.032;
+    fx.glitch = Math.min(fx.glitch, 0.06);
+    fx.zoom = Math.min(fx.zoom, 0.045);
+    fx.bloom = (this.soft ? 0.21 : 0.19) + 0.06 * centerSurge + 0.03 * hatSparkle;
+    fx.vignette = 0.40;
+    fx.grain = 0.024;
 
     // 8. 更新下部水池区的 3D 歌词排版
     this.rig.update(this.camera, ctx.lyrics, t, ctx.aspect, energy * 0.8);

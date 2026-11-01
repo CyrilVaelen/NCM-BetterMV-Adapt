@@ -167,7 +167,7 @@ export class MgOverlay {
       }
     };
     const big = sec.label === 'chorus' || sec.label === 'drop';
-    if(busy&&this.style.id==='pulse'&&shot.scene!=='phoenix') {
+    if(busy&&this.style.id==='pulse'&&shot.scene!=='phoenix'&&shot.scene!=='fountain') {
     drawLeadRibbons(L,this.aspect,info.pos,m.foregroundAt(t),signal,vis);
     }
 

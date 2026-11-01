@@ -152,6 +152,12 @@ const GradeShader = {
     uniform vec3 uInk, uSignal;
     varying vec2 vUv;
     float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
+    // 位级非有限值清洗：绕过 D3D11 HLSL fast-math 对 isnan() 的擦除与 X3577 编译警告，真实拦截 NaN/Inf 黑屏传染
+    vec3 sanitizeHdr(vec3 v) {
+      uvec3 bits = floatBitsToUint(v);
+      bvec3 bad = equal(bits & 0x7f800000u, uvec3(0x7f800000u));
+      return max(mix(v, vec3(0.0), bad), vec3(0.0));
+    }
     vec3 split(vec2 uv, vec2 off) {
       return vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
     }
@@ -181,10 +187,12 @@ const GradeShader = {
         for (int i = 0; i < 12; i++) col += split(uv + uSmear * (float(i) / 11.0 - 0.5), off);
         col /= 12.0;
       } else col = split(uv, off);
+      col = sanitizeHdr(col);
       if (uHalation > 0.001) {
         // Halation (the finish): light scattered back through the film base glows warm round bright lights, only
         // outside them; read where the picture is (after the mirror, pixels and lens), from the bloom's tightest blur.
-        float h = dot(texture2D(tHalo, uv).rgb, vec3(0.2126, 0.7152, 0.0722));
+        vec3 haloRgb = sanitizeHdr(texture2D(tHalo, uv).rgb);
+        float h = dot(haloRgb, vec3(0.2126, 0.7152, 0.0722));
         col += vec3(1.0, 0.38, 0.18) * max(h - 0.4 * dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0) * uHalation;
       }
       col *= uExposure;
@@ -259,6 +267,11 @@ const FinishShader = {
     varying vec2 vUv;
     float hash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
     float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+    vec3 sanitizeHdr(vec3 v) {
+      uvec3 bits = floatBitsToUint(v);
+      bvec3 bad = equal(bits & 0x7f800000u, uvec3(0x7f800000u));
+      return max(mix(v, vec3(0.0), bad), vec3(0.0));
+    }
     // three's NeutralToneMapping (Khronos PBR Neutral), exposure 1.
     vec3 neutral(vec3 color) {
       const float StartCompression = 0.8 - 0.04;
@@ -282,11 +295,12 @@ const FinishShader = {
       float r2 = dot(cc, cc) / (0.25 * aspect * aspect + 0.25);
       // Lateral chromatic aberration: red pushed out, blue pulled in, nothing in the middle, uLens px in the corners.
       vec2 off = cc / max(length(cc), 1e-4) * r2 * uLens * uFilm / 1080.0 * vec2(1.0 / aspect, 1.0);
-      vec3 col = vec3(texture2D(tDiffuse, vUv - off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv + off).b);
+      vec3 col = sanitizeHdr(vec3(texture2D(tDiffuse, vUv - off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv + off).b));
       // Local contrast: the luminance against its four neighbours (a CSS px away), as a ratio (no dark rings, no hue).
       vec2 px = uPixelRatio / uResolution;
-      float ln = 0.25 * luma(texture2D(tDiffuse, vUv + vec2(px.x, 0.0)).rgb + texture2D(tDiffuse, vUv - vec2(px.x, 0.0)).rgb
-        + texture2D(tDiffuse, vUv + vec2(0.0, px.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.0, px.y)).rgb);
+      vec3 nb = sanitizeHdr(texture2D(tDiffuse, vUv + vec2(px.x, 0.0)).rgb) + sanitizeHdr(texture2D(tDiffuse, vUv - vec2(px.x, 0.0)).rgb)
+        + sanitizeHdr(texture2D(tDiffuse, vUv + vec2(0.0, px.y)).rgb) + sanitizeHdr(texture2D(tDiffuse, vUv - vec2(0.0, px.y)).rgb);
+      float ln = 0.25 * luma(nb);
       float lc = luma(col);
       col *= clamp(pow((lc + 0.02) / (ln + 0.02), uSharpen * uFilm * 0.6), 0.8, 1.3);
       // Grade: contrast about mid grey — the darks pushed down, the lights only a little up (it fades out over the
