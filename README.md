@@ -13,7 +13,7 @@
 
 </div>
 
-> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.45`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce/releases/latest)。
+> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.46`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce/releases/latest)。
 
 ## 核心功能与定制增强
 
@@ -62,6 +62,7 @@ MV 页底部为播放控制（喜欢、切歌、播放模式、分段进度条�
 <p align="center">BetterNCM 深色主题下的插件设置页（含 5 种风格选择、歌词显示/本地 LRC 绑定与 41/41 场景开关）</p>
 
 - **风格**：自动，或手动指定为 `律动`、`微醺`、`抒情`、`字`、`墨`。
+- **音乐风格（曲风场景概率引导）**：支持 `自动`（识别曲风标签与鼓组声学特征）或手动指定为 `旋律电音`、`硬核电音`、`浩室微醺`、`摇滚独立`、`民谣抒情`、`国风古韵`、`说唱街头`，动态调节 41 个场景在首镜与段内轮换中的出现概率。
 - **显示歌词**：开启或关闭场景中的三维歌词显示；关闭后实时隐藏所有歌词，方便纯画面欣赏或录屏。
 - **画面编排**：同一首歌每次播放重新编排场景与镜头，或固定为同一种；在 MV 页右侧设置抽屉中可随时点击“换一种”。
 - **画质与帧率上限**：画质可选高、中、低；帧率上限支持不限、`240`、`120`、`60` 或 `30` fps。
@@ -107,8 +108,8 @@ npm run pack             # 标准打包输出至 dist/ncm-better-mv.plugin
 
 架构设计、音频分析与验证记录详见 [docs/](docs/) 与 [STATUS.md](STATUS.md)。
 
-## 开源协议与仓库信息
+## 开源协议与作者致谢
 
 - **开源协议**：遵循 `GPL-3.0-or-later` 协议开源（详见 [LICENSE](LICENSE)）。内置字体 Archivo、Bodoni Moda、Cormorant Garamond、得意黑（Smiley Sans）、霞鹜文楷 Lite 均遵循 SIL Open Font License 1.1（`public/fonts/OFL.txt`）；打包内置的 `three.js` 使用 MIT 协议；可选对齐包中的 MMS-FA 模型来自 Meta（CC BY-NC 4.0，不可商用）。
-- **改进版开发与维护**：[**CyrilVaelen**](https://github.com/CyrilVaelen)
-- **开源仓库地址**：[https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)（插件标识 `ncm-better-mv`，基于开源项目 BetterMV 进行多轮定制重构与扩展）
+- **重置版开发与开源仓库**：[**CyrilVaelen**](https://github.com/CyrilVaelen) · [https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce](https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce)
+- **致谢原创**：尊重并致谢原作者 [**XIAOMING6680**](https://github.com/xiaoming6680) 开源项目 [NCM-BetterMV](https://github.com/xiaoming6680/NCM-BetterMV)（原版基准 `v0.9.0`，插件标识 `ncm-better-mv`），本仓库在其基础上进行了多轮定制重构与场景扩展。

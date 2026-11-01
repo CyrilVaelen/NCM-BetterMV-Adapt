@@ -1151,6 +1151,22 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
   const view = el('div', 'bmv-ui bmv-set ' + (compact ? 'is-compact' : 'is-page'));
   view.dataset.bmvSettings = '';
   view.dataset.theme = 'dark';
+  const openExternalLink = (label: string, url: string, nowrap = false) => {
+    const a = el('a', '', label);
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.color = 'inherit';
+    a.style.textDecoration = 'underline';
+    if (nowrap) a.style.whiteSpace = 'nowrap';
+    a.onclick = e => {
+      if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
+        e.preventDefault();
+        void betterncm.app.exec(`cmd /c start "" "${url}"`, false, false);
+      }
+    };
+    return a;
+  };
   if (!compact) {
     // The host's theme is known once the page is in it, and followed while it is (NetEase's theme can change).
     view.dataset.theme = 'light';
@@ -1172,42 +1188,37 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     const name = el('div', 'bmv-set-name', 'BetterMV（增强定制版）');
     if (VERSION) name.append(el('span', 'bmv-set-ver', VERSION));
     const repoRow = el('div', 'bmv-set-desc');
-    repoRow.style.marginTop = '4px';
-    repoRow.append('维护者：CyrilVaelen · 开源仓库：');
-    const repoLink = el('a', '', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce');
-    repoLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
-    repoLink.target = '_blank';
-    repoLink.rel = 'noopener noreferrer';
-    repoLink.style.color = 'inherit';
-    repoLink.style.textDecoration = 'underline';
-    repoLink.style.whiteSpace = 'nowrap';
-    repoLink.onclick = e => {
-      if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
-        e.preventDefault();
-        void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
-      }
-    };
-    repoRow.append(repoLink);
-    text.append(name, el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'), repoRow);
+    repoRow.style.marginTop = '6px';
+    repoRow.append(
+      '重置版仓库（CyrilVaelen）：',
+      openExternalLink('https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce', true),
+    );
+    const creditRow = el('div', 'bmv-set-desc');
+    creditRow.style.marginTop = '2px';
+    creditRow.style.opacity = '0.82';
+    creditRow.append(
+      '致谢原创：基于原作者 ',
+      openExternalLink('XIAOMING6680/NCM-BetterMV', 'https://github.com/xiaoming6680/NCM-BetterMV', true),
+      ' (v0.9.0) 深度定制扩展',
+    );
+    text.append(
+      name,
+      el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'),
+      repoRow,
+      creditRow,
+    );
     head.append(mark, text);
     view.append(head);
   } else {
     const compactMeta = el('div', 'bmv-sec-note');
     compactMeta.style.margin = '0 0 10px';
-    compactMeta.append('维护者：CyrilVaelen · 仓库：');
-    const compactLink = el('a', '', 'CyrilVaelen/NCM-BetterMV-Reproduce');
-    compactLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
-    compactLink.target = '_blank';
-    compactLink.rel = 'noopener noreferrer';
-    compactLink.style.color = 'inherit';
-    compactLink.style.textDecoration = 'underline';
-    compactLink.onclick = e => {
-      if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
-        e.preventDefault();
-        void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
-      }
-    };
-    compactMeta.append(compactLink);
+    compactMeta.style.lineHeight = '1.55';
+    const r1 = el('div');
+    r1.append('重置版仓库：', openExternalLink('CyrilVaelen/NCM-BetterMV-Reproduce', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce'));
+    const r2 = el('div');
+    r2.style.opacity = '0.8';
+    r2.append('致谢原创：基于 ', openExternalLink('XIAOMING6680/NCM-BetterMV', 'https://github.com/xiaoming6680/NCM-BetterMV'), ' (v0.9.0) 定制');
+    compactMeta.append(r1, r2);
     view.append(compactMeta);
   }
 
