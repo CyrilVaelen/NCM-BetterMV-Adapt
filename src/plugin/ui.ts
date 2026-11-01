@@ -1,7 +1,7 @@
 // The plugin's surface inside NetEase: a small "MV" button, the full-window MV view with its controls, and the
 // settings page. The look (src/plugin/uiStyle.ts): white glyphs over a soft scrim on the picture, frosted sheets for
 // what slides over it, grouped lists for the settings.
-import { STYLES, type StyleId } from '../style/style.ts';
+import { isVibePresetId, STYLES, VIBE_PRESET_MAP, VIBE_PRESETS, type StyleId, type VibePresetId } from '../style/style.ts';
 import type { LookId, SceneId } from '../scenes/types.ts';
 import { LOOKS, SCENE_GROUPS, SCENES } from '../scenes/catalog.ts';
 import { SECTION_LABELS, type Section } from '../types.ts';
@@ -17,6 +17,8 @@ export const VERSION = typeof __VERSION__ === 'string' ? __VERSION__ : '';
 
 export interface Config {
   style: 'auto' | StyleId;
+  /** 用户手动选择的音乐风格预设（自动调整不同场景的出现概率） */
+  vibe: VibePresetId;
   quality: 'high' | 'mid' | 'low';
   /** Shifts the picture against the sound (positive = later), for Bluetooth or other laggy outputs. */
   latencyMs: number;
@@ -78,8 +80,10 @@ let recordingKeys = false;
 export const isRecordingKeys = () => recordingKeys;
 
 export function loadConfig(): Config {
+  const rawVibe = plugin.getConfig('vibe', 'auto');
   return {
     style: plugin.getConfig('style', 'auto' as Config['style']),
+    vibe: isVibePresetId(rawVibe) ? rawVibe : 'auto',
     quality: plugin.getConfig('quality', 'high' as Config['quality']),
     latencyMs: Number(plugin.getConfig('latencyMs', 0)) || 0,
     songVisualDelays: parseVisualDelays(plugin.getConfig('songVisualDelays', '{}')),
@@ -125,7 +129,7 @@ export interface SongInfo { name: string; artists: string[]; cover: string | nul
 /** A track of NetEase's play list. */
 export interface QueueTrack { name: string; artists: string[]; duration: number }
 /** How the MV shows the song: its style, why it was chosen (null: chosen by hand), its tempo, the lyrics' word times. */
-export interface MvInfo { style: string; why: string | null; bpm?: number; vibeDetail?: string; lyrics: 'aligning' | 'aligned' | null; lyricDetail?: string; audioDetail?: string }
+export interface MvInfo { style: string; why: string | null; bpm?: number; vibeBadge?: string; vibeDetail?: string; lyrics: 'aligning' | 'aligned' | null; lyricDetail?: string; audioDetail?: string }
 /** What the waiting view says besides its line: how far along (0..1), or that it failed. */
 export interface StatusOptions { progress?: number; error?: boolean; hint?: string }
 /** NetEase's covers come in any size: a small one for the thumbnail, a large one for the waiting view. */
@@ -948,7 +952,7 @@ export class Overlay {
     const s = this.styleEl;
     s.textContent = '';
     if (info) {
-      s.append(info.style);
+      s.append(info.vibeBadge ? `${info.style} · ${info.vibeBadge}` : info.style);
       if (info.bpm) s.append(el('span', '', `${Math.round(info.bpm)} BPM`));
       if (info.lyrics === 'aligning') s.append(el('span', '', '正在对齐歌词'));
       s.title = [
@@ -1133,6 +1137,8 @@ export interface SettingsActions {
   reloadLyrics?: (localPath?: string | null) => Promise<void> | void;
   alignLyrics?: () => Promise<string>;
   alignmentStatus?: () => string;
+  /** 返回当前播放歌曲自动识别出的音乐气质摘要（供「音乐风格」在自动模式下实时展示） */
+  vibeStatus?: () => string;
 }
 
 /**
@@ -1319,6 +1325,48 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
   const picture = group(section('画面'));
   const styleNote = el('div', '', STYLE_NOTE[config.style]);
   row(picture, '风格', segmented('style', [['auto', '自动'], ['pulse', '律动'], ['velvet', '微醺'], ['ballad', '抒情'], ['word', '字'], ['ink', '墨']], () => { styleNote.textContent = STYLE_NOTE[config.style]; }), undefined, styleNote);
+
+  // 手动选择音乐风格（动态调整 41 个场景在首镜与段内轮换中的出现概率）
+  const vibeRow = el('div', 'bmv-row');
+  const vibeLeft = el('div', 'bmv-row-l');
+  vibeLeft.append(el('div', 'bmv-row-label', '音乐风格'), el('div', 'bmv-row-sub', '自选曲风后，自动调整不同场景的出现概率'));
+  const vibeState = el('div', 'bmv-state');
+  const vibeRight = el('div', 'bmv-row-c');
+  vibeRight.append(vibeState);
+  const vibeGrid = el('div', 'bmv-vibe-grid');
+  vibeGrid.setAttribute('role', 'group');
+  vibeGrid.setAttribute('aria-label', '音乐风格');
+  const vibeNote = el('div', 'bmv-row-note');
+  const paintVibe = () => {
+    vibeGrid.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === config.vibe)));
+    const meta = VIBE_PRESET_MAP[config.vibe] ?? VIBE_PRESET_MAP.auto;
+    const autoDetected = actions.vibeStatus?.() ?? '';
+    if (config.vibe === 'auto') {
+      vibeState.textContent = autoDetected ? `识别：${autoDetected}` : '自动识别';
+      vibeNote.textContent = autoDetected
+        ? `当前歌曲自动识别为「${autoDetected}」。${meta.note}`
+        : meta.note;
+    } else {
+      vibeState.textContent = `手动：${meta.label}`;
+      vibeNote.textContent = meta.note;
+    }
+  };
+  for (const preset of VIBE_PRESETS) {
+    const b = el('button', '', preset.label);
+    b.dataset.value = preset.id;
+    b.title = `${preset.label}：${preset.note}`;
+    b.onclick = () => {
+      config.vibe = preset.id;
+      plugin.setConfig('vibe', preset.id);
+      paintVibe();
+      onChange(config);
+    };
+    vibeGrid.append(b);
+  }
+  paintVibe();
+  vibeRow.append(vibeLeft, vibeRight, vibeGrid, vibeNote);
+  picture.append(vibeRow);
+
   row(picture, '画面编排', segmented('arrange', [['random', '每次不同'], ['fixed', '固定']]), '同一首歌再次播放时，场景、镜头与画风是否重新编排');
   // On the MV page: the playing song arranged anew, at once.
   if (actions.reroll) {

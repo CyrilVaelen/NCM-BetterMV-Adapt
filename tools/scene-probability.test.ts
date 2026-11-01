@@ -5,7 +5,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { planShots } from '../src/director/director.ts';
 import { Music } from '../src/director/music.ts';
-import { analyzeSongVibe, BALLAD, INK, PULSE, sceneAffinity, VELVET, type SongTraits } from '../src/style/style.ts';
+import {
+  analyzeSongVibe,
+  BALLAD,
+  chooseStyle,
+  chooseStyleForVibePreset,
+  INK,
+  PULSE,
+  sceneAffinity,
+  VELVET,
+  VIBE_PRESETS,
+  WORD,
+  type SongTraits,
+} from '../src/style/style.ts';
 import type { Analysis, Hit, Section } from '../src/types.ts';
 import type { SceneId } from '../src/scenes/types.ts';
 
@@ -211,4 +223,42 @@ test('标志性灵魂场景保底、相邻去重与确定性契约：微醺必�
   // 验证 sceneAffinity 数值始终有限且处于合理正区间
   const vibe = analyzeSongVibe(music.a, traits);
   assert.ok(sceneAffinity('phoenix', music.a.sections[4], PULSE, vibe, traits) > 0.2);
+});
+
+test('右侧设置面板手动选择「音乐风格」预设（vibePreset）：同一首歌切换不同预设可显著改变各场景出现概率，并联动自动母风格', () => {
+  // 模拟同一首 122 BPM 歌曲（如 Sultan + Shepard - Raye），甚至带有干扰标签
+  const music = new Music(makeSongAnalysis({ bpm: 122, hasDrops: true, kickRate: 1.8, snareRate: 0.9, meanHigh: 0.45 }));
+  const baseWiki = { genres: ['电子'], tags: [] };
+
+  // 1. 验证预设列表包含 8 个完整选项（适配 4×2 网格）
+  assert.equal(VIBE_PRESETS.length, 8);
+
+  // 2. 当母风格锁定为「律动 (PULSE)」时，切换手动音乐风格预设，场景出现概率显著定向迁移
+  const countScenes = (vibePreset: SongTraits['vibePreset'], targetScenes: ReadonlySet<SceneId>) => {
+    let hits = 0;
+    for (let seed = 1; seed <= 120; seed++) {
+      const shots = planShots(music, PULSE, seed * 257, { graphic: false, lyrics: true, wiki: baseWiki, vibePreset }, NO_DECOR);
+      hits += shots.filter(s => targetScenes.has(s.scene)).length;
+    }
+    return hits;
+  };
+
+  const cyberSet = new Set<SceneId>(['drive', 'channel', 'menger', 'sierpinski', 'orb', 'shatter', 'debug']);
+  const urbanSet = new Set<SceneId>(['velvet', 'city', 'vinyl', 'neon', 'rain', 'bokeh']);
+  const orientalSet = new Set<SceneId>(['ink', 'papercut', 'lanterns', 'phoenix', 'clouds']);
+  const rapSet = new Set<SceneId>(['typewall', 'neon', 'poster', 'halftone']);
+
+  assert.ok(countScenes('cyber', cyberSet) > countScenes('urban', cyberSet) * 1.8, '手动选硬核电音应大幅提升赛博/隧道/分形场景概率');
+  assert.ok(countScenes('urban', urbanSet) > countScenes('cyber', urbanSet) * 1.8, '手动选浩室微醺即使在律动下也应大幅提升水廊/夜城/黑胶/霓虹概率');
+  assert.ok(countScenes('oriental', orientalSet) > countScenes('cyber', orientalSet) * 2.0, '手动选国风古韵应大幅提升水墨/窗花/灯海/火凤概率');
+  assert.ok(countScenes('rap', rapSet) > countScenes('melodic', rapSet) * 1.8, '手动选说唱街头应大幅提升字墙/霓虹/海报/网点概率');
+
+  // 3. 当上方母风格设为「自动」时，手动选择音乐风格预设同步匹配最契合的默认母风格
+  const autoBase = chooseStyle(music.a, baseWiki, true);
+  assert.equal(chooseStyleForVibePreset('urban', true, autoBase).style, VELVET);
+  assert.equal(chooseStyleForVibePreset('oriental', true, autoBase).style, INK);
+  assert.equal(chooseStyleForVibePreset('acoustic', true, autoBase).style, BALLAD);
+  assert.equal(chooseStyleForVibePreset('rap', true, autoBase).style, WORD);
+  assert.equal(chooseStyleForVibePreset('rap', false, autoBase).style, PULSE, '关闭歌词或纯音乐时说唱预设自动退回律动母风格');
+  assert.equal(chooseStyleForVibePreset('melodic', true, autoBase).style, PULSE);
 });

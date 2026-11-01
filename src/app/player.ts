@@ -50,7 +50,7 @@ import { VelvetScene } from '../scenes/velvet.ts';
 import { FractalPlate } from '../scenes/fractal.ts';
 import { armillarySpec } from '../sigil/armillary.ts';
 import type { MvScene, SceneId, SceneInit, Shot } from '../scenes/types.ts';
-import type { Style } from '../style/style.ts';
+import type { Style, VibePresetId } from '../style/style.ts';
 import type { PreparedSong } from './prepare.ts';
 import { Hud } from './hud.ts';
 
@@ -202,7 +202,7 @@ export class MvPlayer {
    * `lyricDelay`: seconds this song's words show later (negative: earlier), the user's per-song setting. `retake`
    * (development): rewrites the planned shots before the scenes are built (a film's own cuts, film/reel.ts).
    */
-  load(song: PreparedSong, style: Style, off: ReadonlySet<SceneId | LookId> = new Set(), only?: { scene: SceneId; variants: string[] }, forceLook?: LookId | 'none', lyricDelay = 0, seed?: number, retake?: (shots: Shot[], music: Music) => Shot[], showLyrics = this.showLyrics): void {
+  load(song: PreparedSong, style: Style, off: ReadonlySet<SceneId | LookId> = new Set(), only?: { scene: SceneId; variants: string[] }, forceLook?: LookId | 'none', lyricDelay = 0, seed?: number, retake?: (shots: Shot[], music: Music) => Shot[], showLyrics = this.showLyrics, vibePreset: VibePresetId = 'auto'): void {
     if (this.seedFor !== song.id || seed !== undefined) {
       this.seed = seed ?? (Math.random() * 4294967296) >>> 0;
       this.seedFor = song.id;
@@ -226,7 +226,7 @@ export class MvPlayer {
       music, lyrics, aspect: this.engine.aspect, title: song.name, artists: song.artists, stereo: song.stereo, xyMusic: song.xyMusic, armillary: armillarySpec(song.analysis, song.id), seed: this.seed,
     };
     // Pure music, a song whose lyrics NetEase doesn't have, or hidden lyrics gets no word plates.
-    let shots = planShots(music, style, this.seed, { graphic: song.palette.graphic, lyrics: showLyrics && song.lines.length > 0, wiki: song.wiki }, off);
+    let shots = planShots(music, style, this.seed, { graphic: song.palette.graphic, lyrics: showLyrics && song.lines.length > 0, wiki: song.wiki, vibePreset }, off);
     if (only) shots.forEach((sh, i) => { sh.scene = only.scene; sh.variant = only.variants[i % only.variants.length]; });
     else if (song.xyMusic) shots = scopeOnly(shots);
     if (retake) shots = retake(shots, music);

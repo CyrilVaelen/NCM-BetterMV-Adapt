@@ -413,7 +413,7 @@ export class VideoExporter {
       if (!this.jobId && snapshot) {
         const song = { ...snapshot.song, artists: [...snapshot.song.artists] };
         const config = JSON.parse(JSON.stringify({
-          style: snapshot.config.style, quality: snapshot.config.quality,
+          style: snapshot.config.style, vibe: snapshot.config.vibe, quality: snapshot.config.quality,
           off: snapshot.config.off, offLooks: snapshot.config.offLooks,
           lyricDelays: snapshot.config.lyricDelays, arrange: snapshot.config.arrange,
           showLyrics: snapshot.config.showLyrics,

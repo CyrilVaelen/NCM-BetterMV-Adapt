@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { parseNeteaseLyric, type NeteaseLyric } from '../lyrics/parse.ts';
 import { analyzeSteps } from '../analysis/index.ts';
-import { chooseStyle, STYLES, type StyleChoice, type StyleId } from '../style/style.ts';
+import { chooseStyle, chooseStyleForVibePreset, STYLES, type StyleChoice, type StyleId, type VibePresetId } from '../style/style.ts';
 import { paletteFromImage, type Palette } from '../render/palette.ts';
 import type { SongWiki } from '../meta/wiki.ts';
 import type { Analysis, LyricLine } from '../types.ts';
@@ -205,10 +205,13 @@ export async function prepareSong(input: SongInput, opts: PrepareOptions): Promi
   };
 }
 
-/** 根据是否显示歌词返回自动风格判定（关闭歌词显示时不自动选入以文字为主体的“字”风格） */
-export const styleChoiceFor = (song: PreparedSong, showLyrics = true): StyleChoice =>
-  !showLyrics && song.choice.style.id === 'word' ? chooseStyle(song.analysis, song.wiki, false) : song.choice;
+/** 根据是否显示歌词及手动选择的音乐风格预设返回自动母风格判定（关闭歌词显示时不自动选入以文字为主体的“字”风格） */
+export const styleChoiceFor = (song: PreparedSong, showLyrics = true, vibePreset: VibePresetId = 'auto'): StyleChoice => {
+  const hasLyrics = showLyrics && song.lines.length > 0;
+  const base = !showLyrics && song.choice.style.id === 'word' ? chooseStyle(song.analysis, song.wiki, false) : song.choice;
+  return chooseStyleForVibePreset(vibePreset, hasLyrics, base);
+};
 
 /** The style to play a song in: the user's choice, else (or for a setting this version doesn't know) the automatic one. */
-export const styleFor = (song: PreparedSong, override?: StyleId | 'auto', showLyrics = true) =>
-  (override && override !== 'auto' ? STYLES[override] : undefined) ?? styleChoiceFor(song, showLyrics).style;
+export const styleFor = (song: PreparedSong, override?: StyleId | 'auto', showLyrics = true, vibePreset: VibePresetId = 'auto') =>
+  (override && override !== 'auto' ? STYLES[override] : undefined) ?? styleChoiceFor(song, showLyrics, vibePreset).style;

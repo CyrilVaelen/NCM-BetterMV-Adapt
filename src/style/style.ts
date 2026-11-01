@@ -6,8 +6,19 @@ import type { Analysis, Section } from '../types.ts';
 import type { SceneId } from '../scenes/types.ts';
 import { TransitionKind } from '../render/shots.ts';
 import type { Finish } from '../render/engine.ts';
-import { isSteadyHouseGroove } from './affinity.ts';
-export { analyzeSongVibe, isSteadyHouseGroove, sceneAffinity, type SongVibe } from './affinity.ts';
+import { isSteadyHouseGroove, VIBE_PRESET_MAP, type VibePresetId } from './affinity.ts';
+export {
+  analyzeSongVibe,
+  autoSongVibeSummary,
+  isSteadyHouseGroove,
+  isVibePresetId,
+  sceneAffinity,
+  VIBE_PRESET_MAP,
+  VIBE_PRESETS,
+  type SongVibe,
+  type VibePresetId,
+  type VibePresetMeta,
+} from './affinity.ts';
 
 export type StyleId = 'pulse' | 'velvet' | 'ballad' | 'word' | 'ink';
 
@@ -27,6 +38,8 @@ export interface SongTraits {
   lyrics: boolean;
   /** 可选的网易云百科曲风、情绪标签与 BPM，供导演层细化同风格内的各场景出现概率 */
   wiki?: { genres: string[]; tags: string[]; bpm?: number };
+  /** 用户在右侧设置面板手动选择的音乐风格预设（用于动态调节各场景出现概率） */
+  vibePreset?: VibePresetId;
 }
 
 /** Plates built around the sung words. A song without lyrics (pure music) never gets them. */
@@ -82,12 +95,55 @@ function forSong(pool: Plate[], song: SongTraits, fill: Plate[]): Plate[] {
   return out;
 }
 
+/**
+ * 当用户手动锁定了「律动 (PULSE)」剪辑节奏，但又在「音乐风格」中手动选择了微醺、国风、民谣或说唱时，
+ * 按需将对应曲风的标志性场景注入候选池（保持 auto 下零变动，同时让跨风格混搭如“国风电音”“踩拍微醺”自然生效）。
+ */
+function withPulseVibePlates(base: Plate[], s: Section, song: SongTraits): Plate[] {
+  const preset = song.vibePreset;
+  if (!preset || preset === 'auto' || s.label === 'build' || s.label === 'pre') return base;
+  const extras: Plate[] = [];
+  if (preset === 'urban') {
+    extras.push(
+      H(2.1, 2.4, 'velvet', 'lounge', 'skim', 'platter', 'gallery'),
+      W(1.5, 'neon', 'walk', 'low', 'up'),
+      W(1.4, 'rain', 'pane', 'clear'),
+      W(1.2, 'bokeh', 'focus', 'orbit'),
+    );
+  } else if (preset === 'oriental') {
+    extras.push(
+      H(2.2, 2.5, 'ink', 'bloom', 'scroll', 'mist'),
+      H(1.9, 2.1, 'papercut', 'bloom', 'turn'),
+      H(1.9, 2.1, 'lanterns', 'shore', 'rise', 'wide'),
+      W(1.6, 'clouds', 'rise', 'over', 'skim'),
+    );
+  } else if (preset === 'acoustic') {
+    extras.push(
+      H(2.0, 2.3, 'rain', 'pane', 'close', 'clear'),
+      H(2.0, 2.3, 'lanterns', 'shore', 'rise', 'wide'),
+      H(1.8, 2.0, 'aurora', 'wide', 'lake'),
+      W(1.6, 'bokeh', 'focus', 'rise'),
+      W(1.5, 'clouds', 'over', 'rise'),
+    );
+  } else if (preset === 'rap') {
+    extras.push(
+      H(2.3, 2.6, 'typewall', 'stack', 'split', 'solo'),
+      H(2.1, 2.4, 'neon', 'walk', 'low', 'up'),
+    );
+  }
+  if (!extras.length) return base;
+  const seen = new Set(base.map(p => p.scene));
+  const merged = [...base];
+  for (const e of extras) if (!seen.has(e.scene)) merged.push(e);
+  return merged;
+}
+
 export const PULSE: Style = {
   id: 'pulse',
   name: '律动',
   look: 'pulse',
   glyph: '△',
-  pool: (s, song) => forSong(pulsePool(s), song, [W(1.1, 'kaleido', 'petal', 'spiral'), W(1.0, 'flip', 'wave', 'burst')]),
+  pool: (s, song) => forSong(withPulseVibePlates(pulsePool(s), s, song), song, [W(1.1, 'kaleido', 'petal', 'spiral'), W(1.0, 'flip', 'wave', 'burst')]),
   baseBars: s => {
     switch (s.label) {
       case 'build': case 'pre': case 'chorus': case 'drop': return 2;
@@ -543,4 +599,20 @@ export function chooseStyle(a: Analysis, wiki?: { genres: string[]; tags: string
   if (drops > 0) return { style: PULSE, reason: '含 drop', features };
   if (drumsPerSecond >= 1.6) return { style: PULSE, reason: '鼓点密集', features };
   return { style: BALLAD, reason: '鼓点稀疏、无 drop', features };
+}
+
+/**
+ * 当视觉母风格设为「自动」且用户在右侧手动指定了「音乐风格」预设时，
+ * 同步映射到最契合该音乐风格的默认母风格（同时保留用户在上方手动锁定母风格的高优先级）。
+ */
+export function chooseStyleForVibePreset(preset: VibePresetId | undefined, hasLyrics: boolean, base: StyleChoice): StyleChoice {
+  if (!preset || preset === 'auto') return base;
+  const meta = VIBE_PRESET_MAP[preset];
+  if (!meta?.preferredStyle) return base;
+  const styleId: StyleId = meta.preferredStyle === 'word' && !hasLyrics ? 'pulse' : meta.preferredStyle;
+  return {
+    style: STYLES[styleId],
+    reason: `音乐风格：${meta.label}`,
+    features: base.features,
+  };
 }

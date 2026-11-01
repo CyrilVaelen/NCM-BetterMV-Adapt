@@ -85,7 +85,104 @@ export function isSteadyHouseGroove(a: Analysis, bpm: number): boolean {
   return true;
 }
 
-/** 连续多维音乐气质画像（各维度取值 0..1），同时支持百科标签精确引导与纯声学无标签推断 */
+/** 用户可在设置面板「画面 → 音乐风格」中手动选择的音乐曲风预设（驱动各场景出现概率） */
+export type VibePresetId =
+  | 'auto'
+  | 'melodic'
+  | 'cyber'
+  | 'urban'
+  | 'rock'
+  | 'acoustic'
+  | 'oriental'
+  | 'rap';
+
+export interface VibePresetMeta {
+  id: VibePresetId;
+  /** 面板按钮上的简短中文名称（适配右侧 380px 抽屉的 4×2 网格） */
+  label: string;
+  /** 选择该音乐风格后的详细概率调整说明 */
+  note: string;
+  /** 当上方视觉「风格」设为「自动」时，该音乐风格默认匹配的母风格 */
+  preferredStyle?: 'pulse' | 'velvet' | 'ballad' | 'word' | 'ink';
+}
+
+export const VIBE_PRESETS: readonly VibePresetMeta[] = [
+  {
+    id: 'auto',
+    label: '自动',
+    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 41 个场景在首镜与段内轮换中的出现概率。',
+  },
+  {
+    id: 'melodic',
+    label: '旋律电音',
+    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升涅槃舞台、晚霞水台、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
+    preferredStyle: 'pulse',
+  },
+  {
+    id: 'cyber',
+    label: '硬核电音',
+    note: '适合 Dubstep / DnB / Techno / Hardcore / 音游疾速：大幅提升推进隧道、音频通道、门格海绵、谢尔宾斯基、碎裂解构、能量球与示波器概率，压低柔光慢景。',
+    preferredStyle: 'pulse',
+  },
+  {
+    id: 'urban',
+    label: '浩室微醺',
+    note: '适合 House / Synthwave / R&B / City Pop / Funk：大幅提升暗涌水廊、夜城天际、琥珀黑胶、霓虹街牌、散景光斑与夜雨车窗概率，减少激烈爆裂镜头。',
+    preferredStyle: 'velvet',
+  },
+  {
+    id: 'rock',
+    label: '摇滚独立',
+    note: '适合摇滚 / 乐队 / 朋克 / 后摇 / 独立另类：大幅提升山脊线框、碎裂封面、网点印刷、海报构成、黑胶唱盘、示波器与翻转矩阵概率，突出粗粝张力。',
+    preferredStyle: 'pulse',
+  },
+  {
+    id: 'acoustic',
+    label: '民谣抒情',
+    note: '适合民谣 / 流行慢歌 / 钢琴弦乐 / 纯音乐 / 爵士：大幅提升夜雨窗前、孔明灯海、极光湖面、微缩景箱、散景光斑、云海与油画画布概率，避开高频闪烁。',
+    preferredStyle: 'ballad',
+  },
+  {
+    id: 'oriental',
+    label: '国风古韵',
+    note: '适合国风 / 古风 / 戏腔 / 民乐 / 国风电音：大幅提升宣纸水墨、剪纸窗花、孔明灯海、涅槃火凤、云海远山与丹青画布概率，兼顾古韵与国潮律动。',
+    preferredStyle: 'ink',
+  },
+  {
+    id: 'rap',
+    label: '说唱街头',
+    note: '适合说唱 / Hip-Hop / Trap / 街头潮流：大幅提升字墙冲击、霓虹街区、海报排版、网点印刷、夜城俯瞰、碎裂封面与黑胶概率，强化节奏与文字张力。',
+    preferredStyle: 'word',
+  },
+];
+
+export const VIBE_PRESET_MAP: Record<VibePresetId, VibePresetMeta> = {
+  auto: VIBE_PRESETS[0],
+  melodic: VIBE_PRESETS[1],
+  cyber: VIBE_PRESETS[2],
+  urban: VIBE_PRESETS[3],
+  rock: VIBE_PRESETS[4],
+  acoustic: VIBE_PRESETS[5],
+  oriental: VIBE_PRESETS[6],
+  rap: VIBE_PRESETS[7],
+};
+
+export function isVibePresetId(value: unknown): value is VibePresetId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(VIBE_PRESET_MAP, value);
+}
+
+/** 各手动预设在 7 个气质维度上的目标引导向量：[melodicEpic, hardCyber, urbanGroove, indieRock, acousticWarm, oriental, vocalLyric] */
+const PRESET_VECTORS: Record<Exclude<VibePresetId, 'auto'>, readonly [number, number, number, number, number, number, number]> = {
+  melodic:  [1.00, 0.06, 0.14, 0.00, 0.22, 0.08, 0.12],
+  cyber:    [0.04, 1.00, 0.04, 0.18, 0.00, 0.00, 0.06],
+  urban:    [0.16, 0.00, 1.00, 0.04, 0.24, 0.00, 0.20],
+  rock:     [0.06, 0.24, 0.12, 1.00, 0.04, 0.00, 0.28],
+  acoustic: [0.24, 0.00, 0.16, 0.00, 1.00, 0.12, 0.24],
+  oriental: [0.24, 0.00, 0.00, 0.04, 0.28, 1.00, 0.18],
+  rap:      [0.00, 0.28, 0.34, 0.36, 0.00, 0.00, 1.00],
+};
+
+/** 连续多维音乐气质画像（各维度取值 0..1），同时支持用户手动选择、百科标签引导与纯声学推断 */
 export interface SongVibe {
   /** 恢弘旋律 / 旋律贝斯 / Future Bass / Progressive / Trance */
   melodicEpic: number;
@@ -260,6 +357,24 @@ export function analyzeSongVibe(a: Analysis, song?: Partial<SongTraits>): SongVi
   }
   vocalLyric = clamp01(vocalLyric);
 
+  // 若用户在右侧「设置 → 画面 → 音乐风格」中手动指定了曲风预设，则以用户所选曲风为主导调节各场景出现概率，
+  // 同时仅保留微弱的本曲实时动态特征（避免网易云错误曲风标签冲淡用户的手动选择）
+  const preset = song?.vibePreset;
+  if (preset && preset !== 'auto' && isVibePresetId(preset)) {
+    const pv = PRESET_VECTORS[preset];
+    const blend = (target: number, autoVal: number) => clamp01(0.88 * target + (target > 0.15 ? 0.14 : 0.06) * autoVal);
+    return {
+      melodicEpic: blend(pv[0], melodicEpic),
+      hardCyber: blend(pv[1], hardCyber),
+      urbanGroove: blend(pv[2], urbanGroove),
+      indieRock: blend(pv[3], indieRock),
+      acousticWarm: blend(pv[4], acousticWarm),
+      oriental: blend(pv[5], oriental),
+      vocalLyric: hasLyrics ? blend(pv[6], vocalLyric) : 0,
+      summary: VIBE_PRESET_MAP[preset].label,
+    };
+  }
+
   // 提取前两个显著倾向生成可读摘要
   const ranked = (Object.keys(VIBE_LABELS) as VibeDim[])
     .map(k => ({ k, v: ({ melodicEpic, hardCyber, urbanGroove, indieRock, acousticWarm, oriental, vocalLyric })[k] }))
@@ -270,6 +385,11 @@ export function analyzeSongVibe(a: Analysis, song?: Partial<SongTraits>): SongVi
     : '均衡编排';
 
   return { melodicEpic, hardCyber, urbanGroove, indieRock, acousticWarm, oriental, vocalLyric, summary };
+}
+
+/** 获取不叠加手动预设时本曲自动识别出的音乐气质摘要（用于在设置面板展示「自动识别：…」） */
+export function autoSongVibeSummary(a: Analysis, song?: Partial<SongTraits>): string {
+  return analyzeSongVibe(a, song ? { ...song, vibePreset: 'auto' } : undefined).summary;
 }
 
 /**

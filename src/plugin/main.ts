@@ -15,7 +15,7 @@ import { lyricFingerprint, readAnalysisCache, writeAnalysisCache } from './analy
 import { alignSong, applyAlignment, applyLockedAlignment, cachedAlignment, checkPack, needsAlignment } from './aligner.ts';
 import { parseLocalLrc, readLocalLrcText } from '../lyrics/local.ts';
 import { parseNeteaseLyric } from '../lyrics/parse.ts';
-import { analyzeSongVibe, chooseStyle, LYRIC_PLATES } from '../style/style.ts';
+import { analyzeSongVibe, autoSongVibeSummary, chooseStyle, LYRIC_PLATES, VIBE_PRESET_MAP } from '../style/style.ts';
 import { isRecordingKeys, keyCombo, loadConfig, mvButton, Overlay, pixelRatio, settingsView, type BarSection, type Config, type QueueTrack, type SettingsActions } from './ui.ts';
 import type { SectionLabel } from '../types.ts';
 
@@ -90,6 +90,12 @@ function start(client: Client): void {
   const alignmentJobs = new WeakMap<PreparedSong, { lines: PreparedSong['lines']; done: Promise<string> }>();
   const settingsActions = (id: number): SettingsActions => ({
     alignmentStatus: () => alignmentDetail.get(ready.get(id)!) ?? '',
+    vibeStatus: () => {
+      const target = ready.get(id);
+      return target
+        ? autoSongVibeSummary(target.analysis, { graphic: target.palette.graphic, lyrics: config.showLyrics && target.lines.length > 0, wiki: target.wiki })
+        : '';
+    },
     alignLyrics: async () => {
       const target = ready.get(id);
       if (!target || !isLocalLrcSong.has(target)) throw new Error('请先打开这首歌的 MV 并导入本地 LRC');
@@ -240,7 +246,7 @@ function start(client: Client): void {
   // What the loaded MV was planned with: a settings change replans it only when the style, the scenes or looks, the
   // arrangement mode or this song's lyric delay changed.
   let plannedWith = '';
-  const planKey = (c: Config, id = player?.song?.id) => `${c.style}|${c.off.join(',')}|${c.offLooks.join(',')}|${id ? c.lyricDelays[id] ?? 0 : 0}|${c.arrange}`;
+  const planKey = (c: Config, id = player?.song?.id) => `${c.style}|${c.vibe}|${c.off.join(',')}|${c.offLooks.join(',')}|${id ? c.lyricDelays[id] ?? 0 : 0}|${c.arrange}`;
   /**
    * The arrangement's seed: a fixed one per song when its arrangement is kept, a new one when asked for (`fresh`),
    * else the player's own (drawn anew for each play of a song, kept while it plays).
@@ -249,21 +255,27 @@ function start(client: Client): void {
     fresh ? (Math.random() * 4294967296) >>> 0 : c.arrange === 'fixed' ? Math.imul(song.id ^ 0x9e3779b9, 2654435761) >>> 0 : undefined;
   const plan = (song: PreparedSong, c: Config, fresh = false) => {
     plannedWith = planKey(c, song.id);
-    player!.load(song, styleFor(song, c.style, c.showLyrics), new Set([...c.off, ...c.offLooks]), undefined, undefined, (c.lyricDelays[song.id] ?? 0) / 1000, seedFor(song, c, fresh), undefined, c.showLyrics);
+    player!.load(song, styleFor(song, c.style, c.showLyrics, c.vibe), new Set([...c.off, ...c.offLooks]), undefined, undefined, (c.lyricDelays[song.id] ?? 0) / 1000, seedFor(song, c, fresh), undefined, c.showLyrics, c.vibe);
   };
   /** 判断切换歌词显示开关后是否需要重新编排镜头（如当前存在纯文字版式场景或自动风格需切离“字”风格） */
   const needsLyricReplan = (song: PreparedSong, c: Config): boolean => {
     if (!player) return false;
-    if (player.style?.id !== styleFor(song, c.style, c.showLyrics).id) return true;
+    if (player.style?.id !== styleFor(song, c.style, c.showLyrics, c.vibe).id) return true;
     if (!c.showLyrics && player.shots.some(s => LYRIC_PLATES.has(s.scene))) return true;
     return false;
   };
   /** The MV's style beside the volume (and why, when chosen automatically), and how the lyrics' word times stand. */
   const describe = (song: PreparedSong) => {
-    const vibe = analyzeSongVibe(song.analysis, { graphic: song.palette.graphic, lyrics: config.showLyrics && song.lines.length > 0, wiki: song.wiki });
+    const vibe = analyzeSongVibe(song.analysis, { graphic: song.palette.graphic, lyrics: config.showLyrics && song.lines.length > 0, wiki: song.wiki, vibePreset: config.vibe });
+    const manualVibe = config.vibe !== 'auto' ? VIBE_PRESET_MAP[config.vibe]?.label : undefined;
     overlay.mvInfo({
-      style: player!.style!.name, why: config.style === 'auto' ? styleChoiceFor(song, config.showLyrics).reason : null, bpm: song.analysis.namedBpm ?? song.analysis.bpm,
-      vibeDetail: `场景权重：${vibe.summary}（按本曲气质动态调节场景出现概率）`,
+      style: player!.style!.name,
+      why: config.style === 'auto' ? styleChoiceFor(song, config.showLyrics, config.vibe).reason : null,
+      bpm: song.analysis.namedBpm ?? song.analysis.bpm,
+      vibeBadge: manualVibe,
+      vibeDetail: manualVibe
+        ? `音乐风格：${manualVibe}（手动指定，已按该曲风动态调整各场景出现概率）`
+        : `音乐风格：自动识别为 ${vibe.summary}（按本曲气质动态调节场景出现概率）`,
       lyrics: config.showLyrics ? (aligned.get(song) ?? null) : null,
       lyricDetail: !config.showLyrics ? '歌词：已关闭显示' : (sectionRefresh.get(song) ?? alignmentDetail.get(song)),
       audioDetail: AUDIO_SOURCE_LABEL[songAudioSource.get(song) ?? 'netease-stream'],

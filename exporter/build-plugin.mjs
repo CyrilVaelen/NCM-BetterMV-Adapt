@@ -40,7 +40,7 @@ manifest.name=PLUGIN_NAME;
 manifest.version=VERSION;
 manifest.author=PLUGIN_AUTHOR;
 manifest.author_link=PLUGIN_REPO;
-manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种母风格与按曲风/声学气质动态加权的场景概率调度系统。';
+manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 41 个实时 3D 场景、5 种母风格，支持手动选择音乐风格并动态调整各场景出现概率。';
 const manifestJson = JSON.stringify(manifest,null,2);
 zip.file('manifest.json',manifestJson);
 for(const [source,target] of [['dist/plugin/bettermv.js','bettermv.js'],['plugin/preview.jpg','preview.jpg'],['LICENSE','LICENSE']])zip.file(target,await fs.readFile(path.join(PROJECT,source)));

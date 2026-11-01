@@ -216,6 +216,13 @@ const CSS = `
 .bmv-tile .bmv-tile-img{transition:transform .25s var(--ease)}
 .bmv-tile:active .bmv-tile-img{transform:scale(.97)}
 .bmv-segc button[aria-pressed=true]{background:var(--on);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.05)}
+.bmv-vibe-grid{flex:1 1 100%;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:3px;padding:3px;border-radius:8px;background:var(--track)}
+.bmv-set.is-compact .bmv-vibe-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:640px){.bmv-vibe-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.bmv-vibe-grid button{height:26px;padding:0 4px;border-radius:6px;font-size:12px;color:var(--t1);white-space:nowrap;text-align:center;transition:background-color .2s,box-shadow .2s,transform .2s var(--ease)}
+.bmv-vibe-grid button:hover{background:var(--ctl-hover)}
+.bmv-vibe-grid button:active{transform:scale(.96)}
+.bmv-vibe-grid button[aria-pressed=true]{background:var(--on);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.05)}
 .bmv-switch{position:relative;flex:none;width:40px;height:24px;border-radius:12px;background:var(--off);transition:background-color .25s var(--ease)}
 .bmv-switch::after{content:"";position:absolute;left:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff;
   box-shadow:0 1px 3px rgba(0,0,0,.28),0 0 0 .5px rgba(0,0,0,.04);transition:transform .3s var(--ease)}

@@ -5,7 +5,7 @@
   "version": "0.9.0-local-export.45",
   "author": "CyrilVaelen",
   "author_link": "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce",
-  "description": "为正在播放的歌曲实时生成 3D MV：内置 41 个实时动效场景、5 种曲风导演风格、4 种胶片印刷画风，支持全场景主旋律响应、秒开秒切着色器缓存加速与本地视频导出。",
+  "description": "为正在播放的歌曲实时生成 3D MV：内置 41 个实时动效场景、5 种导演母风格与 8 档音乐曲风概率预设（支持自选音乐风格后自动调整各场景出现概率）、4 种胶片印刷画风，支持秒开秒切加速与本地视频导出。",
   "betterncm_version": ">=1.3.4",
   "ncm-version-req": ">=3.0.0",
   "ncm3-compatible": true,

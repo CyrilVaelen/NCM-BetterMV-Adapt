@@ -8,7 +8,7 @@ import { parseChorus } from '../src/plugin/source.ts';
 import { loadFonts } from '../src/render/text.ts';
 import { LOOKS, SCENES } from '../src/scenes/catalog.ts';
 import type { LookId, SceneId } from '../src/scenes/types.ts';
-import { STYLES, type StyleId } from '../src/style/style.ts';
+import { isVibePresetId, STYLES, type StyleId, type VibePresetId } from '../src/style/style.ts';
 import type { LyricLine } from '../src/types.ts';
 
 interface JobInput {
@@ -24,6 +24,7 @@ interface JobInput {
   chorus?: unknown;
   config?: {
     style?: 'auto' | StyleId;
+    vibe?: VibePresetId;
     quality?: 'high' | 'mid' | 'low';
     seed?: number;
     off?: SceneId[];
@@ -136,7 +137,8 @@ async function initialise(): Promise<void> {
   if (lines !== undefined) song.lines = lines;
   if (!Number.isFinite(song.duration) || song.duration <= 0) throw new Error('The audio has no usable duration');
   const showLyrics = config.showLyrics !== false;
-  const style = styleFor(song, config.style, showLyrics);
+  const vibe = isVibePresetId(config.vibe) ? config.vibe : 'auto';
+  const style = styleFor(song, config.style, showLyrics, vibe);
   // Output dimensions are CSS pixels at deviceScaleFactor=1. The plugin's low
   // setting renders at 70% internally; the canvas still fills the output frame.
   player = new MvPlayer(stage, config.quality === 'low' ? 0.7 : 1);
@@ -149,7 +151,7 @@ async function initialise(): Promise<void> {
   ]);
   const delayMs = Number(config.lyricDelays?.[String(input.song.id)] ?? 0);
   if (!Number.isFinite(delayMs)) throw new Error('Invalid lyric delay');
-  player.load(song, style, off, undefined, undefined, delayMs / 1000, seed, undefined, showLyrics);
+  player.load(song, style, off, undefined, undefined, delayMs / 1000, seed, undefined, showLyrics, vibe);
   await player.warm(yieldToPage);
   await document.fonts.ready;
   info = { duration: song.duration, name: input.song.name, artists: input.song.artists ?? [], width, height, fps, seed, style: style.id };
