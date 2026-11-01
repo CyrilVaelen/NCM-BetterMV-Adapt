@@ -4,6 +4,7 @@ interface BetterNCMPlugin {
   pluginPath: string;
   onLoad(fn: () => void): void;
   onConfig(fn: () => HTMLElement): void;
+  onAllPluginsLoaded?(fn: () => void): void;
   getConfig<T>(key: string, fallback: T): T;
   setConfig<T>(key: string, value: T): void;
 }

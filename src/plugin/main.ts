@@ -57,6 +57,71 @@ plugin.onConfig(() => {
     : (currentActiveClient ? playingSong(currentActiveClient.store) : null);
   return settingsView(config, changed, sketch, false, song ? { id: song.id, name: song.name } : undefined, song ? settingsActionsFor(song.id) : {});
 });
+
+/**
+ * 将 BetterNCM 插件管理器的默认展示页设为 BetterMV（并将左侧列表项置顶），
+ * 用户在管理面板内仍可随时手动点击切换到 PluginMarket 或其他插件。
+ */
+(function preferBetterMvInManager() {
+  const ensureListOrderStyle = () => {
+    const id = 'bmv-bncm-mgr-order';
+    if (document.getElementById(id) || !document.head) return;
+    const st = document.createElement('style');
+    st.id = id;
+    st.textContent =
+      '.better-ncm-manager .loaded-plugins-list > div > div { display: flex; flex-direction: column; }' +
+      '.better-ncm-manager .loaded-plugins-list .plugin-btn[data-plugin-slug="ncm-better-mv"] { order: -1; }';
+    document.head.append(st);
+  };
+  ensureListOrderStyle();
+
+  const selectBetterMv = (): boolean => {
+    ensureListOrderStyle();
+    const btn = document.querySelector<HTMLElement>(
+      '.better-ncm-manager .loaded-plugins-list .plugin-btn[data-plugin-slug="ncm-better-mv"]',
+    );
+    if (!btn) return false;
+    if (!btn.classList.contains('selected')) btn.click();
+    return btn.classList.contains('selected');
+  };
+
+  let tries = 0;
+  let manualSelect = false;
+  window.addEventListener(
+    'click',
+    e => {
+      const target = e.target as Element | null;
+      if (target?.closest?.('.better-ncm-manager .loaded-plugins-list') && e.isTrusted) {
+        manualSelect = true;
+        return;
+      }
+      if (target?.closest?.('[title="BetterNCM"]')) {
+        requestAnimationFrame(() => {
+          const mgr = document.querySelector('.better-ncm-manager');
+          if (mgr?.classList.contains('ncmm-show')) selectBetterMv();
+        });
+        return;
+      }
+      if (target?.closest?.('.better-ncm-manager') && target.textContent?.includes('开始使用 BetterNCM')) {
+        window.setTimeout(selectBetterMv, 30);
+      }
+    },
+    true,
+  );
+
+  const pollInitial = () => {
+    if (manualSelect || selectBetterMv() || ++tries > 50) return;
+    window.setTimeout(pollInitial, 150);
+  };
+  if (typeof plugin.onAllPluginsLoaded === 'function') {
+    plugin.onAllPluginsLoaded(() => {
+      tries = 0;
+      pollInitial();
+    });
+  }
+  pollInitial();
+})();
+
 void checkPack();
 
 /** A song being prepared: the one to show (urgent), or the next one ahead. */
