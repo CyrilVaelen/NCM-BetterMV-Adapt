@@ -18,6 +18,7 @@ import {
   WORD,
   type SongTraits,
 } from '../src/style/style.ts';
+import { SCENES, SCENE_GROUPS } from '../src/scenes/catalog.ts';
 import type { Analysis, Hit, Section } from '../src/types.ts';
 import type { SceneId } from '../src/scenes/types.ts';
 
@@ -261,4 +262,22 @@ test('右侧设置面板手动选择「音乐风格」预设（vibePreset）：�
   assert.equal(chooseStyleForVibePreset('rap', true, autoBase).style, WORD);
   assert.equal(chooseStyleForVibePreset('rap', false, autoBase).style, PULSE, '关闭歌词或纯音乐时说唱预设自动退回律动母风格');
   assert.equal(chooseStyleForVibePreset('melodic', true, autoBase).style, PULSE);
+});
+
+test('花坛喷泉 (fountain) 注册完整性与跨曲风概率响应：42 场景齐全，旋律/治愈显著提振，硬核疾速自动退让', () => {
+  assert.equal(SCENES.length, 42, '场景总数应更新为 42');
+  const worldGroup = SCENE_GROUPS.find(g => g.name === '世界');
+  assert.ok(worldGroup?.scenes.some(s => s.id === 'fountain' && s.name === '花坛喷泉'));
+
+  const music = new Music(makeSongAnalysis({ bpm: 128, hasDrops: true, kickRate: 1.5, snareRate: 0.7, meanMid: 0.56, leadLevel: 0.65 }));
+  let melodicFountain = 0;
+  let cyberFountain = 0;
+  for (let seed = 1; seed <= 160; seed++) {
+    const mShots = planShots(music, PULSE, seed * 389, { graphic: false, lyrics: true, vibePreset: 'melodic' }, NO_DECOR);
+    const cShots = planShots(music, PULSE, seed * 389, { graphic: false, lyrics: true, vibePreset: 'cyber' }, NO_DECOR);
+    melodicFountain += mShots.filter(s => s.scene === 'fountain').length;
+    cyberFountain += cShots.filter(s => s.scene === 'fountain').length;
+  }
+  assert.ok(melodicFountain > 20, `旋律电音下花坛喷泉应积极登场，实际 ${melodicFountain}`);
+  assert.ok(melodicFountain > cyberFountain * 2.5, `旋律电音下花坛喷泉频次 (${melodicFountain}) 应显著高于硬核电音 (${cyberFountain})`);
 });

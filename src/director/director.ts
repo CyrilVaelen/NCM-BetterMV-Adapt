@@ -465,6 +465,7 @@ const MOTION: Record<SceneId, TransitionKind[]> = {
   sunset: [zoom, TransitionKind.matte],
   phoenix: [zoom, TransitionKind.matte],
   velvet: [TransitionKind.matte, zoom],
+  fountain: [zoom, TransitionKind.matte],
 };
 const SOFT: TransitionKind[] = [zoom, TransitionKind.matte, TransitionKind.iris, spin];
 

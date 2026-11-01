@@ -110,12 +110,12 @@ export const VIBE_PRESETS: readonly VibePresetMeta[] = [
   {
     id: 'auto',
     label: '自动',
-    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 41 个场景在首镜与段内轮换中的出现概率。',
+    note: '自动识别歌曲曲风百科与鼓组声学特征，动态调节 42 个场景在首镜与段内轮换中的出现概率。',
   },
   {
     id: 'melodic',
     label: '旋律电音',
-    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升涅槃舞台、晚霞水台、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
+    note: '适合 Melodic Bass / Future Bass / Progressive / Trance：大幅提升涅槃舞台、晚霞水台、花坛喷泉、深海奇观、极光天幕、云海与粒子概率，压低硬核分形与机械读数。',
     preferredStyle: 'pulse',
   },
   {
@@ -393,7 +393,7 @@ export function autoSongVibeSummary(a: Analysis, song?: Partial<SongTraits>): st
 }
 
 /**
- * 41 个场景在 7 个气质维度上的美学契合向量：
+ * 42 个场景在 7 个气质维度上的美学契合向量：
  * [melodicEpic, hardCyber, urbanGroove, indieRock, acousticWarm, oriental, vocalLyric]
  * 正值表示该类音乐提升场景出现概率，负值表示自动退让，0 表示中性百搭。
  */
@@ -428,6 +428,7 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
   sunset:     [ 1.30, -0.80,  0.65, -0.45,  0.65,  0.60,  0.10],
   phoenix:    [ 1.35, -0.10, -0.30,  0.25, -0.50,  1.10,  0.05],
   velvet:     [ 0.15, -0.85,  1.35, -0.40,  0.35, -0.25,  0.10],
+  fountain:   [ 1.20, -0.75,  0.70, -0.45,  0.85,  0.55,  0.20],
   // 音乐可视化
   ripple:     [ 0.40,  0.45,  0.35,  0.20,  0.05,  0.00,  0.00],
   channel:    [-0.30,  1.30,  0.15,  0.15, -0.65, -0.25,  0.00],
@@ -449,7 +450,7 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
 };
 
 const SPECTACLE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'phoenix', 'drive', 'sunset', 'underwater', 'city', 'channel', 'shatter', 'aurora',
+  'phoenix', 'drive', 'sunset', 'fountain', 'underwater', 'city', 'channel', 'shatter', 'aurora',
 ]);
 const VOCAL_STAGE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'poster', 'typewall', 'neon', 'rain', 'lanterns', 'city', 'shatter', 'vinyl',
