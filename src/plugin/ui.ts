@@ -608,16 +608,16 @@ export class Overlay {
       this.panelTitle.textContent = '设置';
       this.panelAside.innerHTML = appIcon(18);
       const repoLink = el('a', '', VERSION ? `BetterMV ${VERSION}` : 'BetterMV');
-      repoLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+      repoLink.href = 'https://github.com/CyrilVaelen/NCM-BetterMV-Adapt';
       repoLink.target = '_blank';
       repoLink.rel = 'noopener noreferrer';
-      repoLink.title = '维护者：CyrilVaelen · 开源仓库：https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce';
+      repoLink.title = '维护者：CyrilVaelen · 开源仓库：https://github.com/CyrilVaelen/NCM-BetterMV-Adapt';
       repoLink.style.color = 'inherit';
       repoLink.style.textDecoration = 'none';
       repoLink.onclick = e => {
         if (typeof betterncm !== 'undefined' && betterncm.app?.exec) {
           e.preventDefault();
-          void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce"', false, false);
+          void betterncm.app.exec('cmd /c start "" "https://github.com/CyrilVaelen/NCM-BetterMV-Adapt"', false, false);
         }
       };
       this.panelAside.append(repoLink);
@@ -1191,7 +1191,7 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     repoRow.style.marginTop = '6px';
     repoRow.append(
       '重置版仓库（CyrilVaelen）：',
-      openExternalLink('https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce', true),
+      openExternalLink('https://github.com/CyrilVaelen/NCM-BetterMV-Adapt', 'https://github.com/CyrilVaelen/NCM-BetterMV-Adapt', true),
     );
     const creditRow = el('div', 'bmv-set-desc');
     creditRow.style.marginTop = '2px';
@@ -1203,7 +1203,7 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     );
     text.append(
       name,
-      el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 41 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'),
+      el('div', 'bmv-set-desc', '为正在播放的歌曲实时生成 3D MV：以封面构建 42 个场景，按歌曲结构与主旋律剪辑镜头，支持 5 种曲风风格与 4 种画风。'),
       repoRow,
       creditRow,
     );
@@ -1214,7 +1214,7 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
     compactMeta.style.margin = '0 0 10px';
     compactMeta.style.lineHeight = '1.55';
     const r1 = el('div');
-    r1.append('重置版仓库：', openExternalLink('CyrilVaelen/NCM-BetterMV-Reproduce', 'https://github.com/CyrilVaelen/NCM-BetterMV-Reproduce'));
+    r1.append('重置版仓库：', openExternalLink('CyrilVaelen/NCM-BetterMV-Adapt', 'https://github.com/CyrilVaelen/NCM-BetterMV-Adapt'));
     const r2 = el('div');
     r2.style.opacity = '0.8';
     r2.append('致谢原创：基于 ', openExternalLink('XIAOMING6680/NCM-BetterMV', 'https://github.com/xiaoming6680/NCM-BetterMV'), ' (v0.9.0) 定制');
@@ -1337,7 +1337,7 @@ export function settingsView(config: Config, onChange: (c: Config) => void, prev
   const styleNote = el('div', '', STYLE_NOTE[config.style]);
   row(picture, '风格', segmented('style', [['auto', '自动'], ['pulse', '律动'], ['velvet', '微醺'], ['ballad', '抒情'], ['word', '字'], ['ink', '墨']], () => { styleNote.textContent = STYLE_NOTE[config.style]; }), undefined, styleNote);
 
-  // 手动选择音乐风格（动态调整 41 个场景在首镜与段内轮换中的出现概率）
+  // 手动选择音乐风格（动态调整 42 个场景在首镜与段内轮换中的出现概率）
   const vibeRow = el('div', 'bmv-row');
   const vibeLeft = el('div', 'bmv-row-l');
   vibeLeft.append(el('div', 'bmv-row-label', '音乐风格'), el('div', 'bmv-row-sub', '自选曲风后，自动调整不同场景的出现概率'));
