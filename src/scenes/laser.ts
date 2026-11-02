@@ -833,7 +833,7 @@ void main() {
 `;
 
 // ============================================================================
-// 5. 舞台底座、发光轮廓 DJ 控台与逆光 DJ 剪影着色器 (DJ_STAGE_UNIT)
+// 5. 舞台底座、装甲控台、四联 CDJ 打碟机面板与写实 3D 骨骼 DJ 着色器 (DJ_STAGE_UNIT)
 // ============================================================================
 const STAGE_DECK_FRAG = /* glsl */ `
 uniform float uTime;
@@ -847,74 +847,192 @@ varying vec2 vUv;
 varying vec3 vWorldPos;
 
 void main() {
-  // 暗黑金属装甲底色 + 边缘霓虹灯条勾勒
+  // 哑光重装甲金属底色 + 克制锐利的导光棱线（避免过亮抢夺舞台人物剪影层次）
   vec2 edge = min(vUv, 1.0 - vUv);
-  float rimX = 1.0 - smoothstep(0.0, 0.025, edge.x);
-  float rimY = 1.0 - smoothstep(0.0, 0.055, edge.y);
-  float topLip = smoothstep(0.88, 0.98, vUv.y);
+  float rimX = 1.0 - smoothstep(0.0, 0.018, edge.x);
+  float rimY = 1.0 - smoothstep(0.0, 0.040, edge.y);
+  float topLip = smoothstep(0.91, 0.99, vUv.y);
 
-  // 水平声波频闪跑马条纹
+  // 水平声波频闪跑马条纹与装甲折面拉丝微纹理
   float wave = 0.5 + 0.5 * cos(vWorldPos.x * 0.85 - uTime * 9.0);
-  float centerChevron = 1.0 - smoothstep(0.02, 0.05, abs(vUv.y - 0.52 - abs(vUv.x - 0.5) * 0.65));
+  float panelSeam = 1.0 - smoothstep(0.0, 0.012, abs(fract(vWorldPos.x * 0.65) - 0.5));
+  float centerChevron = 1.0 - smoothstep(0.014, 0.036, abs(vUv.y - 0.50 - abs(vUv.x - 0.5) * 0.58));
 
   vec3 neon = mix(uLaserPrimary, uLaserSecondary, wave);
-  vec3 col = uEnvDark * 2.8 + vec3(0.002);
-  col += neon * (topLip * (0.45 + 0.75 * uKickPunch) + (rimX + rimY) * 0.35 + centerChevron * 0.55 * (0.3 + 0.7 * uDropPower));
+  vec3 col = uEnvDark * 2.4 + vec3(0.0018) * (1.0 - 0.25 * panelSeam);
+  col += neon * (topLip * (0.32 + 0.55 * uKickPunch) + (rimX + rimY) * 0.22 + centerChevron * 0.36 * (0.28 + 0.72 * uDropPower));
   col *= (1.0 - 0.85 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
-const DJ_SILHOUETTE_FRAG = /* glsl */ `
+// 控台台面专业四联 Pioneer CDJ-3000 播放器 + 中央 DJM-A9 四通道混音台着色器
+const DECK_GEAR_FRAG = /* glsl */ `
 uniform float uTime;
 uniform float uBeatPos;
 uniform float uDropPower;
+uniform float uKickPunch;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
 uniform vec3 uEnvDark;
 varying vec2 vUv;
 
-float sdSegment(vec2 p, vec2 a, vec2 b, float r) {
-  vec2 pa = p - a, ba = b - a;
-  float h = clamp(dot(pa, ba) / max(1e-4, dot(ba, ba)), 0.0, 1.0);
-  return length(pa - ba * h) - r;
+void main() {
+  // 台面划分为 5 个标准机位槽：[-2, -1]=左双联 CDJ，[0]=中央 DJM 混音台，[+1, +2]=右双联 CDJ
+  vec2 uv = vUv;
+  float gx = uv.x * 5.0;
+  float unitIdx = floor(gx);
+  vec2 local = vec2(fract(gx), uv.y);
+
+  // 铝合金拉丝暗黑机壳底板与设备间隙
+  float unitFrame = smoothstep(0.04, 0.07, local.x) * smoothstep(0.04, 0.07, 1.0 - local.x)
+                  * smoothstep(0.05, 0.09, local.y) * smoothstep(0.05, 0.09, 1.0 - local.y);
+  vec3 col = uEnvDark * 1.8 + vec3(0.0025) * unitFrame;
+
+  if (abs(unitIdx - 2.0) < 0.4) {
+    // 中央 DJM-A9 混音台：4 路通道推子 + 实时跳动双排立体声 VU 电平表 + 滤波器发光旋钮
+    float ch = floor(local.x * 4.0);
+    float cx = fract(local.x * 4.0);
+    // 推子轨道与白色推帽
+    float faderSlot = (1.0 - smoothstep(0.03, 0.06, abs(cx - 0.5))) * step(0.14, local.y) * step(local.y, 0.48);
+    float faderPos = 0.24 + 0.18 * (0.5 + 0.5 * sin(uTime * 1.7 + ch * 1.3));
+    float faderCap = step(abs(cx - 0.5), 0.16) * step(abs(local.y - faderPos), 0.025);
+
+    // 实时跳动 VU 电平灯条（底部柔和冷白 -> 中段主激光色 -> 峰值亮核）
+    float meterBar = step(abs(cx - 0.5), 0.11) * step(0.54, local.y) * step(local.y, 0.88);
+    float level = clamp(0.32 + 0.48 * uDropPower + 0.32 * uKickPunch - 0.12 * abs(ch - 1.5), 0.15, 0.98);
+    float segOn = step(0.25, fract(local.y * 26.0)) * step((local.y - 0.54) / 0.34, level);
+    vec3 vuCol = mix(uLaserSecondary, uLaserPrimaryCore, smoothstep(0.62, 0.86, local.y));
+
+    col += vec3(0.015) * faderSlot + vec3(0.22) * faderCap + vuCol * meterBar * segOn * 1.15;
+  } else {
+    // 左右 4 台 CDJ-3000：上半部高清滚动音轨波形触摸屏 + 下半部标志性发光环形 Jog Wheel 转盘
+    float inScreen = step(0.14, local.x) * step(local.x, 0.86) * step(0.64, local.y) * step(local.y, 0.89);
+    float waveEnv = 0.055 * (0.35 + 0.65 * abs(sin((local.x + uTime * 0.35 + unitIdx * 0.7) * 24.0)));
+    float waveMask = inScreen * (1.0 - smoothstep(0.0, waveEnv, abs(local.y - 0.765)));
+    float playhead = inScreen * (1.0 - smoothstep(0.0, 0.016, abs(local.x - 0.5)));
+
+    // 圆形电容触摸 Jog 转盘与中心小圆屏
+    vec2 jogP = (local - vec2(0.5, 0.35)) * vec2(1.0, 1.18);
+    float r = length(jogP);
+    float outerRing = exp(-pow((r - 0.235) / 0.018, 2.0));
+    float innerHub = step(r, 0.085);
+    float spinAng = atan(jogP.y, jogP.x) + uTime * 3.6 * (unitIdx < 2.0 ? 1.0 : -1.0);
+    float spinMarker = step(r, 0.082) * step(0.055, r) * smoothstep(0.65, 0.98, cos(spinAng));
+
+    // 左下方绿色/封面色 Play 键与橙色 Cue 键点缀
+    float cueBtn = exp(-length(local - vec2(0.18, 0.16)) * 34.0);
+    float playBtn = exp(-length(local - vec2(0.18, 0.25)) * 34.0);
+
+    vec3 deckTint = unitIdx < 2.0 ? uLaserPrimary : uLaserSecondary;
+    col += (uEnvDark * 4.0 + deckTint * 0.22) * inScreen;
+    col += mix(deckTint, uLaserPrimaryCore, 0.55) * waveMask * 0.95 + vec3(0.45) * playhead;
+    col += mix(deckTint, uLaserPrimaryCore, 0.45) * (outerRing * (0.65 + 0.45 * uKickPunch) + spinMarker * 0.85);
+    col += deckTint * 0.25 * innerHub + uLaserPrimaryCore * cueBtn * 0.65 + uLaserSecondary * playBtn * 0.65;
+  }
+
+  col *= (1.0 - 0.85 * uBlackout);
+  gl_FragColor = vec4(col, 1.0);
 }
+`;
+
+// 写实三维骨骼 DJ 人物与监听音箱顶点/片元着色器（真实 3D 世界法线 + 菲涅尔逆光边缘 + 顶棚激光散射 + 控台近场反光）
+const DJ_CHARACTER_VERT = /* glsl */ `
+attribute float aMatTag; // 0=哑光服饰/躯干, 1=皮肤/手部, 2=耳机金属/高光饰件
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+varying float vMatTag;
 
 void main() {
-  // 坐标系 [-1..1] 绘制背靠巨幕强光的 DJ 剪影（头戴耳机 + 随节拍微点头 + 右手高举控场）
-  vec2 p = (vUv - 0.5) * 2.0;
-  float nod = sin(uBeatPos * 3.14159265 * 2.0) * 0.025 * (0.35 + 0.65 * uDropPower);
-  float armPump = sin(uBeatPos * 3.14159265) * 0.08 * uDropPower;
+  vMatTag = aMatTag;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorldPos = wp.xyz;
+  vWorldNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
 
-  // 头部与耳机
-  vec2 headC = vec2(0.0, 0.34 + nod);
-  float dHead = length(p - headC) - 0.145;
-  float dPhones = abs(length(p - (headC + vec2(0.0, 0.02))) - 0.165) - 0.024;
-  if (p.y < headC.y - 0.02) dPhones = 1.0;
+const DJ_CHARACTER_FRAG = /* glsl */ `
+uniform float uDropPower;
+uniform float uKickPunch;
+uniform float uBlinderGlow;
+uniform float uBlackout;
+uniform vec3 uLaserPrimary;
+uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
+uniform vec3 uCoverGlow;
+uniform vec3 uBlinderWarm;
+uniform vec3 uEnvDark;
+varying vec3 vWorldPos;
+varying vec3 vWorldNormal;
+varying float vMatTag;
 
-  // 肩部与躯干（倒梯形夹克剪影）
-  float torsoY = clamp((p.y + 0.95) / 1.12, 0.0, 1.0);
-  float halfTorsoW = mix(0.24, 0.36, smoothstep(0.0, 0.85, torsoY)) * (1.0 - 0.35 * smoothstep(0.85, 1.0, torsoY));
-  float dTorso = max(abs(p.x) - halfTorsoW, max(p.y - 0.18, -0.95 - p.y));
+void main() {
+  vec3 N = normalize(vWorldNormal);
+  vec3 V = normalize(cameraPosition - vWorldPos);
 
-  // 左手扶打碟机旋钮，右手随 Drop 高举带气氛
-  float dArmL = sdSegment(p, vec2(-0.28, 0.10), vec2(-0.46, -0.32), 0.068);
-  vec2 handR = mix(vec2(0.44, -0.22), vec2(0.46, 0.72 + armPump), smoothstep(0.15, 0.75, uDropPower));
-  vec2 elbowR = mix(vec2(0.38, -0.05), vec2(0.38, 0.34 + armPump * 0.5), smoothstep(0.15, 0.75, uDropPower));
-  float dArmR1 = sdSegment(p, vec2(0.28, 0.10), elbowR, 0.068);
-  float dArmR2 = sdSegment(p, elbowR, handR, 0.060);
+  // 基础服装与暗部材质：深邃重磅哑光机能卫衣/夹克，绝不透明或泛灰塑料感
+  float specBoost = vMatTag > 1.5 ? 2.4 : (vMatTag > 0.5 ? 1.25 : 1.0);
+  vec3 baseAlbedo = uEnvDark * (vMatTag > 1.5 ? 2.6 : 1.35) + vec3(0.0014);
 
-  float d = min(min(dHead, dPhones), min(dTorso, min(dArmL, min(dArmR1, dArmR2))));
-  float alpha = 1.0 - smoothstep(-0.015, 0.022, d);
-  if (alpha < 0.01) discard;
+  // 1. 背后巨幅 LED 封面主屏强逆光菲涅尔掠射轮廓光（Grazing Fresnel Rim）
+  // 仅在法线与视线接近相切（掠射边缘）且面朝背光/侧上方时自然浮现，彻底告别生硬的 2D 等宽亮线描边！
+  float ndotv = clamp(dot(N, V), 0.0, 1.0);
+  float fresnel = pow(1.0 - ndotv, vMatTag > 1.5 ? 2.6 : 3.8);
+  float backFacing = smoothstep(-0.28, 0.72, -N.z * 0.68 + abs(N.x) * 0.52 + N.y * 0.35);
+  vec3 sideTint = mix(uLaserPrimary, uLaserSecondary, clamp(0.5 + vWorldPos.x * 0.9, 0.0, 1.0));
+  vec3 backScreenTint = mix(uCoverGlow, mix(sideTint, uLaserPrimaryCore, 0.38), 0.58);
+  vec3 rimLight = backScreenTint * fresnel * backFacing * (0.48 + 0.68 * uDropPower + 0.28 * uKickPunch) * specBoost;
 
-  // 剪影内部极暗并融入封面环境暗调，外缘泛起巨幕背光散射的锐利轮廓光（Rim Light）
-  float rim = smoothstep(-0.055, -0.004, d);
-  vec3 rimTint = mix(uLaserPrimary, uLaserSecondary, 0.5 + 0.5 * p.x);
-  vec3 col = uEnvDark * 2.2 + vec3(0.002) + rimTint * rim * (0.45 + 0.60 * uDropPower) * (1.0 - 0.8 * uBlackout);
+  // 2. 头顶激光天幕与盲眼灯体积漫射顶光（照亮帽顶、斜方肌肩线与高举挥动的小臂上侧）
+  float skyFacing = pow( clamp(N.y * 0.78 + 0.22, 0.0, 1.0), 2.2 );
+  float frontShadow = 0.38 + 0.62 * smoothstep(0.65, -0.45, N.z); // 面向观众的正胸暗部深沉，突出立体剪影感
+  vec3 skyLaser = mix(uLaserPrimary, uLaserSecondary, 0.5) * (0.065 + 0.16 * uDropPower) + uBlinderWarm * uBlinderGlow * 0.14;
+  vec3 topScatter = skyLaser * skyFacing * frontShadow * (vMatTag > 1.5 ? 1.55 : 0.85);
 
-  gl_FragColor = vec4(col, alpha);
+  // 3. 身前四联 CDJ 与混音台屏幕向上的近场微光反射（微妙照亮帽檐下沿、下颌、胸前褶皱与打碟双手）
+  vec3 consoleCenter = vec3(0.0, 2.90, -49.26);
+  vec3 toConsole = consoleCenter - vWorldPos;
+  float distConsole = length(toConsole);
+  vec3 Lc = toConsole / max(1e-3, distConsole);
+  float consoleNdotL = max(0.0, dot(N, Lc));
+  float consoleAtten = 1.0 / (1.0 + distConsole * distConsole * 3.2);
+  vec3 consoleGlow = mix(sideTint, uLaserPrimaryCore, 0.35) * consoleNdotL * consoleAtten * (0.16 + 0.14 * uKickPunch);
+
+  vec3 col = baseAlbedo + (rimLight + topScatter + consoleGlow) * (1.0 - 0.84 * uBlackout);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// DJ 身后舞台地排逆光干冰薄雾烘托着色器（确保即使在纯黑底色封面前，三维 DJ 剪影依然如实拍现场般立体分明）
+const DJ_BACKLIGHT_HALO_FRAG = /* glsl */ `
+uniform float uTime;
+uniform float uDropPower;
+uniform float uKickPunch;
+uniform float uBlackout;
+uniform vec3 uLaserPrimary;
+uniform vec3 uLaserSecondary;
+uniform vec3 uCoverGlow;
+varying vec2 vUv;
+${GLSL_HAZE_COMMON}
+
+void main() {
+  vec2 p = (vUv - vec2(0.5, 0.26)) * vec2(1.0, 1.35);
+  float r = length(p);
+  if (r > 0.72) discard;
+
+  // 自舞台控台后方升腾的柔和干冰逆光雾团
+  float mist1 = hazeFbm(vUv * vec2(3.6, 2.8) + vec2(0.0, -uTime * 0.28));
+  float mist2 = hazeFbm(vUv * vec2(7.2, 5.4) - vec2(uTime * 0.16, uTime * 0.42));
+  float smoke = 0.52 + 0.68 * (mist1 * 0.65 + mist2 * 0.35);
+
+  float radial = exp(-r * r * 7.8) * smoothstep(0.0, 0.14, vUv.y);
+  vec3 tint = mix(uCoverGlow, mix(uLaserPrimary, uLaserSecondary, vUv.x), 0.55);
+  float alpha = radial * smoke * (0.20 + 0.22 * uDropPower + 0.10 * uKickPunch) * (1.0 - 0.88 * uBlackout);
+  if (alpha < 0.003) discard;
+  gl_FragColor = vec4(tint * alpha, 1.0);
 }
 `;
 
@@ -1404,6 +1522,159 @@ void main() {
 `;
 
 // ============================================================================
+// 写实三维骨骼 DJ 与舞台器材程序化网格辅助构造器
+// ============================================================================
+interface LoftRing {
+  /** 截面垂直高度（必须按从小到大递增排列以保证法线向外） */
+  y: number;
+  /** 前后中心偏移 (+Z 朝向观众席面部方向，-Z 朝向后背巨幕) */
+  zOff: number;
+  /** 左右半宽 */
+  rx: number;
+  /** 前后半厚 */
+  rz: number;
+  /** 左右中心偏移 */
+  xOff?: number;
+}
+
+interface DjRigNodes {
+  root: THREE.Group;
+  spine: THREE.Group;
+  head: THREE.Group;
+  shoulderL: THREE.Group;
+  elbowL: THREE.Group;
+  handL: THREE.Group;
+  shoulderR: THREE.Group;
+  elbowR: THREE.Group;
+  handR: THREE.Group;
+}
+
+/** 为任意 BufferGeometry 附加材质标签属性 aMatTag (0=哑光服饰, 1=皮肤/手部, 2=耳机金属/高光饰件) */
+function tagGeometry(geo: THREE.BufferGeometry, matTag: number): THREE.BufferGeometry {
+  const count = geo.attributes.position.count;
+  const arr = new Float32Array(count);
+  arr.fill(matTag);
+  geo.setAttribute('aMatTag', new THREE.BufferAttribute(arr, 1));
+  return geo;
+}
+
+/** 按递增高度截面环生成光滑封闭解剖回转/放样曲面网格（精确朝外三维法线） */
+function buildLoftGeometry(rings: LoftRing[], radialSegs = 20, matTag = 0): THREE.BufferGeometry {
+  const ringCount = rings.length;
+  const stride = radialSegs + 1;
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i < ringCount; i++) {
+    const r = rings[i];
+    const xo = r.xOff ?? 0;
+    for (let j = 0; j <= radialSegs; j++) {
+      const theta = (j / radialSegs) * Math.PI * 2;
+      positions.push(
+        xo + Math.cos(theta) * r.rx,
+        r.y,
+        r.zOff + Math.sin(theta) * r.rz,
+      );
+    }
+  }
+
+  for (let i = 0; i < ringCount - 1; i++) {
+    const row0 = i * stride;
+    const row1 = (i + 1) * stride;
+    for (let j = 0; j < radialSegs; j++) {
+      const a = row0 + j;
+      const b = row1 + j;
+      const c = row1 + j + 1;
+      const d = row0 + j + 1;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+
+  // 底盖与顶盖使用独立顶点封口，绝不与侧壁共享索引，杜绝 90° 法线平均导致的关节菲涅尔亮圈
+  const bot = rings[0];
+  const botStartIdx = positions.length / 3;
+  const botXo = bot.xOff ?? 0;
+  positions.push(botXo, bot.y, bot.zOff);
+  for (let j = 0; j <= radialSegs; j++) {
+    const theta = (j / radialSegs) * Math.PI * 2;
+    positions.push(botXo + Math.cos(theta) * bot.rx, bot.y, bot.zOff + Math.sin(theta) * bot.rz);
+  }
+  for (let j = 0; j < radialSegs; j++) {
+    indices.push(botStartIdx, botStartIdx + 1 + j, botStartIdx + 1 + j + 1);
+  }
+
+  const top = rings[ringCount - 1];
+  const topStartIdx = positions.length / 3;
+  const topXo = top.xOff ?? 0;
+  positions.push(topXo, top.y, top.zOff);
+  for (let j = 0; j <= radialSegs; j++) {
+    const theta = (j / radialSegs) * Math.PI * 2;
+    positions.push(topXo + Math.cos(theta) * top.rx, top.y, top.zOff + Math.sin(theta) * top.rz);
+  }
+  for (let j = 0; j < radialSegs; j++) {
+    indices.push(topStartIdx, topStartIdx + 1 + j + 1, topStartIdx + 1 + j);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return tagGeometry(geo, matTag);
+}
+
+/** 构建真实弯曲弧度的制作人鸭舌棒球帽檐（朝向 +Z 前下方自然拱曲，前缘平滑收薄杜绝正面反光亮条） */
+function buildCurvedVisorGeometry(matTag = 0): THREE.BufferGeometry {
+  const segU = 14;
+  const segV = 6;
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  // 上表面与下表面双层网格，前缘厚度平滑收束至极薄边缘，消除生硬端面高光
+  for (let side = 0; side < 2; side++) {
+    const signY = side === 0 ? 1 : -1;
+    for (let iv = 0; iv <= segV; iv++) {
+      const v = iv / segV; // 0 = 帽冠根部, 1 = 帽檐前缘
+      const halfThick = lerp(0.0030, 0.0004, Math.pow(v, 0.85));
+      const width = lerp(0.085, 0.064, v * v);
+      const zBase = lerp(0.078, 0.192, v);
+      const slopeY = lerp(0.214, 0.186, v);
+      for (let iu = 0; iu <= segU; iu++) {
+        const u = (iu / segU) * 2 - 1; // [-1..1]
+        const edgeTaper = 1.0 - 0.65 * u * u;
+        const arch = (1 - u * u) * 0.024;
+        const curveZ = zBase - u * u * 0.028 * v;
+        positions.push(u * width, slopeY + arch + signY * halfThick * edgeTaper, curveZ);
+      }
+    }
+  }
+
+  const layerVerts = (segV + 1) * (segU + 1);
+  const rowStride = segU + 1;
+  // 顶面 (+Y) 与底面 (-Y) 独立平滑法线，不跨上下层平均法线
+  for (let iv = 0; iv < segV; iv++) {
+    for (let iu = 0; iu < segU; iu++) {
+      const a = iv * rowStride + iu;
+      const b = (iv + 1) * rowStride + iu;
+      const c = (iv + 1) * rowStride + iu + 1;
+      const d = iv * rowStride + iu + 1;
+      indices.push(a, b, c, a, c, d);
+
+      const a2 = layerVerts + a;
+      const b2 = layerVerts + b;
+      const c2 = layerVerts + c;
+      const d2 = layerVerts + d;
+      indices.push(a2, c2, b2, a2, d2, c2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return tagGeometry(geo, matTag);
+}
+
+// ============================================================================
 // 主场景类：LaserScene（激光舞台 · 镭射穹廊）
 // ============================================================================
 export class LaserScene implements MvScene {
@@ -1412,6 +1683,7 @@ export class LaserScene implements MvScene {
   private readonly rig: LyricRig;
   private readonly soft: boolean;
   private readonly colorTrack: LeadColorTrack;
+  private readonly djNodes: DjRigNodes;
 
   private readonly sheetSpecs: SheetEmitterSpec[];
   private readonly beamSpecs: BeamEmitterSpec[];
@@ -1513,8 +1785,8 @@ export class LaserScene implements MvScene {
     // 5. 构建 7 道工业重型四弦铝合金门式桁架龙门 + 2 条贯通顶棚主轨 + 舞台屏幕背架（renderOrder = 0）
     this.buildTrussArchitecture();
 
-    // 6. 构建远景舞台高台、巨幅微距 LED 封面主屏、两侧 12 半音频谱副屏、DJ 控台与逆光 DJ 剪影
-    this.buildStageCenterpiece();
+    // 6. 构建远景舞台高台、巨幅微距 LED 封面主屏、两侧 12 半音频谱副屏、四联 CDJ 控台与写实 3D 骨骼 DJ
+    this.djNodes = this.buildStageCenterpiece();
 
     // 7. 构建 28 组四眼卤素观众盲眼灯（×2 本体+镜像 = 56 实例）
     const blinders = this.buildBlinderSystem();
@@ -1651,8 +1923,8 @@ export class LaserScene implements MvScene {
     this.scene.add(instMesh);
   }
 
-  /** 构建中央巨幅微距 LED 封面主屏、频谱灯塔、舞台底座、DJ 控台与逆光 DJ 剪影 */
-  private buildStageCenterpiece(): void {
+  /** 构建中央巨幅微距 LED 封面主屏、频谱灯塔、舞台底座、四联 CDJ 专业控台、监听音箱与写实三维骨骼 DJ */
+  private buildStageCenterpiece(): DjRigNodes {
     // 1. 中央 1:1 巨幅微距 LED 点阵封面主屏
     const screenGeo = new THREE.PlaneGeometry(SCREEN_SIZE, SCREEN_SIZE);
     const screenMat = new THREE.ShaderMaterial({
@@ -1680,7 +1952,7 @@ export class LaserScene implements MvScene {
       this.scene.add(tower);
     }
 
-    // 3. 舞台底座高台（Stage Riser）与装甲发光轮廓 DJ 控台（DJ Booth）
+    // 3. 舞台主高台（Stage Riser）+ DJ 专属增高踏台 + 斜切重装甲 DJ 控台（符合真实人体工学齐腰比例）
     const deckMat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: LED_WALL_VERT,
@@ -1691,24 +1963,224 @@ export class LaserScene implements MvScene {
     stageRiser.renderOrder = 0;
     this.scene.add(stageRiser);
 
-    const djBooth = new THREE.Mesh(new THREE.BoxGeometry(5.6, 1.38, 1.85), deckMat);
-    djBooth.position.set(0, STAGE_DECK_H + 0.69, -49.2);
+    const pedestalTopY = STAGE_DECK_H + 0.42; // 1.87m
+    const djPedestal = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.42, 2.5), deckMat);
+    djPedestal.position.set(0, STAGE_DECK_H + 0.21, -49.70);
+    djPedestal.renderOrder = 0;
+    this.scene.add(djPedestal);
+
+    // 多体块斜切装甲控台（主桌高 0.90m -> 顶面 y = 2.77m，自然露出 DJ 胸腹、双肩与台面打碟双手动作）
+    const boothH = 0.90;
+    const djBooth = new THREE.Mesh(new THREE.BoxGeometry(4.45, boothH, 1.08), deckMat);
+    djBooth.position.set(0, pedestalTopY + boothH * 0.5, -49.18);
     djBooth.renderOrder = 0;
     this.scene.add(djBooth);
 
-    // 4. 逆光控场 DJ 剪影（立于 DJ 控台后方，背对巨幕强光）
-    const djGeo = new THREE.PlaneGeometry(2.3, 2.3);
-    const djMat = new THREE.ShaderMaterial({
+    for (const sign of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(0.96, boothH * 0.90, 0.92), deckMat);
+      wing.position.set(sign * 2.52, pedestalTopY + boothH * 0.45, -49.30);
+      wing.rotation.y = -sign * 0.28;
+      wing.renderOrder = 0;
+      this.scene.add(wing);
+    }
+
+    // 控台顶面倾斜摆放的四联 Pioneer CDJ-3000 播放器 + DJM-A9 混音台发光面板
+    const gearMat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: LED_WALL_VERT,
-      fragmentShader: DJ_SILHOUETTE_FRAG,
-      transparent: true,
-      depthWrite: true,
+      fragmentShader: DECK_GEAR_FRAG,
     });
-    const djMesh = new THREE.Mesh(djGeo, djMat);
-    djMesh.position.set(0, STAGE_DECK_H + 1.68, -50.25);
-    djMesh.renderOrder = 1;
-    this.scene.add(djMesh);
+    const gearPlane = new THREE.Mesh(new THREE.PlaneGeometry(3.75, 0.80), gearMat);
+    gearPlane.position.set(0, pedestalTopY + boothH + 0.038, -49.24);
+    gearPlane.rotation.x = -Math.PI * 0.5 + 0.22; // 向站在后方的 DJ 倾斜 12.6°，真实照亮手部与下颌
+    gearPlane.renderOrder = 1;
+    this.scene.add(gearPlane);
+
+    // DJ 身后舞台地排灯干冰背光薄雾（在纯黑底色封面前也能清晰衬托出三维 DJ 的立体轮廓层次）
+    const haloMat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: LED_WALL_VERT,
+      fragmentShader: DJ_BACKLIGHT_HALO_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const haloMesh = new THREE.Mesh(new THREE.PlaneGeometry(6.8, 4.4), haloMat);
+    haloMesh.position.set(0, pedestalTopY + 1.45, -50.65);
+    haloMesh.renderOrder = 1;
+    this.scene.add(haloMesh);
+
+    // 共用三维物理逆光与近场散射材质（人物、耳机金属饰件与舞台监听音箱共享）
+    const djCharMat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: DJ_CHARACTER_VERT,
+      fragmentShader: DJ_CHARACTER_FRAG,
+    });
+
+    // 控台左右两侧专业近场舞台监听音箱（Booth Monitors on Stands，内旋朝向 DJ 双耳）
+    const standPoleGeo = tagGeometry(new THREE.CylinderGeometry(0.032, 0.042, 1.18, 10), 0);
+    const monitorBoxGeo = tagGeometry(new THREE.BoxGeometry(0.38, 0.54, 0.35), 2);
+    for (const sign of [-1, 1]) {
+      const pole = new THREE.Mesh(standPoleGeo, djCharMat);
+      pole.position.set(sign * 2.65, pedestalTopY + 0.59, -49.42);
+      this.scene.add(pole);
+
+      const monitor = new THREE.Mesh(monitorBoxGeo, djCharMat);
+      monitor.position.set(sign * 2.65, pedestalTopY + 1.36, -49.42);
+      monitor.rotation.y = -sign * 0.52;
+      monitor.rotation.x = 0.10;
+      this.scene.add(monitor);
+    }
+
+    // 4. 构建写实人体比例三维骨骼关节 DJ（立于控台后方 z = -49.88，1.28x 舞台视觉黄金比例确保远近机位均挺拔清晰）
+    const root = new THREE.Group();
+    root.position.set(0, pedestalTopY - 0.14, -49.88);
+    root.scale.setScalar(1.28);
+    this.scene.add(root);
+
+    // 4a. 下肢工装裤与骨盆底座（确保高空俯拍机位 rig 下控台内侧腿部站姿完整真实）
+    for (const sign of [-1, 1]) {
+      const legGeo = buildLoftGeometry([
+        { y: 0.00, zOff: 0.01, rx: 0.064, rz: 0.088, xOff: sign * 0.115 },
+        { y: 0.44, zOff: 0.01, rx: 0.070, rz: 0.074, xOff: sign * 0.110 },
+        { y: 0.88, zOff: 0.00, rx: 0.088, rz: 0.094, xOff: sign * 0.095 },
+      ], 14, 0);
+      root.add(new THREE.Mesh(legGeo, djCharMat));
+    }
+    const pelvisGeo = buildLoftGeometry([
+      { y: 0.84, zOff: -0.005, rx: 0.172, rz: 0.112 },
+      { y: 0.96, zOff: 0.000, rx: 0.168, rz: 0.108 },
+    ], 18, 0);
+    root.add(new THREE.Mesh(pelvisGeo, djCharMat));
+
+    // 4b. 腰脊枢轴（spine，位于 y = 0.94）与重磅连帽机能卫衣/夹克躯干（饱满宽肩与斜方肌自然斜坡）
+    const spine = new THREE.Group();
+    spine.position.set(0, 0.94, 0);
+    root.add(spine);
+
+    const torsoGeo = buildLoftGeometry([
+      { y: -0.05, zOff: -0.008, rx: 0.176, rz: 0.114 }, // 卫衣松弛罗纹下摆
+      { y: 0.07,  zOff: 0.002,  rx: 0.166, rz: 0.110 }, // 腰腹自然微收
+      { y: 0.21,  zOff: 0.012,  rx: 0.198, rz: 0.128 }, // 中胸背阔肌渐宽
+      { y: 0.36,  zOff: 0.014,  rx: 0.232, rz: 0.142 }, // 饱满胸廓与宽厚肩背
+      { y: 0.465, zOff: 0.004,  rx: 0.252, rz: 0.136 }, // 健硕双肩外扩廓形
+      { y: 0.525, zOff: -0.006, rx: 0.184, rz: 0.116 }, // 饱满斜方肌自然溜肩坡度
+      { y: 0.570, zOff: -0.012, rx: 0.124, rz: 0.114 }, // 连帽卫衣立体领圈堆叠口
+    ], 24, 0);
+    spine.add(new THREE.Mesh(torsoGeo, djCharMat));
+
+    // 后背自然垂坠的连帽卫衣兜帽（Draped Hoodie Cowl，逆光下极大增强服装真实轮廓感）
+    const hoodCowlGeo = buildLoftGeometry([
+      { y: 0.39, zOff: -0.132, rx: 0.072, rz: 0.042 },
+      { y: 0.48, zOff: -0.124, rx: 0.128, rz: 0.062 },
+      { y: 0.555, zOff: -0.086, rx: 0.136, rz: 0.072 },
+      { y: 0.585, zOff: -0.048, rx: 0.102, rz: 0.052 },
+    ], 16, 0);
+    spine.add(new THREE.Mesh(hoodCowlGeo, djCharMat));
+
+    // 4c. 颈部与解剖头颅枢轴（head，位于颈根 y = 0.555）+ 一体成形棒球帽冠 + 弯檐 + 包耳监听耳机
+    const head = new THREE.Group();
+    head.position.set(0, 0.555, 0.006);
+    spine.add(head);
+
+    // 将颈部、解剖面部与贴合颅顶的棒球帽冠合并为单一连续光滑网格，彻底消除额头水平接缝亮线！
+    const headAndCrownGeo = buildLoftGeometry([
+      { y: -0.02, zOff: -0.006, rx: 0.068, rz: 0.068 }, // 健壮颈根无缝汇入卫衣领口
+      { y: 0.045, zOff: 0.004,  rx: 0.060, rz: 0.062 }, // 颈部肌肉线条
+      { y: 0.086, zOff: 0.024,  rx: 0.068, rz: 0.084 }, // 下颌骨与下巴前探轮廓
+      { y: 0.138, zOff: 0.018,  rx: 0.080, rz: 0.098 }, // 颧骨与双颊
+      { y: 0.188, zOff: 0.008,  rx: 0.086, rz: 0.106 }, // 眉弓与帽沿根部平滑过渡
+      { y: 0.242, zOff: -0.002, rx: 0.084, rz: 0.102 }, // 棒球帽冠饱满弧面
+      { y: 0.288, zOff: -0.007, rx: 0.054, rz: 0.066 }, // 帽顶圆拱收束
+      { y: 0.305, zOff: -0.008, rx: 0.016, rz: 0.018 }, // 颅顶帽扣
+    ], 22, 0);
+    head.add(new THREE.Mesh(headAndCrownGeo, djCharMat));
+    head.add(new THREE.Mesh(buildCurvedVisorGeometry(0), djCharMat));
+
+    // 双耳包耳式专业监听耳机（椭圆厚耳罩 + 跨越帽顶的金属弹簧头梁弓）
+    const earCupGeo = tagGeometry(new THREE.CylinderGeometry(0.046, 0.042, 0.038, 16), 2);
+    earCupGeo.rotateZ(Math.PI * 0.5);
+    earCupGeo.scale(1.0, 1.24, 0.94);
+    for (const sign of [-1, 1]) {
+      const cup = new THREE.Mesh(earCupGeo, djCharMat);
+      cup.position.set(sign * 0.094, 0.158, 0.006);
+      cup.rotation.z = -sign * 0.08;
+      head.add(cup);
+    }
+    const headbandGeo = tagGeometry(new THREE.TorusGeometry(0.098, 0.0115, 8, 20, Math.PI), 2);
+    const headband = new THREE.Mesh(headbandGeo, djCharMat);
+    headband.position.set(0, 0.208, 0.002);
+    headband.rotation.x = -0.10;
+    head.add(headband);
+
+    // 4d. 左右双节可动骨骼手臂（注意 DJ 面朝 +Z，故身体左肩在 +X，身体右肩在 -X）
+    const buildArmChain = (sideSign: number) => {
+      const shoulder = new THREE.Group();
+      shoulder.position.set(sideSign * 0.232, 0.458, 0.006);
+      shoulder.rotation.order = 'ZYX';
+      spine.add(shoulder);
+
+      // 宽松夹克大臂袖管（两端带圆润球头收束，饱满三角肌平滑嵌入躯干宽肩 + 肘部衣褶，沿 -Y 延伸 0.29m）
+      const upperArmGeo = buildLoftGeometry([
+        { y: -0.312, zOff: 0.002, rx: 0.032, rz: 0.032 }, // 肘端圆滑球头底环
+        { y: -0.288, zOff: 0.002, rx: 0.055, rz: 0.056 },
+        { y: -0.235, zOff: 0.003, rx: 0.064, rz: 0.065 }, // 袖肘褶皱隆起
+        { y: -0.130, zOff: 0.000, rx: 0.068, rz: 0.070 },
+        { y: -0.015, zOff: -0.002, rx: 0.078, rz: 0.080, xOff: -sideSign * 0.012 },
+        { y: 0.042,  zOff: -0.004, rx: 0.066, rz: 0.070, xOff: -sideSign * 0.026 },
+        { y: 0.072,  zOff: -0.005, rx: 0.036, rz: 0.038, xOff: -sideSign * 0.038 }, // 三角肌圆顶深嵌肩峰杜绝高举脱节
+      ], 16, 0);
+      shoulder.add(new THREE.Mesh(upperArmGeo, djCharMat));
+
+      const elbow = new THREE.Group();
+      elbow.position.set(0, -0.285, 0);
+      elbow.rotation.order = 'ZYX';
+      shoulder.add(elbow);
+
+      // 挽袖结实前臂（两端带解剖圆润收束，从肘肌自然收细至手腕，沿 -Y 延伸 0.255m）
+      const forearmGeo = buildLoftGeometry([
+        { y: -0.262, zOff: 0.002, rx: 0.022, rz: 0.019 },
+        { y: -0.248, zOff: 0.002, rx: 0.031, rz: 0.026 }, // 手腕扁椭圆截面
+        { y: -0.160, zOff: 0.004, rx: 0.041, rz: 0.038 },
+        { y: -0.050, zOff: 0.002, rx: 0.051, rz: 0.049 }, // 前臂肱桡肌饱满度
+        { y: 0.012,  zOff: -0.001, rx: 0.047, rz: 0.047 },
+        { y: 0.034,  zOff: -0.002, rx: 0.026, rz: 0.026 }, // 肘关节圆滑球头嵌入大臂袖口
+      ], 14, 1);
+      elbow.add(new THREE.Mesh(forearmGeo, djCharMat));
+
+      const hand = new THREE.Group();
+      hand.position.set(0, -0.252, 0);
+      elbow.add(hand);
+
+      // 立体手掌与微曲手指（扁平掌体 + 虎口大拇指侧隆起，挥手与按旋钮姿态均真实自然）
+      const palmGeo = buildLoftGeometry([
+        { y: -0.130, zOff: 0.013, rx: 0.016, rz: 0.009 },
+        { y: -0.118, zOff: 0.012, rx: 0.029, rz: 0.014 }, // 指尖微向掌心内扣
+        { y: -0.075, zOff: 0.006, rx: 0.040, rz: 0.018 }, // 掌指关节宽面
+        { y: -0.035, zOff: 0.003, rx: 0.042, rz: 0.021, xOff: -sideSign * 0.006 }, // 虎口拇指根
+        { y: 0.006,  zOff: 0.000, rx: 0.030, rz: 0.023 },
+        { y: 0.018,  zOff: 0.000, rx: 0.018, rz: 0.015 }, // 腕部平滑球头衔接
+      ], 12, 1);
+      hand.add(new THREE.Mesh(palmGeo, djCharMat));
+
+      return { shoulder, elbow, hand };
+    };
+
+    const armL = buildArmChain(1);  // +X 为面朝观众的 DJ 左臂
+    const armR = buildArmChain(-1); // -X 为面朝观众的 DJ 右臂
+
+    return {
+      root,
+      spine,
+      head,
+      shoulderL: armL.shoulder,
+      elbowL: armL.elbow,
+      handL: armL.hand,
+      shoulderR: armR.shoulder,
+      elbowR: armR.elbow,
+      handR: armR.hand,
+    };
   }
 
   /** 构建 28 组四眼卤素观众盲眼灯系统（含地面镜像） */
@@ -2102,6 +2574,97 @@ export class LaserScene implements MvScene {
     this.camera.lookAt(tx, ty, tz);
   }
 
+  /**
+   * 实时驱动写实三维骨骼 DJ 的身体重心律动、头部视线与双手打碟/控场姿态：
+   * - Break / Verse：微俯身专注凝视混音台，左手拧 EQ/Filter 旋钮，右手搭右侧 CDJ 转盘搓盘微调；
+   * - Build-up：左手高频推拉混音台滤波器冲顶，后半程右手高举蓄势带领全场升温；
+   * - Drop / Chorus：弹性重拍身体律动（Groove Bounce），左手稳控混音台重音推子，右手高举随底鼓做带次级惯性滞后的挥臂控场（Cue 2 时双臂张开迎接穹顶激光皇冠）。
+   */
+  private updateDjPerformance(
+    t: number,
+    beatPos: number,
+    inBar: number,
+    isBreak: boolean,
+    isBuild: boolean,
+    buildProgress: number,
+    dropPower: number,
+    kickPunch: number,
+    snarePunch: number,
+    fgLevel: number,
+    cueMode: number,
+  ): void {
+    const dj = this.djNodes;
+    const pedestalTopY = STAGE_DECK_H + 0.42;
+    const beatRad = beatPos * Math.PI * 2;
+    const barRad = ((inBar + beatPos) * 0.25) * Math.PI * 2;
+
+    // 1. 膝胯弹性重拍下沉（Groove Bounce）与左右重心微移（稳重有肌肉分量，绝不轻飘抽搐）
+    const beatDown = Math.pow(0.5 + 0.5 * Math.cos(beatRad), 1.8);
+    const bounceAmp = (0.014 + 0.030 * dropPower + 0.016 * kickPunch);
+    const swayX = Math.sin(barRad) * (0.055 + 0.045 * dropPower);
+    dj.root.position.set(swayX, pedestalTopY - 0.14 - beatDown * bounceAmp, -49.88);
+
+    // 2. 腰脊前倾俯身度（Break/Build 前倾专注操作台面，Drop 挺胸迎向观众席）与自然转肩
+    const consoleFocus = isBreak ? 1.0 : isBuild ? (1.0 - 0.55 * buildProgress) : (1.0 - 0.65 * dropPower);
+    const spinePitch = lerp(0.05, 0.17, consoleFocus) + beatDown * (0.026 + 0.036 * dropPower);
+    const spineYaw = Math.sin(t * 0.55) * 0.13 - swayX * 0.85;
+    const spineRoll = Math.sin(barRad) * 0.042 * (0.4 + 0.6 * dropPower);
+    dj.spine.rotation.set(spinePitch, spineYaw, spineRoll);
+
+    // 3. 头部节奏点头（Head Nod，带 0.35 rad 颈部次级惯性延迟，微低帽檐展现制作人酷感剪影）
+    const nodWave = Math.sin(beatRad - 0.35);
+    const headPitch = lerp(0.05, 0.21, consoleFocus) + (0.046 + 0.072 * dropPower + 0.040 * kickPunch) * (0.5 - 0.5 * nodWave);
+    const headYaw = -spineYaw * 0.45 + 0.10 * Math.cos(t * 0.65 + 0.8);
+    const headRoll = Math.cos(barRad + 0.6) * 0.048;
+    dj.head.rotation.set(headPitch, headYaw, headRoll);
+
+    // 4. 左手（+X 侧）：主控中央 DJM 混音台旋钮/推子；Cue 2（穹顶皇冠）高潮时双臂向两侧上方呈 V 字豪迈张开共鸣
+    const raiseBoth = cueMode === 2 ? smooth(clamp01((dropPower - 0.7) * 3.0)) * 0.88 : 0.0;
+    const knobTwist = Math.sin(t * (isBuild ? 5.5 + 6.0 * buildProgress : 2.6)) * 0.09;
+    const faderPush = Math.cos(beatRad * 0.5) * 0.07 + snarePunch * 0.06;
+
+    const shLx = lerp(-0.66 - faderPush, -2.66 + 0.16 * Math.sin(beatRad - 0.25), raiseBoth);
+    const shLy = lerp(-0.20 + knobTwist * 0.5, 0.22, raiseBoth);
+    const shLz = lerp(0.14, -0.34, raiseBoth);
+    const elLx = lerp(-0.82 + faderPush * 0.8, -0.34 - 0.14 * beatDown, raiseBoth);
+    const elLy = lerp(-0.16, 0.08, raiseBoth);
+
+    dj.shoulderL.rotation.set(shLx, shLy, shLz);
+    dj.elbowL.rotation.set(elLx, elLy, 0);
+    dj.handL.rotation.set(lerp(0.32, -0.08, raiseBoth), knobTwist * (1.0 - raiseBoth), 0);
+
+    // 5. 右手（-X 侧）：Break 搓盘微调 -> Build 后半程高举蓄力 -> Drop 向身体右外侧斜上方开放式挥臂控场
+    const hypeRaise = dropPower >= 0.95
+      ? 1.0
+      : isBuild
+        ? smooth(clamp01((buildProgress - 0.38) / 0.48))
+        : smooth(clamp01((dropPower - 0.52) / 0.35));
+
+    // 打碟搓盘态角度（自然外展搭在右侧 CDJ-3000 转盘边缘）
+    const platterScrub = Math.sin(t * 3.4) * 0.08;
+    const deckRx = -0.62 + platterScrub * 0.5;
+    const deckRy = 0.08 + platterScrub;
+    const deckRz = -0.14;
+    const deckElbowX = -0.86 - platterScrub * 0.4;
+
+    // 开放式右外侧斜上挥臂态（ZYX 顺序下 y>0 时正值 Rz 使右大臂向 -X 外侧舒展约 24°，绝不横压头顶）
+    const pumpPrimary = Math.sin(beatRad - 0.20);
+    const pumpFollow = Math.sin(beatRad - 0.68);
+    const pumpAmp = 0.16 + 0.13 * kickPunch + 0.07 * fgLevel;
+    const hypeRx = -2.68 + pumpPrimary * pumpAmp;
+    const hypeRy = -0.22 - 0.07 * Math.sin(barRad);
+    const hypeRz = 0.34;
+    const hypeElbowX = -0.36 + pumpFollow * (pumpAmp * 0.92);
+
+    dj.shoulderR.rotation.set(
+      lerp(deckRx, hypeRx, hypeRaise),
+      lerp(deckRy, hypeRy, hypeRaise),
+      lerp(deckRz, hypeRz, hypeRaise),
+    );
+    dj.elbowR.rotation.set(lerp(deckElbowX, hypeElbowX, hypeRaise), lerp(0.12, -0.08, hypeRaise), lerp(0, -0.10, hypeRaise));
+    dj.handR.rotation.set(lerp(0.30, -0.08 + 0.16 * pumpFollow, hypeRaise), 0, 0);
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot, shotT, fx } = ctx;
     const sec = shot.section;
@@ -2154,8 +2717,9 @@ export class LaserScene implements MvScene {
       ? (shot.variant === 'tunnel' ? 1 : barsIntoSec >= 2 ? Math.floor(barsIntoSec / 4) % 4 : 0)
       : -1;
 
-    // 4. 更新相机位姿
+    // 4. 更新相机位姿与写实三维骨骼 DJ 舞台表演姿态
     this.poseCamera(t, shot, shotT, kickPunch, dropPower);
+    this.updateDjPerformance(t, beatInfo.pos, beatInfo.inBar, isBreak, isBuild, buildProgress, dropPower, kickPunch, snarePunch, fg.level, cueMode);
 
     // 5. 更新 28 组四眼卤素观众盲眼灯（3500K -> 2000K 热惯性余晖 + 重拍短促爆闪点缀）
     const blinderArr = this.blinderStateAttr.array as Float32Array;
