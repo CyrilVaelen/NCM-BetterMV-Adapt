@@ -16,7 +16,8 @@ import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
 import type { Palette } from '../render/palette.ts';
-import { colorFromHsl, extractCoverTone, linearVec3FromHsl } from './coverTone.ts';
+import { colorFromHsl, extractCoverTone, linearVec3FromHsl, rgbToHsl, type CoverToneStops } from './coverTone.ts';
+import { buildLeadColorTrack, extractLeadColorGroups, sampleTrack, type LeadColorTrack } from './phoenixLeadColor.ts';
 
 /** 纵深门式桁架龙门数量与世界坐标参数 */
 const PORTAL_Z = [-52.0, -41.5, -31.0, -20.5, -10.0, 0.5, 11.0] as const;
@@ -96,6 +97,130 @@ interface BeamEmitterSpec {
 /** 计算两个色相角之间的最短有向差 (-180..180) */
 function shortestHueDelta(a: number, b: number): number {
   return ((b - a) % 360 + 540) % 360 - 180;
+}
+
+const wrapHue = (deg: number): number => ((deg % 360) + 360) % 360;
+const clampRange = (x: number, lo: number, hi: number): number => (x < lo ? lo : x > hi ? hi : x);
+
+/**
+ * 为单一色系专辑封面计算和谐同系副激光色相（带色域护栏）：
+ * 严格保持在同一审美色系内做 18°~22° 冷暖光影微偏，严禁将火红/金橙偏进草绿或将深蓝/冰青偏进绿色。
+ */
+function computeSameFamilySecondaryHue(h1: number, tones: CoverToneStops): number {
+  const h = wrapHue(h1);
+  // 1. 赤红 - 烈焰橙 - 琥珀金带 (336°..360° 或 0°..50°) -> 统一到连续轴 [-24°, +50°]
+  if (h >= 336 || h <= 50) {
+    const signedH = h >= 336 ? h - 360 : h;
+    const candidate = signedH + 20 <= 48 ? signedH + 20 : signedH - 20;
+    return wrapHue(candidate);
+  }
+  // 2. 明黄 - 暖金带 (50°..74°) -> 向琥珀暖橙侧回靠，绝不踏入草绿区
+  if (h > 50 && h <= 74) {
+    return wrapHue(h - 20);
+  }
+  // 3. 翡翠绿 - 森林绿 - 青绿带 (74°..172°) -> 仅真绿色封面在绿青带内自然舒展
+  if (h > 74 && h <= 172) {
+    return h + 20 <= 168 ? h + 20 : h - 20;
+  }
+  // 4. 冰青 - 天蓝 - 深海钴蓝带 (172°..256°) -> 严守 [186°, 250°] 纯正蓝青区间，绝不掉入绿色
+  if (h > 172 && h <= 256) {
+    if (h < 198) return h + 20;
+    if (h > 234) return h - 20;
+    const naturalDir = shortestHueDelta(h, tones.highHue) >= 0 ? 1 : -1;
+    return h + naturalDir * 20;
+  }
+  // 5. 电光紫 - 洋红 - 樱花粉带 (256°..336°) -> 在 [262°, 342°] 内顺应封面高光色相偏移
+  if (h < 274) return h + 20;
+  if (h > 322) return h - 20;
+  const dir = shortestHueDelta(h, tones.highHue) >= 0 ? 1 : -1;
+  return wrapHue(h + dir * 20);
+}
+
+/**
+ * 从专辑封面提取 100% 忠实于封面原生色彩基因的全套激光舞台光学色板：
+ * - 黑白/无彩色封面：纯粹铂银白与钛灰银影调（Nothing is invented）；
+ * - 双色撞色封面（OKLab accent 与 k-means 双色簇同时确认）：忠实还原封面两大真实主色相；
+ * - 单一主色系封面（如黑底烈焰橙、纯冰海蓝、樱花粉霞）：在同色系护栏内构建深浅冷暖双波长，绝不串色。
+ */
+function buildCoverLaserColors(init: SceneInit) {
+  const tones = extractCoverTone(init);
+  if (tones.mono || init.palette.mono) {
+    return {
+      mono: true,
+      lyricHue: 215,
+      laserPrimary: linearVec3FromHsl(214, 0.04, 0.72),
+      laserSecondary: linearVec3FromHsl(218, 0.06, 0.54),
+      laserPrimaryCore: linearVec3FromHsl(214, 0.03, 0.92),
+      laserSecondaryCore: linearVec3FromHsl(218, 0.04, 0.85),
+      blinderWarm: linearVec3FromHsl(212, 0.05, 0.76),
+      coverGlow: linearVec3FromHsl(215, 0.04, 0.44),
+      envDark: new THREE.Vector3(0.0015, 0.0016, 0.0019),
+      bgHex: colorFromHsl(216, 0.06, 0.015),
+    };
+  }
+
+  const sigRgb = { r: 0, g: 0, b: 0 };
+  const accRgb = { r: 0, g: 0, b: 0 };
+  init.palette.signal.getRGB(sigRgb, THREE.SRGBColorSpace);
+  init.palette.accent.getRGB(accRgb, THREE.SRGBColorSpace);
+  const sigHsl = rgbToHsl(sigRgb.r, sigRgb.g, sigRgb.b);
+  const accHsl = rgbToHsl(accRgb.r, accRgb.g, accRgb.b);
+
+  const groups = extractLeadColorGroups(init, tones);
+
+  // 严格判定封面是否真正包含第二独立发光色相（extractLeadColorGroups 已滤除暗黑背景并校验双簇面积 >=12% 与饱和度 >=0.28）
+  const groupHueSep = Math.abs(shortestHueDelta(groups.info.hueA, groups.info.hueB));
+  const paletteHueSep = Math.abs(shortestHueDelta(sigHsl.h, accHsl.h));
+  const hasGroupDualHue = groups.info.split === 'hue' && groupHueSep >= 26;
+  const hasPaletteDualHue =
+    !hasGroupDualHue &&
+    sigHsl.s >= 0.28 &&
+    accHsl.s >= Math.max(0.36, sigHsl.s * 0.62) &&
+    accHsl.l >= 0.18 &&
+    paletteHueSep >= 34;
+  const hasTrueDualHue = hasGroupDualHue || hasPaletteDualHue;
+
+  // 主激光色相：优先采用发光像素聚类主色或 OKLab 高显著度 signal（精准锁定黑底封面上的核心图案色彩）
+  let h1 = tones.mainHue;
+  if (hasGroupDualHue) {
+    h1 = groups.info.hueA;
+  } else if (groups.info.split === 'lightness') {
+    h1 = sigHsl.s >= 0.24 && Math.abs(shortestHueDelta(sigHsl.h, groups.info.hueA)) <= 28
+      ? wrapHue(groups.info.hueA + shortestHueDelta(groups.info.hueA, sigHsl.h) * 0.45)
+      : groups.info.hueA;
+  } else if (sigHsl.s >= 0.22) {
+    h1 = sigHsl.h;
+  }
+
+  let h2: number;
+  if (hasGroupDualHue) {
+    // 封面本身具有鲜明双色撞色（如赛博青+洋红、冰蓝+烈焰橙）：100% 忠实还原封面第二发光主色
+    h2 = groups.info.hueB;
+  } else if (hasPaletteDualHue) {
+    h2 = accHsl.h;
+  } else {
+    // 单一主色系封面：严格在同色系护栏内生成自然冷暖光影副色（火橙配鎏金、深蓝配冰青、樱花粉配珊瑚玫红）
+    h2 = computeSameFamilySecondaryHue(h1, tones);
+  }
+
+  const coverPeakSat = Math.max(sigHsl.s, tones.mid.s, tones.bright.s);
+  const sat1 = clampRange(0.36 + 0.62 * coverPeakSat, 0.42, 0.96);
+  const sat2 = clampRange(0.34 + 0.62 * (hasTrueDualHue ? Math.max(accHsl.s, coverPeakSat * 0.85) : coverPeakSat), 0.40, 0.95);
+
+  const blinderHue = hasTrueDualHue ? wrapHue(h1 + shortestHueDelta(h1, h2) * 0.35) : h2;
+
+  return {
+    mono: false,
+    lyricHue: h1,
+    laserPrimary: linearVec3FromHsl(h1, sat1, 0.52),
+    laserSecondary: linearVec3FromHsl(h2, sat2, 0.54),
+    laserPrimaryCore: linearVec3FromHsl(wrapHue(h1 + shortestHueDelta(h1, h2) * 0.18), clampRange(sat1 * 0.88, 0.38, 0.90), 0.75),
+    laserSecondaryCore: linearVec3FromHsl(wrapHue(h2 - shortestHueDelta(h1, h2) * 0.15), clampRange(sat2 * 0.88, 0.38, 0.90), 0.77),
+    blinderWarm: linearVec3FromHsl(blinderHue, clampRange(sat1 * 0.86, 0.36, 0.92), 0.58),
+    coverGlow: linearVec3FromHsl(h1, clampRange(coverPeakSat * 0.90, 0.36, 0.92), 0.46),
+    envDark: linearVec3FromHsl(tones.deepHue, clampRange(coverPeakSat * 0.55, 0.14, 0.52), 0.022),
+    bgHex: colorFromHsl(tones.deepHue, clampRange(coverPeakSat * 0.45, 0.10, 0.45), 0.013),
+  };
 }
 
 /** 构建 14 座高功率振镜扫描光幕发射台坐标 */
@@ -354,6 +479,7 @@ uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
 uniform vec3 uCoverGlow;
 uniform vec3 uBlinderWarm;
+uniform vec3 uEnvDark;
 varying vec3 vWorldPos;
 ${GLSL_HAZE_COMMON}
 
@@ -361,13 +487,13 @@ void main() {
   vec3 dir = normalize(vWorldPos - cameraPosition);
   float up = clamp(dir.y, -0.25, 1.0);
 
-  // 深邃工业混凝土极暗底色（真实室内电音节仓库暗场对比基准）
-  vec3 base = vec3(0.0012, 0.0016, 0.0028);
+  // 浸润于专辑封面深部色调的深邃工业混凝土暗底色
+  vec3 base = uEnvDark * 0.65;
 
   // 仓库侧墙与顶棚工业肋柱极微弱轮廓，绝不泛亮抢戏
   float wallRibs = pow(0.5 + 0.5 * cos(vWorldPos.x * 1.15), 8.0) * smoothstep(22.0, 4.0, abs(vWorldPos.y - 9.0));
   float roofDeck = pow(0.5 + 0.5 * cos(vWorldPos.z * 1.8), 6.0) * smoothstep(0.15, 0.65, up);
-  base += vec3(0.0022, 0.0028, 0.0045) * (wallRibs * 0.35 + roofDeck * 0.30);
+  base += uEnvDark * 1.25 * (wallRibs * 0.35 + roofDeck * 0.30);
 
   // 远景主舞台方向（-Z）的局部丁达尔背光晕（严格收敛在舞台主屏后方，保持侧墙与顶棚深黑高反差）
   vec3 stageCenter = vec3(0.0, 9.5, ${STAGE_Z.toFixed(1)});
@@ -381,14 +507,14 @@ void main() {
 
   // 主副激光波长仅在远景舞台轴心周围产生克制的大气散射
   vec3 laserHaze = mix(uLaserPrimary, uLaserSecondary, clamp(0.5 + 0.5 * sin(dir.x * 3.2 + uTime * 0.5), 0.0, 1.0));
-  float stageHalo = pow(stageAlign, 16.0) * (0.028 + 0.065 * uDropPower + 0.022 * uSectionEnergy);
-  float skyScatter = smoothstep(0.02, 0.52, up) * pow(stageAlign, 6.0) * (0.006 + 0.020 * uDropPower);
+  float stageHalo = pow(stageAlign, 16.0) * (0.032 + 0.072 * uDropPower + 0.024 * uSectionEnergy);
+  float skyScatter = smoothstep(0.02, 0.52, up) * pow(stageAlign, 6.0) * (0.008 + 0.022 * uDropPower);
 
   vec3 col = base;
-  col += uCoverGlow * pow(stageAlign, 22.0) * (0.035 + 0.040 * uSectionEnergy) * hazeDensity;
+  col += uCoverGlow * pow(stageAlign, 20.0) * (0.042 + 0.045 * uSectionEnergy) * hazeDensity;
   col += laserHaze * (stageHalo + skyScatter) * hazeDensity;
 
-  // 桁架卤素盲眼灯触发时仅在舞台纵深走廊上方勾勒微弱暖雾余晖
+  // 桁架频闪盲眼灯触发时在舞台纵深走廊上方勾勒封面同源余晖
   float blinderScatter = pow(stageAlign, 4.0) * smoothstep(-0.05, 0.55, up) * uBlinderGlow;
   col += uBlinderWarm * blinderScatter * 0.028 * hazeDensity;
 
@@ -427,6 +553,7 @@ uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
 uniform vec3 uBlinderWarm;
+uniform vec3 uEnvDark;
 varying vec3 vLocalPos;
 varying vec3 vWorldPos;
 varying vec3 vWorldNormal;
@@ -460,12 +587,12 @@ void main() {
   float rim = pow(1.0 - max(0.0, dot(vWorldNormal, V)), 2.5);
   float chordHighlight = smoothstep(0.80, 0.96, faceEdge);
 
-  vec3 baseMetal = vec3(0.008, 0.010, 0.015) * (0.55 + 0.65 * chordHighlight);
+  vec3 baseMetal = (uEnvDark * 3.2 + vec3(0.003)) * (0.55 + 0.65 * chordHighlight);
   vec3 laserTint = mix(uLaserPrimary, uLaserSecondary, 0.5 + 0.5 * sin(vWorldPos.z * 0.14 + uTime * 1.4));
 
   vec3 col = baseMetal;
-  col += laserTint * (specStage * 0.42 + rim * 0.14) * (0.25 + 0.75 * uDropPower);
-  // 盲眼灯近场暖光照亮金属横梁与腹杆边缘
+  col += laserTint * (specStage * 0.45 + rim * 0.16) * (0.25 + 0.75 * uDropPower);
+  // 盲眼灯近场封面高光色照亮金属横梁与腹杆边缘
   float nearTop = smoothstep(6.0, 17.5, vWorldPos.y);
   col += uBlinderWarm * uBlinderGlow * (0.14 + 0.28 * nearTop) * (0.25 + 0.75 * max(0.0, dot(vWorldNormal, upLight) * 0.5 + 0.5));
 
@@ -501,6 +628,7 @@ uniform float uDropPower;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uEnvDark;
 varying vec2 vUv;
 varying vec3 vWorldPos;
 
@@ -510,36 +638,36 @@ void main() {
   float borderMetric = min(edgeDist.x, edgeDist.y);
   if (borderMetric < 0.018) {
     float chase = 0.5 + 0.5 * sin((vUv.x + vUv.y) * 18.0 - uTime * 6.0);
-    vec3 frameCol = mix(vec3(0.03, 0.035, 0.045), mix(uLaserPrimary, uLaserSecondary, chase), 0.45 + 0.55 * uDropPower);
+    vec3 frameCol = mix(uEnvDark * 8.0 + vec3(0.01), mix(uLaserPrimary, uLaserSecondary, chase), 0.48 + 0.52 * uDropPower);
     frameCol *= (0.35 + 0.85 * smoothstep(0.004, 0.016, borderMetric)) * (1.0 - 0.85 * uBlackout);
     gl_FragColor = vec4(frameCol, 1.0);
     return;
   }
 
-  // 内部 1:1 完整封面采样 + 底鼓微幅动态缩放与色散冲击
+  // 内部 1:1 完整封面采样（uCover 已为 SRGBColorSpace 硬件解码线性纹理，无需重复 pow 压暗）
   vec2 innerUv = (vUv - 0.018) / 0.964;
   vec2 centered = innerUv - 0.5;
   float zoom = 1.0 - 0.018 * uKickPunch;
   vec2 sampleUv = clamp(centered * zoom + 0.5, 0.002, 0.998);
 
-  float chromaShift = 0.0035 * uKickPunch * uDropPower;
+  float chromaShift = 0.0030 * uKickPunch * uDropPower;
   float r = texture2D(uCover, clamp(sampleUv + vec2(chromaShift, 0.0), 0.002, 0.998)).r;
   float g = texture2D(uCover, sampleUv).g;
   float b = texture2D(uCover, clamp(sampleUv - vec2(chromaShift, 0.0), 0.002, 0.998)).b;
-  vec3 texLinear = pow(max(vec3(r, g, b), vec3(0.0)), vec3(2.2));
+  vec3 texLinear = max(vec3(r, g, b), vec3(0.0));
 
   // 微距 SMD LED 灯珠晶格：近距离呈现细腻点阵颗粒，远距离基于距离平滑收敛防摩尔纹
   float camDist = length(vWorldPos - cameraPosition);
   float ledDetailFade = 1.0 - smoothstep(18.0, 52.0, camDist);
   vec2 cell = fract(innerUv * 192.0) - 0.5;
   float diode = 1.0 - smoothstep(0.28, 0.52, length(cell));
-  float ledMask = mix(1.0, 0.76 + 0.38 * diode, ledDetailFade * 0.75);
+  float ledMask = mix(1.0, 0.78 + 0.34 * diode, ledDetailFade * 0.72);
 
   // 扫描刷新微光波纹
-  float scanWave = 0.96 + 0.04 * sin(innerUv.y * 90.0 - uTime * 8.0);
+  float scanWave = 0.97 + 0.03 * sin(innerUv.y * 90.0 - uTime * 8.0);
 
-  // 亮度控制：保证封面色彩饱满清晰且不过曝洗白
-  float gain = (0.78 + 0.24 * uSectionEnergy + 0.14 * uKickPunch) * (1.0 - 0.72 * uBlackout);
+  // 亮度控制：保证封面色彩 100% 原汁原味且不过曝洗白
+  float gain = (0.72 + 0.20 * uSectionEnergy + 0.10 * uKickPunch) * (1.0 - 0.72 * uBlackout);
   vec3 col = texLinear * ledMask * scanWave * gain;
 
   // 屏幕内侧边缘柔和暗角压边，增强巨幕立体厚度
@@ -560,6 +688,8 @@ uniform vec4 uChroma1;
 uniform vec4 uChroma2;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
+uniform vec3 uEnvDark;
 varying vec2 vUv;
 
 float readChroma(int idx) {
@@ -582,10 +712,11 @@ void main() {
   float barFill = smoothstep(0.5 - 0.42 * clamp(noteEnergy * 1.15 + 0.15 * uKickPunch, 0.05, 1.0), 0.5, 1.0 - abs(cellUv.x - 0.5));
 
   vec3 tint = mix(uLaserPrimary, uLaserSecondary, float(noteIdx) / 11.0);
-  vec3 darkFrame = vec3(0.012, 0.015, 0.022);
-  float lit = padMask * barFill * (0.25 + 0.95 * noteEnergy + 0.35 * uDropPower);
+  tint = mix(tint, uLaserPrimaryCore, clamp(noteEnergy * 0.35, 0.0, 0.45));
+  vec3 darkFrame = uEnvDark * 4.2 + vec3(0.004);
+  float lit = padMask * barFill * (0.24 + 0.88 * noteEnergy + 0.30 * uDropPower);
 
-  vec3 col = darkFrame + tint * lit * (1.0 + 0.35 * uKickPunch);
+  vec3 col = darkFrame + tint * lit * (1.0 + 0.30 * uKickPunch);
   col *= (1.0 - 0.85 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
 }
@@ -616,6 +747,7 @@ uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
 uniform vec3 uBlinderWarm;
+uniform vec3 uEnvDark;
 varying vec3 vWorldPos;
 varying vec2 vUv;
 ${GLSL_HAZE_COMMON}
@@ -662,10 +794,10 @@ void main() {
         vec2 cUv0 = clamp(mirrorUv, 0.01, 0.99);
         vec2 cUv1 = clamp(mirrorUv + vec2(0.0, 0.045), 0.01, 0.99);
         vec2 cUv2 = clamp(mirrorUv - vec2(0.0, 0.045), 0.01, 0.99);
-        vec3 s0 = pow(max(texture2D(uCover, cUv0).rgb, vec3(0.0)), vec3(2.2));
-        vec3 s1 = pow(max(texture2D(uCover, cUv1).rgb, vec3(0.0)), vec3(2.2));
-        vec3 s2 = pow(max(texture2D(uCover, cUv2).rgb, vec3(0.0)), vec3(2.2));
-        screenRefl = (s0 * 0.5 + (s1 + s2) * 0.25) * inX * inY * (0.55 + 0.30 * uSectionEnergy);
+        vec3 s0 = max(texture2D(uCover, cUv0).rgb, vec3(0.0));
+        vec3 s1 = max(texture2D(uCover, cUv1).rgb, vec3(0.0));
+        vec3 s2 = max(texture2D(uCover, cUv2).rgb, vec3(0.0));
+        screenRefl = (s0 * 0.5 + (s1 + s2) * 0.25) * inX * inY * (0.48 + 0.28 * uSectionEnergy);
       }
 
       // 两侧频谱灯塔柔和倒影光带
@@ -676,7 +808,7 @@ void main() {
 
   // 两侧走廊地面工业导光槽（随节拍流淌微光）
   float aisleLine = exp(-pow((abs(P.x) - 16.2) * 3.8, 2.0)) * (0.35 + 0.65 * sin(P.z * 0.4 - uTime * 5.0) * 0.5 + 0.5);
-  vec3 floorBase = vec3(0.0018, 0.0022, 0.0036) * (0.65 + 0.55 * microGrain) * seam;
+  vec3 floorBase = (uEnvDark * 0.85 + vec3(0.0008)) * (0.65 + 0.55 * microGrain) * seam;
   floorBase += mix(uLaserPrimary, uLaserSecondary, 0.5) * aisleLine * 0.065 * (0.25 + 0.75 * uDropPower);
 
   // 盲眼灯与顶棚环境光在湿润地面的克制漫射高光带
@@ -710,6 +842,7 @@ uniform float uKickPunch;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uEnvDark;
 varying vec2 vUv;
 varying vec3 vWorldPos;
 
@@ -725,7 +858,7 @@ void main() {
   float centerChevron = 1.0 - smoothstep(0.02, 0.05, abs(vUv.y - 0.52 - abs(vUv.x - 0.5) * 0.65));
 
   vec3 neon = mix(uLaserPrimary, uLaserSecondary, wave);
-  vec3 col = vec3(0.008, 0.010, 0.014);
+  vec3 col = uEnvDark * 2.8 + vec3(0.002);
   col += neon * (topLip * (0.45 + 0.75 * uKickPunch) + (rimX + rimY) * 0.35 + centerChevron * 0.55 * (0.3 + 0.7 * uDropPower));
   col *= (1.0 - 0.85 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
@@ -739,6 +872,7 @@ uniform float uDropPower;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uEnvDark;
 varying vec2 vUv;
 
 float sdSegment(vec2 p, vec2 a, vec2 b, float r) {
@@ -775,21 +909,21 @@ void main() {
   float alpha = 1.0 - smoothstep(-0.015, 0.022, d);
   if (alpha < 0.01) discard;
 
-  // 剪影内部极暗，外缘泛起巨幕背光散射的锐利轮廓光（Rim Light）
+  // 剪影内部极暗并融入封面环境暗调，外缘泛起巨幕背光散射的锐利轮廓光（Rim Light）
   float rim = smoothstep(-0.055, -0.004, d);
   vec3 rimTint = mix(uLaserPrimary, uLaserSecondary, 0.5 + 0.5 * p.x);
-  vec3 col = vec3(0.004, 0.005, 0.008) + rimTint * rim * (0.42 + 0.58 * uDropPower) * (1.0 - 0.8 * uBlackout);
+  vec3 col = uEnvDark * 2.2 + vec3(0.002) + rimTint * rim * (0.45 + 0.60 * uDropPower) * (1.0 - 0.8 * uBlackout);
 
   gl_FragColor = vec4(col, alpha);
 }
 `;
 
 // ============================================================================
-// 6. 桁架四眼卤素观众盲眼灯着色器 (BLINDER_FLARE — 3500K->2000K 钨丝余晖)
+// 6. 桁架四眼观众盲眼灯着色器 (BLINDER_FLARE — 封面同源热惯性色温余晖)
 // ============================================================================
 const BLINDER_VERT = /* glsl */ `
 attribute vec4 aBlinderPos;   // xyz: 世界坐标, w: 0=天空本体, 1=地面镜像
-attribute vec4 aBlinderState; // x: 当前亮度强度 [0..1.4], y: 灯丝色温冷却度 [0=炽白..1=琥珀红], z: 尺寸缩放, w: 相位种子
+attribute vec4 aBlinderState; // x: 当前亮度强度 [0..1.4], y: 灯丝色温冷却度 [0=炽亮核..1=封面余晖色], z: 尺寸缩放, w: 相位种子
 varying vec2 vQuad;
 varying float vPower;
 varying float vCool;
@@ -820,6 +954,8 @@ void main() {
 
 const BLINDER_FRAG = /* glsl */ `
 uniform float uBlackout;
+uniform vec3 uBlinderWarm;
+uniform vec3 uLaserPrimaryCore;
 varying vec2 vQuad;
 varying float vPower;
 varying float vCool;
@@ -829,17 +965,16 @@ void main() {
   float d = length(vQuad);
   if (d > 1.0) discard;
 
-  // 2x2 四眼卤素灯杯亮核 + 精致变形宽银幕水平拉丝眩光（克制光晕半径，避免连片泛白）
+  // 2x2 四眼灯杯亮核 + 精致变形宽银幕水平拉丝眩光（克制光晕半径，避免连片泛白）
   vec2 cell = abs(vQuad) - vec2(0.11, 0.11);
   float pod = exp(-dot(cell, cell) * 76.0);
-  float halo = exp(-d * 6.4) * 0.26;
+  float halo = exp(-d * 6.0) * 0.28;
   float streak = exp(-abs(vQuad.y) * 30.0) * pow(max(0.0, 1.0 - abs(vQuad.x)), 2.2) * 0.62;
 
-  // 钨丝热惯性色温：起音瞬间 3500K 炽白金 -> 余晖尾部 1900K 浓郁琥珀橙红
-  vec3 hotCore = vec3(1.0, 0.92, 0.76);
-  vec3 warmAmber = vec3(1.0, 0.34, 0.05);
-  vec3 filamentCol = mix(hotCore, warmAmber, clamp(vCool, 0.0, 1.0));
-  vec3 col = mix(filamentCol, vec3(1.0, 0.98, 0.92), clamp(pod * (1.0 - vCool * 0.7), 0.0, 0.85));
+  // 自适应封面色温热惯性：起音瞬间为封面同色系炽亮核，余晖尾部沉淀为浓郁 uBlinderWarm（黑白封面自动呈铂银白）
+  vec3 hotCore = mix(uLaserPrimaryCore, vec3(1.0), 0.38);
+  vec3 filamentCol = mix(hotCore, uBlinderWarm, clamp(vCool, 0.0, 1.0));
+  vec3 col = mix(filamentCol, mix(uLaserPrimaryCore, vec3(1.0), 0.62), clamp(pod * (1.0 - vCool * 0.75), 0.0, 0.72));
 
   float intensity = (pod * 1.15 + halo + streak * (1.0 - 0.45 * vCool)) * vPower * 0.62;
   if (vMirror > 0.5) intensity *= 0.32;
@@ -916,6 +1051,8 @@ uniform float uTime;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
+uniform vec3 uLaserSecondaryCore;
 varying vec2 vSheetUv;
 varying vec3 vWorldPos;
 varying vec3 vOrigin;
@@ -936,18 +1073,18 @@ void main() {
 
   // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端减速折返锐利明亮，内部底膜晶莹通透绝不糊死背景巨幕
   float absU = abs(u);
-  float edgeOuter = exp(-pow((1.0 - absU) * 34.0, 2.0)) * 1.05;
-  float interiorFill = (1.0 - smoothstep(0.96, 1.0, absU)) * (0.048 + 0.052 * pow(absU, 2.0));
+  float edgeOuter = exp(-pow((1.0 - absU) * 34.0, 2.0)) * 1.08;
+  float interiorFill = (1.0 - smoothstep(0.96, 1.0, absU)) * (0.056 + 0.062 * pow(absU, 2.0));
 
   // 2. 振镜高速离散扫描丝与角度光束手指（Laser Fingers / Blanked Sub-rays）
-  float fingers = pow(0.5 + 0.5 * cos(u * 32.0 + sin(uTime * 3.0) * 1.5), 7.0) * 0.34;
+  float fingers = pow(0.5 + 0.5 * cos(u * 32.0 + sin(uTime * 3.0) * 1.5), 7.0) * 0.38;
   float highFreqScan = 0.90 + 0.10 * sin(u * 110.0 - uTime * 38.0);
 
   // 3. 3D 干冰烟雾湍流云纹（FBM Volumetric Haze）：烟雾浓处丁达尔散射如液态丝绸，淡处通透深邃
   vec2 hazeCoord = vWorldPos.xz * 0.085 + vec2(vWorldPos.y * 0.06, -uTime * 0.22);
   float haze1 = hazeFbm(hazeCoord);
   float haze2 = hazeFbm(hazeCoord * 2.1 + vec2(uTime * 0.15, 4.7));
-  float smokeDensity = 0.22 + 1.28 * pow(haze1 * 0.65 + haze2 * 0.35, 1.55);
+  float smokeDensity = 0.24 + 1.30 * pow(haze1 * 0.65 + haze2 * 0.35, 1.55);
 
   // 4. 发射口近端能量亮星 + 远端柔和消散
   float originBoost = 0.055 / (0.085 + r * r) * exp(-absU * 5.5);
@@ -957,13 +1094,16 @@ void main() {
   float eyeProx = exp(-abs(vWorldPos.y - cameraPosition.y) * 0.45) * (1.0 - vMirror);
   float mieBoost = 1.0 + 0.38 * eyeProx;
 
-  vec3 baseLaser = mix(uLaserPrimary, uLaserSecondary, clamp(vColorMix + u * 0.18, 0.0, 1.0));
+  float mixU = clamp(vColorMix + u * 0.16, 0.0, 1.0);
+  vec3 baseLaser = mix(uLaserPrimary, uLaserSecondary, mixU);
+  vec3 baseCore = mix(uLaserPrimaryCore, uLaserSecondaryCore, mixU);
   float density = (interiorFill + fingers + edgeOuter) * highFreqScan * smokeDensity * distAtten * mieBoost + originBoost * 0.24;
-  // 严格限制白芯混入上限，保持窄带激光高饱和纯色质感
-  vec3 col = mix(baseLaser, vec3(1.0, 0.99, 0.98), clamp(edgeOuter * 0.26 + originBoost * 0.32, 0.0, 0.38));
+  // 由高饱和基色向同色相高明度亮核过渡，杜绝白芯泛滥洗淡封面原生色彩
+  vec3 col = mix(baseLaser, baseCore, clamp(edgeOuter * 0.58 + originBoost * 0.48, 0.0, 0.84))
+           + vec3(0.10) * clamp(originBoost * 0.35, 0.0, 0.16);
 
-  float alpha = density * vPower * 0.135;
-  if (vMirror > 0.5) alpha *= 0.36;
+  float alpha = density * vPower * 0.165;
+  if (vMirror > 0.5) alpha *= 0.38;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.002) discard;
@@ -1026,6 +1166,8 @@ uniform float uTime;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
+uniform vec3 uLaserSecondaryCore;
 varying vec2 vBeamUv;
 varying vec3 vWorldPos;
 varying float vPower;
@@ -1042,9 +1184,9 @@ void main() {
   float s = vBeamUv.x;        // [0..1] 射程进度
   float d = abs(vBeamUv.y);   // [0..1] 离中心轴距离
 
-  // 极细手术刀炽白亮芯 + 浓郁高饱和窄带激光色晕
-  float core = exp(-d * d * 72.0);
-  float corona = exp(-d * 6.2) * 0.36;
+  // 锐利同色系亮芯 + 宽阔浓郁的丁达尔窄带激光色晕，确保单束激光一眼呈现饱满封面色
+  float core = exp(-d * d * 86.0);
+  float corona = exp(-d * 3.5) * 0.66;
 
   // 发射口起点高强星芒能量点
   float emitterHotspot = exp(-s * 34.0) * exp(-d * d * 18.0) * 1.15;
@@ -1052,14 +1194,16 @@ void main() {
   float packet = exp(-pow((s - vPulsePhase) * 5.5, 2.0)) * 0.48;
 
   // 穿过空间干冰烟雾时的丁达尔明暗起伏
-  float mist = 0.48 + 0.72 * hazeFbm(vWorldPos.xz * 0.11 + vec2(vWorldPos.y * 0.09, -uTime * 0.25));
+  float mist = 0.50 + 0.72 * hazeFbm(vWorldPos.xz * 0.11 + vec2(vWorldPos.y * 0.09, -uTime * 0.25));
   float endFade = (1.0 - smoothstep(0.75, 1.0, s)) * smoothstep(0.0, 0.008, s);
 
   vec3 tint = mix(uLaserPrimary, uLaserSecondary, vColorMix);
-  vec3 col = mix(tint, vec3(1.0, 0.99, 0.98), clamp(core * 0.72 + emitterHotspot * 0.35, 0.0, 0.86));
+  vec3 tintCore = mix(uLaserPrimaryCore, uLaserSecondaryCore, vColorMix);
+  vec3 col = mix(tint, tintCore, clamp(core * 0.80 + emitterHotspot * 0.45, 0.0, 0.90))
+           + vec3(0.14) * pow(core, 3.6);
 
-  float alpha = ((core * 1.25 + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.42) * vPower * 0.68;
-  if (vMirror > 0.5) alpha *= 0.40;
+  float alpha = ((core * 1.15 + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.42) * vPower * 0.76;
+  if (vMirror > 0.5) alpha *= 0.42;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.003) discard;
@@ -1116,6 +1260,8 @@ uniform float uConeSpin;
 uniform float uBlackout;
 uniform vec3 uLaserPrimary;
 uniform vec3 uLaserSecondary;
+uniform vec3 uLaserPrimaryCore;
+uniform vec3 uLaserSecondaryCore;
 varying vec2 vConeUv;
 varying vec3 vWorldPos;
 varying float vConePower;
@@ -1134,21 +1280,22 @@ void main() {
   // Pangolin BEYOND 标志性断线圆锥花式（Blanked Laser Cone）：24 束刀锋般离散射线 + 极薄丁达尔锥壁
   float rayWave = cos(theta * 24.0);
   float sharpRay = pow(max(0.0, rayWave), 28.0);
-  float softSheet = 0.016 + 0.032 * pow(max(0.0, rayWave), 3.0);
+  float softSheet = 0.018 + 0.036 * pow(max(0.0, rayWave), 3.0);
 
   // 断续脉冲门控（Blanking Gate）沿圆锥高速向前奔涌
   float axialPulse = 0.35 + 0.85 * smoothstep(-0.2, 0.45, sin(s * 26.0 - uTime * 12.0 + vSpinDir * 1.5));
-  float mist = 0.42 + 0.82 * hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.24));
+  float mist = 0.44 + 0.82 * hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.24));
 
   float ringOrigin = 0.035 * exp(-s * 16.0);
   float distFade = (1.0 - smoothstep(0.68, 1.0, s)) * smoothstep(0.008, 0.055, s);
 
-  float colorSel = vSpinDir > 0.0 ? 0.08 : 0.92;
-  vec3 tint = mix(uLaserPrimary, uLaserSecondary, clamp(colorSel + 0.14 * sin(theta * 3.0), 0.0, 1.0));
-  vec3 col = mix(tint, vec3(1.0, 0.99, 0.98), clamp(sharpRay * 0.52, 0.0, 0.65));
+  float colorSel = clamp((vSpinDir > 0.0 ? 0.08 : 0.92) + 0.14 * sin(theta * 3.0), 0.0, 1.0);
+  vec3 tint = mix(uLaserPrimary, uLaserSecondary, colorSel);
+  vec3 tintCore = mix(uLaserPrimaryCore, uLaserSecondaryCore, colorSel);
+  vec3 col = mix(tint, tintCore, clamp(sharpRay * 0.78, 0.0, 0.88)) + vec3(0.10) * pow(sharpRay, 2.4);
 
-  float alpha = ((sharpRay * 1.65 + softSheet) * axialPulse * mist * distFade + ringOrigin) * vConePower * 0.24;
-  if (vMirror > 0.5) alpha *= 0.34;
+  float alpha = ((sharpRay * 1.65 + softSheet) * axialPulse * mist * distFade + ringOrigin) * vConePower * 0.27;
+  if (vMirror > 0.5) alpha *= 0.36;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.002) discard;
@@ -1244,11 +1391,11 @@ void main() {
   float lifeFade = (1.0 - smoothstep(0.45, 1.0, vAge));
   float density = (radial * billow * cutoffBottom * topSoft * 1.35 + nozzleCore) * vStrength * lifeFade;
 
-  // 低温白雾被上方双色激光与暖金盲眼灯实时穿透染色
+  // 低温白雾被上方封面双色激光与同系盲眼灯实时穿透染色
   vec3 laserMix = mix(uLaserPrimary, uLaserSecondary, clamp(y * 0.85 + 0.15 * x, 0.0, 1.0));
-  vec3 steamWhite = vec3(0.82, 0.88, 0.96);
-  vec3 litColor = steamWhite * 0.36 + laserMix * 0.82 + uBlinderWarm * uBlinderGlow * 0.28;
-  vec3 col = mix(litColor, vec3(1.0, 0.99, 0.98), clamp(nozzleCore * 0.55, 0.0, 0.78));
+  vec3 steamBase = vec3(0.86, 0.88, 0.91);
+  vec3 litColor = steamBase * 0.26 + laserMix * 0.92 + uBlinderWarm * uBlinderGlow * 0.30;
+  vec3 col = mix(litColor, mix(laserMix, vec3(1.0), 0.72), clamp(nozzleCore * 0.52, 0.0, 0.72));
 
   float alpha = density * (vMirror > 0.5 ? 0.20 : 0.46) * (1.0 - 0.85 * uBlackout);
   if (alpha < 0.003) discard;
@@ -1264,6 +1411,7 @@ export class LaserScene implements MvScene {
   readonly camera: THREE.PerspectiveCamera;
   private readonly rig: LyricRig;
   private readonly soft: boolean;
+  private readonly colorTrack: LeadColorTrack;
 
   private readonly sheetSpecs: SheetEmitterSpec[];
   private readonly beamSpecs: BeamEmitterSpec[];
@@ -1290,33 +1438,13 @@ export class LaserScene implements MvScene {
 
   constructor(init: SceneInit, look: 'pulse' | 'ballad' = 'pulse') {
     this.soft = look === 'ballad';
-    this.scene.background = new THREE.Color(0x010204);
+    const pal = buildCoverLaserColors(init);
+    this.scene.background = pal.bgHex;
     this.camera = new THREE.PerspectiveCamera(CAM_FOV, init.aspect, 0.2, 240);
     this.scene.add(this.camera);
 
-    // 1. 提取专辑封面色调并提纯为高纯度双波长窄带激光色（L=0.50 保持线性空间极高通道比，防泛白）
-    const tones = extractCoverTone(init);
-    let laserPrimary: THREE.Vector3;
-    let laserSecondary: THREE.Vector3;
-    let coverGlow: THREE.Vector3;
-
-    if (tones.mono) {
-      // 黑白/单色封面：采用经典电音节冰青激光 (488nm Cyan) + 霓虹品红 (Magenta) 双波长高反差配色
-      laserPrimary = linearVec3FromHsl(188, 0.98, 0.50);
-      laserSecondary = linearVec3FromHsl(318, 0.96, 0.52);
-      coverGlow = linearVec3FromHsl(198, 0.35, 0.42);
-    } else {
-      const h1 = tones.mainHue;
-      const rawDiff = shortestHueDelta(h1, tones.highHue);
-      const h2 = Math.abs(rawDiff) >= 58
-        ? tones.highHue
-        : (h1 + (rawDiff >= 0 ? 72 : -72) + 360) % 360;
-      laserPrimary = linearVec3FromHsl(h1, 0.98, 0.50);
-      laserSecondary = linearVec3FromHsl(h2, 0.98, 0.51);
-      coverGlow = linearVec3FromHsl(h1, Math.max(0.55, tones.bright.s * 0.90), 0.42);
-    }
-
-    const blinderWarm = new THREE.Vector3(1.0, 0.68, 0.30);
+    // 1. 构建主音色主导 / 人声融合时间轨，驱动封面主副激光色随编曲声部有机流转
+    this.colorTrack = buildLeadColorTrack(init.music, init.lyrics);
 
     this.uniforms = {
       uCover: { value: init.cover },
@@ -1332,10 +1460,13 @@ export class LaserScene implements MvScene {
       uChroma0: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
       uChroma1: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
       uChroma2: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
-      uLaserPrimary: { value: laserPrimary },
-      uLaserSecondary: { value: laserSecondary },
-      uCoverGlow: { value: coverGlow },
-      uBlinderWarm: { value: blinderWarm },
+      uLaserPrimary: { value: pal.laserPrimary },
+      uLaserSecondary: { value: pal.laserSecondary },
+      uLaserPrimaryCore: { value: pal.laserPrimaryCore },
+      uLaserSecondaryCore: { value: pal.laserSecondaryCore },
+      uCoverGlow: { value: pal.coverGlow },
+      uBlinderWarm: { value: pal.blinderWarm },
+      uEnvDark: { value: pal.envDark },
     };
 
     // 2. 预计算发射器坐标与确定性控台事件表
@@ -1408,13 +1539,12 @@ export class LaserScene implements MvScene {
     // 11. 构建舞台前缘 8 座 CO2 低温白雾喷射气柱（×2 本体+镜像 = 16 实例）
     this.cryoStateAttr = this.buildCryoJets();
 
-    // 12. 挂载三维双语歌词排版系统（底部 caption 干净呈现，强制亮色字防浅色封面黑字隐形）
-    const mainHue = tones.mono ? 192 : tones.mainHue;
+    // 12. 挂载三维双语歌词排版系统（底部 caption 干净呈现，严格同步封面色系；黑白封面保持纯正铂银白）
     const lyricPalette: Palette = {
       ...init.palette,
-      ink: colorFromHsl(mainHue, tones.mono ? 0.12 : 0.48, 0.05),
+      ink: colorFromHsl(pal.lyricHue, pal.mono ? 0.04 : 0.48, 0.05),
       paper: new THREE.Color('#f8fbff'),
-      signal: colorFromHsl(mainHue, tones.mono ? 0.85 : 0.94, 0.72),
+      signal: colorFromHsl(pal.lyricHue, pal.mono ? 0.06 : 0.92, pal.mono ? 0.88 : 0.70),
       light: false,
     };
     this.rig = new LyricRig(lyricPalette, 'caption');
@@ -2059,6 +2189,17 @@ export class LaserScene implements MvScene {
     const avgBlinderGlow = clamp01((totalBlinderEnergy / BLINDER_COUNT) * 0.95);
 
     // 6. 更新 14 座振镜扫描体积光膜（Liquid Sky & Volumetric Fan Sheets）
+    // 结合 LeadColorTrack 声部主导占比（shareB）与人声融合度（fusion），让封面主副激光色随主奏/伴奏/人声动态呼吸
+    const rawShareB = sampleTrack(this.colorTrack.shareB, this.colorTrack.fps, t);
+    const fusion = sampleTrack(this.colorTrack.fusion, this.colorTrack.fps, t);
+    const shareB = clamp01(rawShareB * (1 - 0.38 * fusion) + 0.5 * 0.38 * fusion);
+    const tintSlot = (isSlotB: boolean): number => {
+      if (isSlotB) {
+        return clamp01(lerp(0.68 + 0.28 * shareB, 0.52, fusion * 0.55));
+      }
+      return clamp01(lerp(0.03 + 0.30 * Math.max(0, shareB - 0.35), 0.44, fusion * 0.55));
+    };
+
     const sAngles = this.sheetAnglesAttr.array as Float32Array;
     const sStyle = this.sheetStyleAttr.array as Float32Array;
     const sweepClock = t * 0.85 + leadMotion * 0.24;
@@ -2070,7 +2211,7 @@ export class LaserScene implements MvScene {
       let roll = 0;
       let spread = 0.44;
       let power = 0;
-      let colorMix = i % 2 === 0 ? 0.06 : 0.94;
+      let colorMix = tintSlot(i % 3 === 1);
       let waveAmp = 0.45 + 0.45 * fg.level;
 
       if (sp.bank === 0) {
@@ -2112,7 +2253,7 @@ export class LaserScene implements MvScene {
             roll = symSign * 0.52 * (i % 2 === 0 ? 1 : -0.65);
             spread = 0.48;
             power = (0.88 + 0.24 * kickPunch) * dropPower;
-            colorMix = (barsIntoSec + i) % 2 === 0 ? 0.04 : 0.96;
+            colorMix = tintSlot((barsIntoSec + i) % 3 === 1);
           } else {
             // LIQUID_HORIZON & BICHROME_CHOPPER：经典超宽水平波浪天幕压低掠过镜头头顶！
             yaw = sp.baseYaw + Math.sin(sweepClock * 0.8 + i * 0.7) * 0.14;
@@ -2121,7 +2262,7 @@ export class LaserScene implements MvScene {
             spread = 0.56 + 0.08 * fg.level;
             power = (0.94 + 0.24 * kickPunch + 0.16 * fg.attack) * dropPower;
             waveAmp = 0.65 + 0.45 * fg.level;
-            colorMix = cueMode === 3 ? (sp.x < 0 ? 0.03 : 0.97) : (pairIdx % 2 === 0 ? 0.06 : 0.94);
+            colorMix = cueMode === 3 ? tintSlot(sp.x >= 0) : tintSlot(pairIdx === 1);
           }
         }
       } else {
@@ -2142,7 +2283,7 @@ export class LaserScene implements MvScene {
           roll = sideSign * (cueMode === 2 ? 0.48 : 0.22);
           spread = cueMode === 2 ? 0.40 : 0.30;
           power = (cueMode === 1 ? 0.28 : 0.62) * dropPower * (0.40 + 0.60 * bayWave);
-          colorMix = (sp.idx + (sp.bank === 1 ? 0 : 1)) % 2 === 0 ? 0.08 : 0.92;
+          colorMix = tintSlot((sp.idx + (sp.bank === 1 ? 0 : 1)) % 3 === 1);
         }
       }
 
@@ -2185,7 +2326,7 @@ export class LaserScene implements MvScene {
       const b = this.beamSpecs[i];
       let tx = 0, ty = 1.5, tz = 10.0;
       let beamPower = 0;
-      let colorMix = i % 2 === 0 ? 0.05 : 0.95;
+      let colorMix = tintSlot(i % 3 === 1);
 
       if (isBreak) {
         // 间奏段仅保留舞台前缘极微弱的静态定格皇冠星束
@@ -2203,7 +2344,7 @@ export class LaserScene implements MvScene {
         ty = lerp(1.2, 4.4, buildProgress);
         tz = lerp(-5.0, -32.0, buildProgress);
         beamPower = (0.22 + 0.88 * buildProgress) * matchSlot;
-        colorMix = i % 2 === 0 ? 0.04 : 0.96;
+        colorMix = tintSlot(i % 3 === 1);
       } else {
         // Drop / Chorus / Verse：4 套控台追逐快切花式
         const pat = cueMode === 3 ? 0 : activePattern;
@@ -2219,7 +2360,7 @@ export class LaserScene implements MvScene {
             ty = 0.15;
             tz = -6.0 + Math.abs(b.normX) * 16.0;
             beamPower = (hitEnv * 1.18 + 0.24 * dropPower) * bankActive;
-            colorMix = isLeft ? 0.04 : 0.96;
+            colorMix = cueMode === 3 ? tintSlot(!isLeft) : tintSlot(b.slot % 3 === 1);
           } else if (pat === 1) {
             // Center-Out Wave（中心向外 12 音阶扇形排射）
             const distCenter = Math.abs(b.normX);
@@ -2228,7 +2369,7 @@ export class LaserScene implements MvScene {
             ty = 1.2 + 4.5 * noteVal;
             tz = 12.0;
             beamPower = (0.35 + 0.85 * wavePhase + 0.45 * hitEnv) * dropPower;
-            colorMix = distCenter;
+            colorMix = clamp01(distCenter * (0.65 + 0.35 * shareB));
           } else if (pat === 2) {
             // Guillotine（平行垂直铡刀齐劈地面）
             tx = b.x * 1.08;
@@ -2250,7 +2391,7 @@ export class LaserScene implements MvScene {
           ty = 13.5 + 4.2 * noteVal;
           tz = 8.0;
           beamPower = (0.28 + 0.85 * hitEnv + 0.30 * snarePunch) * symActive * dropPower;
-          colorMix = 1.0 - (i % 2);
+          colorMix = tintSlot(i % 3 === 0);
         } else {
           // 走廊左右两侧龙门立柱 12 束横跨场馆的斜切激光刃（group 2 & 3）
           const sideSign = b.group === 2 ? -1 : 1;
@@ -2259,7 +2400,7 @@ export class LaserScene implements MvScene {
           ty = 0.25 + (b.slot % 2) * 2.4;
           tz = b.z + 16.5;
           beamPower = (0.26 + 0.92 * hitEnv) * bankHit * (cueMode === 1 ? 0.55 : 1.0) * dropPower;
-          colorMix = sideSign < 0 ? 0.08 : 0.92;
+          colorMix = cueMode === 3 ? tintSlot(sideSign > 0) : tintSlot(b.slot % 3 === 1);
         }
       }
 
@@ -2269,7 +2410,7 @@ export class LaserScene implements MvScene {
         bEnd[slot] = tx;
         bEnd[slot + 1] = ty;
         bEnd[slot + 2] = tz;
-        bEnd[slot + 3] = b.group === 0 ? 0.165 : 0.135;
+        bEnd[slot + 3] = b.group === 0 ? 0.195 : 0.160;
 
         bStyle[slot] = beamPower;
         bStyle[slot + 1] = colorMix;
