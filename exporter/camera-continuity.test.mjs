@@ -1127,4 +1127,378 @@ test('LaserScene 激光舞台：Drop 能量骤降时强度与光束动态回落 
   assert.equal(laser.uniforms.uPalBase.value, colorBar0, '纯音乐前 4 小节内应保持稳步色相，不因节拍高频跳变');
 });
 
+test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 Fallback 稳态与极端声学稳定性压测', () => {
+  const m = mods;
+  const fixture = buildMockFixture();
+  const { music, lyrics, palette, init } = fixture;
+
+  const getShotAt = (t) => {
+    const secIdx = music.sectionIndex(t);
+    const sec = music.a.sections[secIdx] ?? music.a.sections[0];
+    return {
+      index: secIdx,
+      start: sec.start,
+      end: sec.end,
+      scene: 'laser',
+      variant: 'arena',
+      section: sec,
+      sectionIndex: secIdx,
+      seed: 9988,
+      short: false,
+    };
+  };
+
+  const makeCtx = (scene, t, customMusic = music, customLyrics = lyrics) => {
+    const shot = getShotAt(t);
+    return {
+      t,
+      dt: 0.05,
+      shotT: t - shot.start,
+      shot,
+      music: customMusic,
+      lyrics: customLyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    };
+  };
+
+  // -------------------------------------------------------------
+  // 实证压测 1：随机 Seek 幂等性检验（100 次跨时间段随机跨越）
+  // -------------------------------------------------------------
+  // 断言：同一时间戳 t 无论经过何种 Seek 路径到达，其计算出的 dropPower 与 activeUnisonSlot 必须完全相等（严格纯函数 f(t)，零状态残留）
+  const persistentLaser = new m.LaserScene({ ...init, music, lyrics }, 'pulse');
+
+  // 线性同余随机数发生器，确保 100 次压测结果具有严格可重现性
+  let seed = 123456789;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  // 生成 100 个随机 Seek 目标时间戳（全面覆盖 intro, verse, build, drop, chorus, bridge, outro 以及边界点）
+  const testTimestamps = [];
+  // 注入关键结构性边界点
+  testTimestamps.push(0.0, 0.05, 7.99, 8.0, 8.01, 16.99, 17.0, 25.0, 32.99, 33.0, 33.01, 56.99, 57.0, 73.99, 74.0, 87.99, 88.0, 97.9);
+  // 注入歌词起止边界点
+  for (const line of lyrics.lines.slice(0, 5)) {
+    testTimestamps.push(line.start, line.start + 0.01, line.end, line.end + 0.5, line.end + 1.25);
+  }
+  // 补足至 100 个随机分布时间戳
+  while (testTimestamps.length < 100) {
+    const t = +(rand() * (music.duration - 0.2)).toFixed(4);
+    testTimestamps.push(t);
+  }
+
+  for (let idx = 0; idx < testTimestamps.length; idx++) {
+    const targetT = testTimestamps[idx];
+
+    // 基准 1：独立全新实例在 targetT 下的计算结果（绝对单点标准）
+    const freshLaser = new m.LaserScene({ ...init, music, lyrics }, 'pulse');
+    freshLaser.update(makeCtx(freshLaser, targetT));
+
+    const expectedDropPower = freshLaser.uniforms.uDropPower.value;
+    const expectedPalBase = freshLaser.uniforms.uPalBase.value;
+    const expectedPalSpan = freshLaser.uniforms.uPalSpan.value;
+    const expectedSheetSpread = freshLaser.uniforms.uSheetSpread.value;
+    const expectedLaserPrimary = freshLaser.uniforms.uLaserPrimary.value.clone();
+    const expectedBeamPower0 = freshLaser.beamStyleAttr.array[0];
+    const expectedBeamMix0 = freshLaser.beamStyleAttr.array[1];
+
+    // 路径扰动：让持久实例先经历 5 次随机跳跃（前跳、后跳、跨段大范围跳跃），制造潜在的时序状态污染
+    for (let jump = 0; jump < 5; jump++) {
+      const noisyT = +(rand() * (music.duration - 0.2)).toFixed(4);
+      persistentLaser.update(makeCtx(persistentLaser, noisyT));
+    }
+
+    // 最终跳转到目标 targetT 进行求值
+    persistentLaser.update(makeCtx(persistentLaser, targetT));
+
+    const actualDropPower = persistentLaser.uniforms.uDropPower.value;
+    const actualPalBase = persistentLaser.uniforms.uPalBase.value;
+    const actualPalSpan = persistentLaser.uniforms.uPalSpan.value;
+    const actualSheetSpread = persistentLaser.uniforms.uSheetSpread.value;
+    const actualLaserPrimary = persistentLaser.uniforms.uLaserPrimary.value;
+    const actualBeamPower0 = persistentLaser.beamStyleAttr.array[0];
+    const actualBeamMix0 = persistentLaser.beamStyleAttr.array[1];
+
+    // 严格断言零状态残留
+    assert.ok(
+      Math.abs(actualDropPower - expectedDropPower) < 1e-6,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 uDropPower 出现跨帧状态残留: actual=${actualDropPower}, expected=${expectedDropPower}`,
+    );
+    assert.equal(
+      actualPalBase,
+      expectedPalBase,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 uPalBase 色槽不一致: actual=${actualPalBase}, expected=${expectedPalBase}`,
+    );
+    assert.equal(
+      actualPalSpan,
+      expectedPalSpan,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 uPalSpan 渐变跨度不一致: actual=${actualPalSpan}, expected=${expectedPalSpan}`,
+    );
+    assert.ok(
+      Math.abs(actualSheetSpread - expectedSheetSpread) < 1e-6,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 uSheetSpread 张角不一致: actual=${actualSheetSpread}, expected=${expectedSheetSpread}`,
+    );
+    assert.ok(
+      actualLaserPrimary.distanceTo(expectedLaserPrimary) < 1e-5,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 uLaserPrimary 色彩向量不一致: dist=${actualLaserPrimary.distanceTo(expectedLaserPrimary)}`,
+    );
+    assert.ok(
+      Math.abs(actualBeamPower0 - expectedBeamPower0) < 1e-5,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 beamStyle[0] 功率不一致: actual=${actualBeamPower0}, expected=${expectedBeamPower0}`,
+    );
+    assert.ok(
+      Math.abs(actualBeamMix0 - expectedBeamMix0) < 1e-5,
+      `[Seek 幂等性测试 #${idx}] t=${targetT}s 处 beamStyle[1] 颜色混合不一致: actual=${actualBeamMix0}, expected=${expectedBeamMix0}`,
+    );
+  }
+
+  // -------------------------------------------------------------
+  // 实证压测 2：纯音乐（无歌词 lines: []）稳态与节奏呼吸检验
+  // -------------------------------------------------------------
+  // 验证在纯音乐（lines: []）Drop 段落中，颜色槽位是否严格按 4 小节乐句下拍稳定推进，
+  // 且在 32 秒内变色频率在合理乐理区间（120BPM 时约每 8 秒换一次色，共 3 次），绝无军鼓高频乱闪。
+  const pureDropDuration = 32;
+  const pureDropBpm = 120;
+  const pureDropBeatLen = 60 / pureDropBpm; // 0.5s
+  const pureDropBeats = [];
+  const pureDropDownbeats = [];
+  const aggressiveKicks = [];
+  const aggressiveSnares = [];
+  for (let i = 0; i * pureDropBeatLen <= pureDropDuration; i++) {
+    const t = +(i * pureDropBeatLen).toFixed(4);
+    pureDropBeats.push(t);
+    if (i % 4 === 0) pureDropDownbeats.push(t);
+    aggressiveKicks.push([t, 1.0]);
+    // 注入密集的军鼓滚奏与切分重击（每半拍一击，测试军鼓是否会引发乱闪）
+    aggressiveSnares.push([t + pureDropBeatLen * 0.5, 1.0]);
+  }
+  const pureDropMusic = new m.Music({
+    version: 1,
+    duration: pureDropDuration,
+    bpm: pureDropBpm,
+    namedBpm: pureDropBpm,
+    meter: 4,
+    beats: pureDropBeats,
+    beatInBar: pureDropBeats.map((_, i) => i % 4),
+    tempo: pureDropBeats.map(() => pureDropBpm),
+    downbeats: pureDropDownbeats,
+    sections: [{ start: 0, end: pureDropDuration, label: 'drop', energy: 0.95, group: 0, vocal: false }],
+    hits: { kick: aggressiveKicks, snare: aggressiveSnares },
+    roles: { kick: aggressiveKicks, snare: aggressiveSnares },
+    env: {
+      fps: 30,
+      low: new Float32Array(pureDropDuration * 30).fill(0.85),
+      rms: new Float32Array(pureDropDuration * 30).fill(0.90),
+    },
+  });
+
+  const emptyLyrics = new m.LyricTrack([]);
+  const pureDropLaser = new m.LaserScene({ ...init, music: pureDropMusic, lyrics: emptyLyrics }, 'pulse');
+  const pureDropShot = {
+    index: 0,
+    start: 0,
+    end: pureDropDuration,
+    scene: 'laser',
+    variant: 'arena',
+    section: pureDropMusic.a.sections[0],
+    sectionIndex: 0,
+    seed: 5566,
+    short: false,
+  };
+
+  // 在 32 秒纯乐 Drop 中，以 60 FPS (dt = 0.01667s) 高频连续推进，总计 1920 帧，检测色彩跳变事件
+  const fps = 60;
+  const frameDt = 1 / fps;
+  const transitions = [];
+  let prevSlot = null;
+
+  for (let t = 0.0; t < pureDropDuration; t += frameDt) {
+    const curT = +t.toFixed(4);
+    pureDropLaser.update({
+      t: curT,
+      dt: frameDt,
+      shotT: curT,
+      shot: pureDropShot,
+      music: pureDropMusic,
+      lyrics: emptyLyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+    const curSlot = pureDropLaser.uniforms.uPalBase.value;
+
+    if (prevSlot === null) {
+      prevSlot = curSlot;
+    } else if (curSlot !== prevSlot) {
+      transitions.push({ t: curT, from: prevSlot, to: curSlot });
+      prevSlot = curSlot;
+    }
+  }
+
+  // 断言 1：在 32 秒纯乐 Drop 区间内，色彩跳变次数必须严格处于合理乐理区间（在 120BPM 下每 8 秒换一次色，32 秒内切换 3 次）
+  assert.equal(
+    transitions.length,
+    3,
+    `纯乐 Drop 在 32 秒内变色次数应精准为 3 次 (实际检测到 ${transitions.length} 次)，杜绝军鼓高频乱闪。切换时点: ${JSON.stringify(transitions.map(x => x.t))}`,
+  );
+
+  // 断言 2：每次变色时点必须严格与 4 小节下拍对齐 (t 为 8.0s 的倍数点：8s, 16s, 24s, 32s)，误差不超过 1 帧
+  for (const trans of transitions) {
+    const expectedTimes = [8.0, 16.0, 24.0, 32.0];
+    const isMatched = expectedTimes.some((et) => Math.abs(trans.t - et) <= frameDt * 1.5);
+    assert.ok(
+      isMatched,
+      `变色时点 t=${trans.t}s 必须严格对齐 4 小节下拍周期点 (8s, 16s, 24s, 32s)`,
+    );
+  }
+
+  // 断言 3：验证各乐句内部（如 0.5s~7.5s, 8.5s~15.5s, 16.5s~23.5s, 24.5s~31.5s），即使面对密集军鼓重击，色槽恒定不变
+  for (const phraseWindow of [[0.5, 7.5], [8.5, 15.5], [16.5, 23.5], [24.5, 31.5]]) {
+    const [wStart, wEnd] = phraseWindow;
+    pureDropLaser.update({
+      t: wStart,
+      dt: 0.05,
+      shotT: wStart,
+      shot: pureDropShot,
+      music: pureDropMusic,
+      lyrics: emptyLyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+    const slotStart = pureDropLaser.uniforms.uPalBase.value;
+
+    for (let checkT = wStart + 0.5; checkT <= wEnd; checkT += 0.5) {
+      pureDropLaser.update({
+        t: checkT,
+        dt: 0.05,
+        shotT: checkT,
+        shot: pureDropShot,
+        music: pureDropMusic,
+        lyrics: emptyLyrics,
+        palette,
+        fx: m.defaultFx(),
+        aspect: 16 / 9,
+      });
+      assert.equal(
+        pureDropLaser.uniforms.uPalBase.value,
+        slotStart,
+        `在乐句内部 [${wStart}s, ${wEnd}s] 的 t=${checkT}s 处，色槽必须严格稳定，不受连续军鼓干扰`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 实证压测 3：缺少声学包络 / 极端边界稳定性检验
+  // -------------------------------------------------------------
+  // Case 3.1: 完全缺失 low/rms 包络的 mock 音频
+  const noEnvAnalysis = {
+    ...music.a,
+    env: { fps: 30 }, // 无 low, rms
+  };
+  const noEnvMusic = new m.Music(noEnvAnalysis);
+  const robustLaser = new m.LaserScene({ ...init, music: noEnvMusic, lyrics: emptyLyrics }, 'pulse');
+
+  // 无论在 drop 还是 chorus，均安全保底，不抛异常，不出现 NaN
+  robustLaser.update(makeCtx(robustLaser, 35.0, noEnvMusic, emptyLyrics)); // Drop 段
+  assert.equal(robustLaser.uniforms.uDropPower.value, 1.0, '缺少 low/rms 包络时 Drop 状态 dropPower 应安全保底为 1.0');
+
+  robustLaser.update(makeCtx(robustLaser, 60.0, noEnvMusic, emptyLyrics)); // Chorus 段
+  assert.equal(robustLaser.uniforms.uDropPower.value, 0.84, '缺少 low/rms 包络时 Chorus 状态 dropPower 应安全保底为 0.84');
+
+  // Case 3.2: 空 Float32Array 包络防御 (low/rms 长度为 0)
+  const emptyArrayAnalysis = {
+    ...music.a,
+    env: {
+      fps: 30,
+      low: new Float32Array(0),
+      rms: new Float32Array(0),
+    },
+  };
+  const emptyArrayMusic = new m.Music(emptyArrayAnalysis);
+  robustLaser.update(makeCtx(robustLaser, 35.0, emptyArrayMusic, emptyLyrics));
+  assert.equal(robustLaser.uniforms.uDropPower.value, 1.0, '包络数组长度为 0 时应安全保底为 1.0');
+
+  // Case 3.3: 能量为 0 与超常能量边界值防御
+  const zeroEnergySec = { start: 0, end: 10, label: 'drop', energy: 0.0, group: 0, vocal: false };
+  const zeroEnergyShot = { ...getShotAt(5.0), section: zeroEnergySec };
+  robustLaser.update({
+    t: 5.0,
+    dt: 0.05,
+    shotT: 5.0,
+    shot: zeroEnergyShot,
+    music,
+    lyrics: emptyLyrics,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  const zeroEnergyPower = robustLaser.uniforms.uDropPower.value;
+  assert.ok(
+    Number.isFinite(zeroEnergyPower) && zeroEnergyPower >= 0.35 && zeroEnergyPower <= 1.0,
+    `sec.energy=0 边界下 dropPower 必须为有效有限数值，实测为 ${zeroEnergyPower}`,
+  );
+
+  // Case 3.4: 极端 Drop 能量衰减下外围光束淡出至 discard 门限检查
+  // 构造极端低能 Drop 音频 (lowEnv = 0, rmsEnv = 0, kicks = 0)
+  const deadLowArr = new Float32Array(music.a.env.fps * 20).fill(0);
+  const deadRmsArr = new Float32Array(music.a.env.fps * 20).fill(0);
+  const deadDropMusic = new m.Music({
+    ...music.a,
+    duration: 20,
+    sections: [{ start: 0, end: 20, label: 'drop', energy: 0.8, group: 0, vocal: false }],
+    hits: { kick: [], snare: [], hat: [], accent: [] },
+    roles: { kick: [], snare: [] },
+    env: { fps: 30, low: deadLowArr, rms: deadRmsArr },
+  });
+  const deadDropShot = {
+    index: 0,
+    start: 0,
+    end: 20,
+    scene: 'laser',
+    variant: 'arena',
+    section: deadDropMusic.a.sections[0],
+    sectionIndex: 0,
+    seed: 4321,
+    short: false,
+  };
+  robustLaser.update({
+    t: 10.0,
+    dt: 0.05,
+    shotT: 10.0,
+    shot: deadDropShot,
+    music: deadDropMusic,
+    lyrics: emptyLyrics,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  const deadDropPower = robustLaser.uniforms.uDropPower.value;
+  assert.equal(
+    deadDropPower,
+    0.35,
+    `在低频与 RMS 完全为 0 且无底鼓冲击时，dropPower 应下潜至理论硬保底 0.35 (实测 ${deadDropPower})`,
+  );
+
+  // 验证 36 束快切激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
+  const beamStyles = robustLaser.beamStyleAttr.array;
+  let hasZeroedOuterBeam = false;
+  let hasActiveCoreBeam = false;
+  for (let bIdx = 0; bIdx < 36; bIdx++) {
+    const power = beamStyles[bIdx * 4];
+    assert.ok(Number.isFinite(power) && power >= 0, `光束 #${bIdx} 的功率必须为非负有限数，实测 ${power}`);
+    if (power < 1e-4) {
+      hasZeroedOuterBeam = true;
+    } else {
+      hasActiveCoreBeam = true;
+    }
+  }
+  assert.ok(hasZeroedOuterBeam, '在 dropPower=0.35 极限衰减下，外围光束应平滑淡出至 0');
+  assert.ok(hasActiveCoreBeam, '在 dropPower=0.35 极限衰减下，中央核心光束应保留柔和光感');
+});
+
+
 
