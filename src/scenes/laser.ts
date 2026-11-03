@@ -3389,25 +3389,7 @@ export class LaserScene implements MvScene {
     const beatInfo = music.at(t);
     const beatDur = 60 / Math.max(40, beatInfo.bpm);
 
-    // 1. 解析当前段落能量与控台主状态（Drop / Chorus 全功率炸场，Build 蓄能收束，Break 静谧液态天幕）
-    const isDrop = sec.label === 'drop';
-    const isChorus = sec.label === 'chorus';
-    const isBuild = sec.label === 'build' || sec.label === 'pre';
-    const isBreak = sec.label === 'break' || sec.label === 'bridge' || sec.label === 'intro' || sec.label === 'outro';
-
-    const buildProgress = isBuild ? clamp01((t - sec.start) / Math.max(1.0, sec.end - sec.start)) : 0;
-    const dropPower = isDrop ? 1.0 : isChorus ? 0.84 : isBuild ? 0.25 + 0.55 * buildProgress : isBreak ? 0.18 : 0.46;
-
-    // Drop 入拍前最后 90ms 瞬时收暗蓄力（Pre-Drop Blackout Choke），入拍首帧轰然全开！
-    let blackout = 0;
-    if (isBuild && nextSec && nextSec.label === 'drop') {
-      const rem = sec.end - t;
-      if (rem >= 0 && rem < 0.14) {
-        blackout = smooth(1.0 - Math.abs(rem - 0.055) / 0.085);
-      }
-    }
-
-    // 2. 提取音频脉冲与 12 半音色度包络
+    // 1. 提取音频脉冲与 12 半音色度包络
     const kickPunch = clamp01(music.pulse('kick', t, 0.13) * 1.12);
     const snarePunch = clamp01(music.pulse('snare', t, 0.11));
     const hatSparkle = clamp01(music.pulse('hat', t, 0.07));
@@ -3424,36 +3406,135 @@ export class LaserScene implements MvScene {
       return clamp01((env.chroma[cIdx * 12 + c] ?? 0) * 1.15);
     };
 
+    // 2. 解析当前段落能量与控台主状态（Drop / Chorus 全功率炸场，Build 蓄能收束，Break 静谧液态天幕）
+    const isDrop = sec.label === 'drop';
+    const isChorus = sec.label === 'chorus';
+    const isBuild = sec.label === 'build' || sec.label === 'pre';
+    const isBreak = sec.label === 'break' || sec.label === 'bridge' || sec.label === 'intro' || sec.label === 'outro';
+
+    const buildProgress = isBuild ? clamp01((t - sec.start) / Math.max(1.0, sec.end - sec.start)) : 0;
+
+    // 检查是否存在连续音频声压包络（兼容缺少 low/rms 的单元测试 mock 固件）
+    const hasAcousticEnv = Boolean(
+      music.a.env && (
+        (music.a.env.low && music.a.env.low.length > 0) ||
+        (music.a.env.rms && music.a.env.rms.length > 0)
+      )
+    );
+
+    let dropPower: number;
+    if (isDrop) {
+      if (hasAcousticEnv) {
+        const lowEnv = music.env('low', t);
+        const rmsEnv = music.env('rms', t);
+        // 相对动态能量：以段落能量为参考基准，低频占据 80% 决定性权重，全频 RMS 占 20%
+        const relLow = clamp01(lowEnv / Math.max(0.18, sec.energy * 0.75));
+        const relRms = clamp01(rmsEnv / Math.max(0.20, sec.energy * 0.90));
+        const acousticEnergy = clamp01(relLow * 0.80 + relRms * 0.20);
+        // 鼓点瞬态与旋律起音瞬时支撑（当处于空隙但底鼓或和弦踩下时仍能短促带起）
+        const transientSupport = Math.max(kickPunch * 0.60, fg.level * 0.40);
+        const dynamicEnergy = clamp01(Math.max(acousticEnergy, transientSupport));
+        // 能量满格时为 1.0；能量骤降（如《Nothing Ever After》3:25 处低频暴跌 86%、底鼓停顿）时
+        // 动态回落至 0.35~0.45 范围，带动光幕、光束、光锥及 Bloom 柔和退晕收拢
+        dropPower = clampRange(0.35 + 0.65 * Math.pow(dynamicEnergy, 1.35), 0.35, 1.0);
+      } else {
+        // 单元测试 mock 固件安全回退保底
+        dropPower = 1.0;
+      }
+    } else if (isChorus) {
+      if (hasAcousticEnv) {
+        const lowEnv = music.env('low', t);
+        const rmsEnv = music.env('rms', t);
+        const relEnergy = clamp01(Math.max(lowEnv, rmsEnv * 0.95));
+        dropPower = clampRange(0.30 + 0.54 * relEnergy, 0.30, 0.84);
+      } else {
+        dropPower = 0.84;
+      }
+    } else if (isBuild) {
+      dropPower = 0.25 + 0.55 * buildProgress;
+    } else if (isBreak) {
+      dropPower = 0.18;
+    } else {
+      dropPower = 0.46;
+    }
+
+    // Drop 入拍前最后 90ms 瞬时收暗蓄力（Pre-Drop Blackout Choke），入拍首帧轰然全开！
+    let blackout = 0;
+    if (isBuild && nextSec && nextSec.label === 'drop') {
+      const rem = sec.end - t;
+      if (rem >= 0 && rem < 0.14) {
+        blackout = smooth(1.0 - Math.abs(rem - 0.055) / 0.085);
+      }
+    }
+
     // 3. 灯光师控台 Cue 阵型与双色彩编排模式（纯函数确定性决策）
     // - 模式 A (SPATIAL_GRADIENT)：同屏同时呈现丰富的封面提取色，按三维空间位置平滑映射，相邻激光颜色严格相近，形成丝滑渐变光场；
-    // - 模式 B (UNISON_SWITCH)：全屏所有激光、光幕、灯塔、气柱锁定同一封面提取色 1，并在下一重音/军鼓 0ms 瞬切至另一封面提取色 2。
+    // - 模式 B (UNISON_SWITCH)：全屏所有激光、光幕、灯塔、气柱锁定同一封面提取色 1，仅在每句歌词开头时间戳瞬切至另一封面提取色 2。
     const barsIntoSec = Math.max(0, Math.floor((t - sec.start) / Math.max(0.5, beatDur * music.meter)));
     const cueMode = isDrop || isChorus
       ? (shot.variant === 'tunnel' ? 1 : Math.floor(barsIntoSec / 2) % 4)
       : -1;
 
+    // 检索当前时间戳 t 对应的歌词行（纯函数，无跨帧状态）
+    const lines = ctx.lyrics?.lines ?? [];
+    const hasLyrics = lines.length > 0;
+    let lyricLineIdx = -1;
+    let isInLyricPhrase = false;
+
+    if (hasLyrics) {
+      let low = 0, high = lines.length - 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (lines[mid].start <= t) {
+          lyricLineIdx = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      if (lyricLineIdx >= 0) {
+        const curLine = lines[lyricLineIdx];
+        const nextLine = lines[lyricLineIdx + 1];
+        // 歌词演唱区间判定：若下一句在 3.5s 内接续，句间微歇保持当前色彩直至下一句开头瞬切；
+        // 若两句之间为长乐段（间隙 > 3.5s），本句唱完后 (end + 1.2s) 释放进入纯音乐 fallback 模式
+        const gapToNext = nextLine ? (nextLine.start - curLine.end) : Infinity;
+        const phraseEnd = (nextLine && gapToNext <= 3.5)
+          ? nextLine.start
+          : Math.min(curLine.end + 1.2, nextLine ? nextLine.start : Infinity);
+
+        isInLyricPhrase = t >= curLine.start && t < phraseEnd;
+      }
+    }
+
     const isUnisonMode = isBreak
       ? false
       : isBuild
         ? buildProgress >= 0.55
-        : (Math.floor(barsIntoSec / 4) % 2 === 1);
+        : (isInLyricPhrase && lyricLineIdx >= 0)
+          ? ((Math.floor(lyricLineIdx / 2) % 2) === 1)
+          : ((Math.floor(barsIntoSec / 4) % 2) === 1);
 
     // 解析当前色彩映射参数并同步主副环境光向量
     const u = this.uniforms;
-    let activeUnisonSlot = this.pal.unisonSlots[0] ?? 0;
+    const uRing = this.pal.unisonSlots.length > 0 ? this.pal.unisonSlots : [0, 5];
+    let activeUnisonSlot = uRing[0];
     let palBase = 0.0;
     let palSpan = 5.0;
     let sheetSpread = 0.36;
 
     if (isUnisonMode) {
-      const uRing = this.pal.unisonSlots.length > 0 ? this.pal.unisonSlots : [0, 5];
-      if (isBuild && buildProgress >= 0.78) {
-        // Build 冲刺末段随半拍加密整屏跳切
+      if (isInLyricPhrase && lyricLineIdx >= 0) {
+        // 【歌词唱诵期间】：色彩槽严格绑定每句歌词开头时间戳（line.start），句内绝对锁定，绝不在歌词唱到一半时因军鼓/定时器突兀变色
+        activeUnisonSlot = uRing[lyricLineIdx % uRing.length];
+      } else if (isBuild && buildProgress >= 0.78) {
+        // 纯乐 Build 冲刺末段随半拍加密整屏跳切
         const fastStep = Math.max(0, Math.floor(beatInfo.pos * 2));
         activeUnisonSlot = uRing[fastStep % uRing.length];
       } else {
-        const cutIdx = lastIndex(this.unisonCutTimes, t);
-        activeUnisonSlot = cutIdx >= 0 ? this.unisonCuts[cutIdx].slot : uRing[0];
+        // 【纯音乐 / 间奏 / Drop 纯乐段落 Fallback】：按 4 小节乐句下拍稳步推进色槽，杜绝高频抽搐跳色
+        const phraseIdx = Math.max(0, Math.floor(beatInfo.bar / 4));
+        activeUnisonSlot = uRing[phraseIdx % uRing.length];
       }
       palBase = activeUnisonSlot;
       palSpan = 0.0;
@@ -3467,8 +3548,11 @@ export class LaserScene implements MvScene {
       (u.uLaserSecondaryCore.value as THREE.Vector3).copy(uCore);
       (u.uBlinderWarm.value as THREE.Vector3).copy(uCol);
     } else {
-      // 模式 A：8 小节乐句组间顺滑翻转左右渐变极性（左->右 vs 右->左），全场所有着色器与激光空间坐标 100% 同相连续渐变
-      const reverseGrad = (Math.floor(barsIntoSec / 8) % 2) === 1;
+      // 模式 A：空间渐变极性翻转严格与歌词行序号奇偶对齐（lyricLineIdx % 2 === 1），避免在歌词中途翻转渐变极性；
+      // 纯音乐/无歌词段落按 8 小节乐句顺滑翻转
+      const reverseGrad = (isInLyricPhrase && lyricLineIdx >= 0)
+        ? (lyricLineIdx % 2 === 1)
+        : ((Math.floor(barsIntoSec / 8) % 2) === 1);
       palBase = reverseGrad ? 5.0 : 0.0;
       palSpan = reverseGrad ? -5.0 : 5.0;
       sheetSpread = reverseGrad ? -0.34 : 0.34;
@@ -3601,7 +3685,9 @@ export class LaserScene implements MvScene {
             yaw = sp.baseYaw + Math.sin(sweepClock * 0.8 + i * 0.7) * 0.14;
             pitch = -0.175 + 0.065 * Math.sin(sweepClock * 1.45 + pairIdx * 0.55) - 0.025 * kickPunch;
             roll = symSign * Math.sin(sweepClock * 0.95 + pairIdx) * (cueMode === 3 ? 0.28 : 0.14);
-            spread = 0.56 + 0.08 * fg.level;
+            spread = (isDrop && dropPower < 0.70)
+              ? lerp(0.36, 0.56, clamp01((dropPower - 0.35) / 0.35)) + 0.08 * fg.level
+              : 0.56 + 0.08 * fg.level;
             power = (0.94 + 0.24 * kickPunch + 0.16 * fg.attack) * dropPower;
             waveAmp = 0.65 + 0.45 * fg.level;
           }
@@ -3744,6 +3830,14 @@ export class LaserScene implements MvScene {
       const colorMix = evalSpatialColorSlot(beamSpatialX, b.z);
 
       beamPower = Math.min(1.38, beamPower);
+      if (isDrop && dropPower < 0.55) {
+        // Drop 能量回落时，外围与侧翼辅光束柔和收拢熄灭（触发着色器 discard 门限），中央核心主排优雅维持柔光呼吸
+        const isCoreBeam = b.group === 0 && Math.abs(b.normX) < 0.42;
+        if (!isCoreBeam) {
+          const fadeOut = smooth(clamp01((dropPower - 0.35) / 0.20));
+          beamPower *= fadeOut;
+        }
+      }
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * BEAM_EMITTER_COUNT + i) * 4;
         bEnd[slot] = tx;

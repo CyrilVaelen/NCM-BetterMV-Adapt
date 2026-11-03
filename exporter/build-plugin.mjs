@@ -4,7 +4,7 @@ import { build } from 'vite';
 import JSZip from 'jszip';
 import { loadSettings, PROJECT } from './server.mjs';
 
-const VERSION = '0.9.0-local-export.62';
+const VERSION = '0.9.0-local-export.63';
 const PLUGIN_NAME = 'BetterMV（增强定制版）';
 const PLUGIN_AUTHOR = 'CyrilVaelen (基于 XIAOMING6680 v0.9.0 原版定制)';
 const PLUGIN_REPO = 'https://github.com/CyrilVaelen/NCM-BetterMV-Adapt';

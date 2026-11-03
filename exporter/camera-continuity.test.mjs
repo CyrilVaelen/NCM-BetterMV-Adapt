@@ -920,3 +920,211 @@ test('LaserScene 激光舞台：极端音频工况（超高速 BPM 200 / 极慢 
   }
 });
 
+test('LaserScene 激光舞台：Drop 能量骤降时强度与光束动态回落 & 激光颜色严格绑定每句歌词开头切换', () => {
+  const m = mods;
+  const { music, lyrics, palette, init } = buildMockFixture();
+
+  // 1. 验证 Drop 能量动态回落逻辑（如《Nothing Ever After》3:25 处能量暴跌场景）
+  const duration = 60;
+  const bpm = 120;
+  const beatLen = 60 / bpm; // 0.5s
+  const beats = [];
+  const downbeats = [];
+  for (let i = 0; i * beatLen <= duration; i++) {
+    const t = +(i * beatLen).toFixed(4);
+    beats.push(t);
+    if (i % 4 === 0) downbeats.push(t);
+  }
+  const sections = [
+    { start: 0, end: 10, label: 'verse', energy: 0.5, group: 0, vocal: true },
+    { start: 10, end: 40, label: 'drop', energy: 0.95, group: 1, vocal: false },
+    { start: 40, end: duration, label: 'outro', energy: 0.3, group: 2, vocal: false },
+  ];
+  const envFps = 30;
+  const envLen = Math.ceil(duration * envFps);
+  const lowArr = new Float32Array(envLen).fill(0.85); // 默认高能
+  const rmsArr = new Float32Array(envLen).fill(0.90);
+  // 在 25s ~ 32s 模拟 Drop 段内能量骤降（low 暴跌至 0.08，rms 降至 0.42）
+  for (let i = Math.round(25 * envFps); i < Math.round(32 * envFps); i++) {
+    lowArr[i] = 0.08;
+    rmsArr[i] = 0.42;
+  }
+  const kicks = beats.map((b) => [b, (b >= 25 && b < 32) ? 0 : 0.9]); // 能量骤降时底鼓停歇
+  const snares = beats.filter((_, i) => i % 2 === 1).map((b) => [b, (b >= 25 && b < 32) ? 0 : 0.8]);
+
+  const dropTestMusic = new m.Music({
+    version: 1,
+    duration,
+    bpm,
+    namedBpm: bpm,
+    meter: 4,
+    beats,
+    beatInBar: beats.map((_, i) => i % 4),
+    tempo: beats.map(() => bpm),
+    downbeats,
+    sections,
+    hits: { kick: kicks, snare: snares },
+    roles: { kick: kicks, snare: snares, synthStab: kicks, lead: kicks },
+    env: {
+      fps: envFps,
+      rms: rmsArr,
+      low: lowArr,
+      mid: new Float32Array(envLen).fill(0.5),
+      high: new Float32Array(envLen).fill(0.4),
+      onset: new Float32Array(envLen).fill(0.3),
+    },
+  });
+
+  // 构造明确起止的两句歌词：第一句 [12.0s, 17.0s]，第二句 [19.0s, 24.0s]
+  const lyricLines = [
+    { start: 12.0, end: 17.0, text: '第一句开唱到结尾', timedWords: true, words: [{ text: '开唱', start: 12.0, end: 13.5 }, { text: '结尾', start: 15.0, end: 17.0 }] },
+    { start: 19.0, end: 24.0, text: '第二句换色再开唱', timedWords: true, words: [{ text: '换色', start: 19.0, end: 20.5 }, { text: '再唱', start: 22.0, end: 24.0 }] },
+  ];
+  const lyricTrack = new m.LyricTrack(lyricLines);
+
+  const laser = new m.LaserScene({ ...init, music: dropTestMusic, lyrics: lyricTrack }, 'pulse');
+  const dropShot = {
+    index: 1,
+    start: 10,
+    end: 40,
+    scene: 'laser',
+    variant: 'arena',
+    section: sections[1],
+    sectionIndex: 1,
+    seed: 1234,
+    short: false,
+  };
+
+  const updateAt = (t) => {
+    laser.update({
+      t,
+      dt: 0.05,
+      shotT: t - dropShot.start,
+      shot: dropShot,
+      music: dropTestMusic,
+      lyrics: lyricTrack,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+  };
+
+  // (1) 测试 Drop 高能爆发期 (t = 15.0s)
+  updateAt(15.0);
+  const powerClimax = laser.uniforms.uDropPower.value;
+  assert.ok(powerClimax >= 0.85, `Drop 高潮期 dropPower 应处于高位 (>=0.85)，实测为 ${powerClimax.toFixed(3)}`);
+
+  // (2) 测试 Drop 能量骤降期 (t = 28.0s，模拟 3:25 处低频塌缩与底鼓停顿)
+  updateAt(28.0);
+  const powerDrop = laser.uniforms.uDropPower.value;
+  assert.ok(
+    powerDrop >= 0.35 && powerDrop <= 0.48,
+    `Drop 能量骤降时 dropPower 应动态回落至 0.35~0.48 范围，实测为 ${powerDrop.toFixed(3)}`,
+  );
+  assert.ok(
+    powerDrop < powerClimax * 0.65,
+    `Drop 骤降期功率相比高潮期应有明显回落 (powerDrop=${powerDrop.toFixed(3)}, powerClimax=${powerClimax.toFixed(3)})`,
+  );
+
+  // (3) 测试无 low/rms 的 mock 音频保底兼容性
+  const mockNoEnvMusic = new m.Music({
+    version: 1,
+    duration,
+    bpm,
+    namedBpm: bpm,
+    meter: 4,
+    beats,
+    beatInBar: beats.map((_, i) => i % 4),
+    tempo: beats.map(() => bpm),
+    downbeats,
+    sections,
+    hits: { kick: kicks, snare: snares },
+    roles: { kick: kicks, snare: snares, synthStab: kicks, lead: kicks },
+    env: { kick: new Float32Array(10), snare: new Float32Array(10) }, // 无 low/rms
+  });
+  laser.update({
+    t: 28.0,
+    dt: 0.05,
+    shotT: 18.0,
+    shot: dropShot,
+    music: mockNoEnvMusic,
+    lyrics: lyricTrack,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  assert.equal(laser.uniforms.uDropPower.value, 1.0, '无 low/rms 包络的 mock 音频应安全保底为 1.0');
+
+  // 2. 验证激光颜色切换时机严格绑定每句歌词开头时间戳
+  // 采样第一句歌词开头时刻 (t = 12.0s)
+  updateAt(12.0);
+  const colorAtLine0Start = laser.uniforms.uLaserPrimary.value.clone();
+  const palBaseLine0Start = laser.uniforms.uPalBase.value;
+
+  // 采样第一句歌词中途时刻 (t = 13.5s、t = 15.0s、t = 16.5s)
+  // 无论期间军鼓如何击打，颜色槽必须严格保持恒定不变
+  for (const midT of [13.5, 15.0, 16.5]) {
+    updateAt(midT);
+    const colorMid = laser.uniforms.uLaserPrimary.value;
+    const palBaseMid = laser.uniforms.uPalBase.value;
+    assert.equal(
+      palBaseMid,
+      palBaseLine0Start,
+      `在第一句歌词唱诵中途 (t=${midT}s)，色彩基槽 uPalBase 应绝对锁定在句首色彩，不得突变跳色`,
+    );
+    assert.ok(
+      colorMid.distanceTo(colorAtLine0Start) < 1e-4,
+      `在第一句歌词唱诵中途 (t=${midT}s)，主激光色彩 uLaserPrimary 应与句首一致`,
+    );
+  }
+
+  // 采样第二句歌词开头时刻 (t = 19.0s)
+  updateAt(19.0);
+  const palBaseLine1Start = laser.uniforms.uPalBase.value;
+  assert.notEqual(
+    palBaseLine1Start,
+    palBaseLine0Start,
+    `第二句歌词开头时刻 (t=19.0s) 应精准推进切换为下一个色槽`,
+  );
+
+  // 采样第二句歌词中途时刻 (t = 21.0s、t = 23.0s)
+  for (const midT of [21.0, 23.0]) {
+    updateAt(midT);
+    const palBaseMid = laser.uniforms.uPalBase.value;
+    assert.equal(
+      palBaseMid,
+      palBaseLine1Start,
+      `在第二句歌词唱诵中途 (t=${midT}s)，色彩槽应锁定在第二句句首色彩`,
+    );
+  }
+
+  // 3. 验证纯音乐（无歌词 lines: []）时按 4 小节乐句下拍推进
+  const emptyLyricTrack = new m.LyricTrack([]);
+  laser.update({
+    t: 0.1,
+    dt: 0.05,
+    shotT: 0.1,
+    shot: { ...dropShot, section: sections[0] },
+    music: dropTestMusic,
+    lyrics: emptyLyricTrack,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  const colorBar0 = laser.uniforms.uPalBase.value;
+  // 在前 3 个小节内（t < 8.0s），纯音乐不应高频跳切
+  laser.update({
+    t: 3.5,
+    dt: 0.05,
+    shotT: 3.5,
+    shot: { ...dropShot, section: sections[0] },
+    music: dropTestMusic,
+    lyrics: emptyLyricTrack,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  assert.equal(laser.uniforms.uPalBase.value, colorBar0, '纯音乐前 4 小节内应保持稳步色相，不因节拍高频跳变');
+});
+
+
