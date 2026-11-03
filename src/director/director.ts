@@ -468,6 +468,7 @@ const MOTION: Record<SceneId, TransitionKind[]> = {
   fountain: [zoom, TransitionKind.matte],
   starry: [zoom, TransitionKind.matte],
   laser: [zoom, TransitionKind.matte],
+  blackhole: [zoom, TransitionKind.matte],
 };
 const SOFT: TransitionKind[] = [zoom, TransitionKind.matte, TransitionKind.iris, spin];
 
@@ -700,7 +701,7 @@ export class Director {
       // The bars slide in over a bar and out over a bar (not at the very start or end of the song).
       const ramp = Math.min(beat * this.music.meter, (b - a) / 4);
       const din = a <= 0.1 ? 1 : smooth((t - a) / ramp), dout = b >= this.music.a.duration - 0.1 ? 1 : smooth((b - t) / ramp);
-      if (shot.scene !== 'starry' && shot.scene !== 'laser') fx.letterbox = Math.min(din, dout);
+      if (shot.scene !== 'starry' && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.letterbox = Math.min(din, dout);
     }
     // A plate on paper: trails and the duotone would grey its darks, and the overlay's glowing lines would vanish.
     const bg = scene.scene.background;
@@ -788,7 +789,7 @@ export class Director {
         // the words into blocks; decided once for the beat, so it never switches off halfway).
         const pushedIn = this.shots.some(s => s.scene === 'crystal' && s.variant === 'orbit' && Math.abs(s.end - sec.start) < 0.05);
         const sungOver = this.lyrics.visible(sec.start + beat * 0.5).some(s => s.exit < 0.5);
-        if (intoSec < beat && !pushedIn && !sungOver && shot.scene !== 'laser') fx.pixel = Math.max(fx.pixel, 48 * Math.pow(1 - intoSec / beat, 2));
+        if (intoSec < beat && !pushedIn && !sungOver && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.pixel = Math.max(fx.pixel, 48 * Math.pow(1 - intoSec / beat, 2));
         // No phrase-triggered whole-frame negatives during a Drop: keep timbre accents inside the scene.
         break;
       }
@@ -800,8 +801,8 @@ export class Director {
         }
         break;
       }
-      case 'break': if (shot.scene !== 'starry' && shot.scene !== 'laser') fx.duotone = Math.max(fx.duotone, 0.6); fx.scan = Math.max(fx.scan, 0.15); break;
-      case 'bridge': if (shot.scene !== 'starry' && shot.scene !== 'laser') fx.duotone = Math.max(fx.duotone, 0.4); break;
+      case 'break': if (shot.scene !== 'starry' && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.duotone = Math.max(fx.duotone, 0.6); fx.scan = Math.max(fx.scan, 0.15); break;
+      case 'bridge': if (shot.scene !== 'starry' && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.duotone = Math.max(fx.duotone, 0.4); break;
       case 'chorus': {
         const sinceDown = (info.inBar % m.meter) * beat;
         if (sparse && sinceDown < beat) fx.echo = Math.max(fx.echo, 0.6 * (1 - sinceDown / beat));

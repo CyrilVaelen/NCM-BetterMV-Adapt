@@ -50,6 +50,7 @@ import { VelvetScene } from '../scenes/velvet.ts';
 import { FountainScene } from '../scenes/fountain.ts';
 import { StarryScene } from '../scenes/starry.ts';
 import { LaserScene } from '../scenes/laser.ts';
+import { BlackHoleScene } from '../scenes/blackhole.ts';
 import { FractalPlate } from '../scenes/fractal.ts';
 import { armillarySpec } from '../sigil/armillary.ts';
 import type { MvScene, SceneId, SceneInit, Shot } from '../scenes/types.ts';
@@ -174,6 +175,7 @@ export class MvPlayer {
     else if (id === 'city') (s as City).setViewport(canvas.width, canvas.height);
     else if (id === 'fountain') (s as FountainScene).setViewport(canvas.width, canvas.height, pr);
     else if (id === 'starry') (s as StarryScene).setViewport(canvas.width, canvas.height, pr);
+    else if (id === 'blackhole') (s as BlackHoleScene).setViewport(canvas.width, canvas.height, pr);
     if (s instanceof FractalPlate) s.setViewport(canvas.width, canvas.height, pr);
   }
 
@@ -255,6 +257,7 @@ export class MvPlayer {
       fountain: () => new FountainScene(init, look),
       starry: () => new StarryScene(init, look),
       laser: () => new LaserScene(init, look),
+      blackhole: () => new BlackHoleScene(init, look),
     };
     for (const id of new Set(shots.map(s => s.scene))) this.sceneFactories[id] = make[id];
     const sections = song.analysis.sections;

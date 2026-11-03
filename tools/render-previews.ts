@@ -64,6 +64,7 @@ const PLAN: Record<SceneId, { style: string; variants: string; in: SectionLabel;
   fountain: { style: 'pulse', variants: 'courtyard', in: 'drop', at: 0.25 },
   starry: { style: 'pulse', variants: 'mirror', in: 'drop', at: 0.25 },
   laser: { style: 'pulse', variants: 'arena', in: 'drop', at: 0.08 },
+  blackhole: { style: 'pulse', variants: 'observatory', in: 'drop', at: 0.25 },
 };
 
 /** The looks: a plate drawn in each. */

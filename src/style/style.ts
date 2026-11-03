@@ -127,6 +127,7 @@ function withPulseVibePlates(base: Plate[], s: Section, song: SongTraits): Plate
       H(1.9, 2.1, 'fountain', 'courtyard', 'orbit', 'skim'),
       H(1.8, 2.0, 'aurora', 'wide', 'lake'),
       H(1.8, 2.0, 'starry', 'mirror', 'astrolabe', 'glide'),
+      H(1.75, 1.95, 'blackhole', 'observatory', 'astrolabe', 'glide'),
       W(1.6, 'bokeh', 'focus', 'rise'),
       W(1.5, 'clouds', 'over', 'rise'),
     );
@@ -167,12 +168,12 @@ function pulsePool(s: Section): Plate[] {
   switch (s.label) {
     case 'intro': return [
       H(1.8, 2.2, 'relief', 'rise'), H(1.8, 2.0, 'city', 'high', 'horizon'), H(1.5, 1.6, 'pillars', 'orbit', 'top'),
-      H(1.4, 1.4, 'aurora', 'wide'), H(1.65, 1.85, 'starry', 'mirror', 'astrolabe'), W(1.3, 'ridges', 'front', 'drift'), W(1.2, 'rings', 'front', 'tilt'),
+      H(1.4, 1.4, 'aurora', 'wide'), H(1.65, 1.85, 'starry', 'mirror', 'astrolabe'), H(1.68, 1.88, 'blackhole', 'observatory', 'astrolabe'), W(1.3, 'ridges', 'front', 'drift'), W(1.2, 'rings', 'front', 'tilt'),
       W(1.1, 'vinyl', 'top', 'tilt'), W(1.0, 'particles', 'hold'), W(0.95, 'ripple', 'face', 'tilt'),
       W(0.85, 'scope', 'wave', 'xy'), W(0.85, 'orb', 'wide', 'orbit'),
     ];
     case 'outro': return [
-      H(1.8, 2.2, 'relief', 'rise'), H(1.75, 2.05, 'starry', 'mirror', 'zenith'), H(1.7, 2.0, 'aurora', 'wide', 'lake'), H(1.5, 1.6, 'clouds', 'over'),
+      H(1.8, 2.2, 'relief', 'rise'), H(1.75, 2.05, 'starry', 'mirror', 'zenith'), H(1.78, 2.08, 'blackhole', 'observatory', 'horizon'), H(1.7, 2.0, 'aurora', 'wide', 'lake'), H(1.5, 1.6, 'clouds', 'over'),
       W(1.3, 'ridges', 'drift'), W(1.1, 'rings', 'tilt'), W(1.0, 'particles', 'hold', 'vortex'),
       W(0.9, 'ripple', 'face', 'tilt'), W(0.8, 'scope', 'xy', 'wave'),
     ];
@@ -184,6 +185,7 @@ function pulsePool(s: Section): Plate[] {
       H(1.9, 2.1, 'shatter', 'wall', 'wall-close', 'wall-dutch', 'wall-edge'),
       H(1.85, 2.1, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
       H(1.95, 2.25, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
+      H(2.0, 2.3, 'blackhole', 'observatory', 'glide', 'horizon', 'astrolabe'),
       H(1.85, 2.05, 'laser', 'arena', 'rig', 'booth', 'tunnel'),
       H(1.8, 2.0, 'fountain', 'courtyard', 'orbit', 'skim', 'crown'),
       H(1.75, 1.9, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
@@ -215,6 +217,7 @@ function pulsePool(s: Section): Plate[] {
       H(1.85, 2.0, 'fountain', 'courtyard', 'skim', 'crown', 'orbit'),
       H(2.1, 2.4, 'phoenix', 'stage', 'soar', 'sonic', 'altar'),
       H(2.15, 2.45, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
+      H(2.2, 2.5, 'blackhole', 'observatory', 'horizon', 'glide', 'astrolabe'),
       H(1.65, 1.7, 'shatter', 'swarm-a', 'swarm-d', 'swarm-b', 'swarm-c'),
       W(1.45, 'city', 'canyon', 'glide'),
       W(1.3, 'ripple', 'tilt', 'low'),
@@ -226,14 +229,14 @@ function pulsePool(s: Section): Plate[] {
       W(0.85, 'kaleido', 'spiral', 'petal'),
     ];
     case 'break': return [
-      H(1.9, 2.2, 'aurora', 'wide', 'lake'), H(1.95, 2.25, 'starry', 'mirror', 'astrolabe', 'zenith'), H(1.6, 1.8, 'clouds', 'over', 'skim'),
+      H(1.9, 2.2, 'aurora', 'wide', 'lake'), H(1.95, 2.25, 'starry', 'mirror', 'astrolabe', 'zenith'), H(1.95, 2.25, 'blackhole', 'observatory', 'astrolabe'), H(1.6, 1.8, 'clouds', 'over', 'skim'),
       H(1.5, 1.6, 'pillars', 'orbit', 'low'), H(1.4, 1.5, 'poster', 'slab', 'stack'),
       W(1.3, 'ridges', 'front', 'low'), W(1.25, 'fountain', 'courtyard', 'orbit'), W(1.2, 'vinyl', 'groove', 'top'), W(1.15, 'velvet', 'skim', 'gallery'),
       W(1.0, 'rings', 'front'), W(0.95, 'halftone', 'pan'), W(0.9, 'ripple', 'face', 'tilt'),
       W(0.8, 'orb', 'wide', 'orbit'), W(0.75, 'scope', 'wave', 'xy'), W(0.75, 'cantor', 'glide', 'look'),
     ];
     case 'bridge': return [
-      H(1.9, 2.2, 'aurora', 'lake', 'wide'), H(1.95, 2.25, 'starry', 'mirror', 'glide', 'zenith'), H(1.7, 1.9, 'canvas', 'high', 'side'),
+      H(1.9, 2.2, 'aurora', 'lake', 'wide'), H(1.95, 2.25, 'starry', 'mirror', 'glide', 'zenith'), H(1.95, 2.25, 'blackhole', 'observatory', 'glide'), H(1.7, 1.9, 'canvas', 'high', 'side'),
       H(1.6, 1.7, 'clouds', 'rise', 'skim'), H(1.5, 1.6, 'poster', 'split', 'stack'),
       W(1.4, 'pillars', 'orbit', 'top'), W(1.3, 'ridges', 'drift', 'low'), W(1.25, 'fountain', 'orbit', 'crown'), W(1.15, 'velvet', 'lounge', 'platter'),
       W(1.0, 'halftone', 'pan', 'out'), W(0.95, 'rings', 'tilt'), W(0.9, 'kaleido', 'petal'),
@@ -247,6 +250,7 @@ function pulsePool(s: Section): Plate[] {
       H(1.65, 1.8, 'ridges', 'front', 'low', 'drift'),
       H(1.55, 1.65, 'fountain', 'courtyard', 'orbit', 'skim'),
       H(1.68, 1.82, 'starry', 'mirror', 'glide', 'astrolabe'),
+      H(1.72, 1.88, 'blackhole', 'observatory', 'glide', 'astrolabe'),
       H(1.55, 1.6, 'pillars', 'low', 'orbit'),
       H(1.5, 1.6, 'underwater', 'canyon', 'orbit'),
       W(1.35, 'vinyl', 'tilt', 'groove', 'top'),
@@ -316,7 +320,7 @@ function velvetPool(s: Section): Plate[] {
     ];
     case 'drop': return [
       H(3.4, 4.0, 'velvet', 'lounge', 'skim', 'platter', 'gallery'), H(2.0, 2.2, 'sunset', 'horizon', 'beam', 'drift'),
-      H(1.85, 2.0, 'fountain', 'courtyard', 'skim', 'crown', 'orbit'), H(1.8, 1.9, 'underwater', 'canyon', 'orbit', 'dive'), H(1.75, 1.85, 'laser', 'arena', 'rig', 'booth'), H(1.7, 1.7, 'city', 'glide', 'canyon', 'horizon'),
+      H(1.85, 2.0, 'fountain', 'courtyard', 'skim', 'crown', 'orbit'), H(1.85, 1.95, 'blackhole', 'observatory', 'glide', 'astrolabe'), H(1.8, 1.9, 'underwater', 'canyon', 'orbit', 'dive'), H(1.75, 1.85, 'laser', 'arena', 'rig', 'booth'), H(1.7, 1.7, 'city', 'glide', 'canyon', 'horizon'),
       W(1.4, 'vinyl', 'groove', 'tilt'), W(1.2, 'pillars', 'orbit', 'top'), W(1.0, 'ripple', 'tilt', 'low'),
     ];
     case 'break': case 'bridge': return [
@@ -366,6 +370,7 @@ function balladPool(s: Section, song: SongTraits): Plate[] {
       H(2.2, 2.5, 'lanterns', 'shore', 'rise', 'wide'),
       H(2.0, 2.3, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
       H(2.05, 2.35, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
+      H(2.05, 2.35, 'blackhole', 'observatory', 'glide', 'horizon', 'astrolabe'),
       H(1.95, 2.2, 'fountain', 'courtyard', 'orbit', 'crown', 'skim'),
       H(1.85, 2.0, 'clouds', 'rise', 'over', 'skim'),
       H(1.8, 1.9, 'rain', 'pane', 'close'),
@@ -388,7 +393,7 @@ function balladPool(s: Section, song: SongTraits): Plate[] {
     ];
     case 'bridge': case 'break': return [
       H(2.0, 2.3, 'rain', 'clear', 'pane'), H(1.9, 2.2, 'lanterns', 'wide', 'rise'),
-      H(1.8, 2.0, 'clouds', 'over', 'rise'), H(1.85, 2.05, 'starry', 'mirror', 'astrolabe'), H(1.75, 1.9, 'aurora', 'lake'),
+      H(1.8, 2.0, 'clouds', 'over', 'rise'), H(1.85, 2.05, 'starry', 'mirror', 'astrolabe'), H(1.85, 2.05, 'blackhole', 'observatory', 'astrolabe'), H(1.75, 1.9, 'aurora', 'lake'),
       H(1.6, 1.7, 'canvas', 'high', 'side'), W(1.5, 'fountain', 'courtyard', 'orbit'), W(1.45, 'city', 'high', 'horizon'),
       W(1.4, 'bokeh', 'rise'), W(1.25, 'ridges', 'drift'), W(1.2, 'velvet', 'gallery', 'skim'),
       W(1.1, 'pillars', 'orbit', 'low'), W(1.0, 'poster', 'split', 'stack'),
