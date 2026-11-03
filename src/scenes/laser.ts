@@ -2002,12 +2002,12 @@ void main() {
     return;
   }
 
-  // 圆锥起点自舞台主屏外围空心光环发散（不糊死屏幕中心封面），向 +Z 观众席延伸 70m 包裹镜头
+  // 桁架高空旋转激光锥笼：自舞台顶部桁架发射机位发散，向下倾斜切穿观众席，杜绝从专辑封面正中央发射
   float s = uv.y; // [0..1]
   float theta = uv.x * 6.2831853;
-  float r = (1.65 + s * 16.8) * aConeSpec.x;
+  float r = (0.42 + s * 17.6) * aConeSpec.x;
 
-  vec3 apex = vec3(0.0, 8.6, -52.2);
+  vec3 apex = vec3(0.0, 18.05, -52.4);
   vec3 axisDir = normalize(vec3(0.0, uConePitch, 1.0));
   vec3 right = vec3(1.0, 0.0, 0.0);
   vec3 upOrtho = normalize(cross(axisDir, right));
@@ -2379,7 +2379,7 @@ export class LaserScene implements MvScene {
       uBlinderGlow: { value: 0 },
       uBlackout: { value: 0 },
       uConeSpin: { value: 0 },
-      uConePitch: { value: -0.075 },
+      uConePitch: { value: -0.21 },
       uChroma0: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
       uChroma1: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
       uChroma2: { value: new THREE.Vector4(0.3, 0.3, 0.3, 0.3) },
@@ -3115,12 +3115,12 @@ export class LaserScene implements MvScene {
 
     switch (s.variant) {
       case 'tunnel': {
-        // 激光锥笼穿行视角：抬升至旋转激光圆锥笼轴心高度，伴随呼吸式微倾角向前穿梭
+        // 激光锥笼穿行视角：抬升至舞台顶梁激光圆锥笼轴心高度，伴随呼吸式微倾角向前穿梭
         cx = Math.sin(t * 0.38) * 1.45;
-        cy = lerp(5.3, 6.2, easeU) + Math.cos(t * 0.55) * 0.25;
+        cy = lerp(5.9, 9.8, easeU) + Math.cos(t * 0.55) * 0.25;
         cz = lerp(5.5, -13.5, u);
         tx = Math.sin(t * 0.28) * 0.65;
-        ty = lerp(8.6, 8.9, easeU);
+        ty = lerp(14.8, 17.8, easeU);
         tz = STAGE_Z;
         roll = Math.sin(t * 0.62) * 0.055 * (0.4 + 0.6 * dropPower);
         baseFov = CAM_FOV + 3.5;
@@ -3313,18 +3313,18 @@ export class LaserScene implements MvScene {
     const headRoll = Math.cos(barRad + 0.6) * 0.048;
     dj.head.rotation.set(headPitch, headYaw, headRoll);
 
-    // 4. 锐舞挥拳向上推举核心曲线（整拍鼓点刚落下时向上猛顶至接近 180° 完全伸展，拍间半拍收回至 ~98° 明显钝角蓄力！）
-    const phraseShoulderMod = 0.88 + 0.12 * Math.sin(barRad * 0.5);
-    const rawWaveR = 0.5 + 0.5 * Math.cos(beatRad - 0.55); // 在整拍重音刚触发 (beatPos≈0.09) 时达峰值 1.0，半拍 (beatPos≈0.59) 归 0 蓄力
-    const pumpR = clamp01(Math.pow(rawWaveR, 0.85) * 0.94 + 0.14 * kickPunch + 0.10 * snarePunch);
+    // 4. 真实自然 DJ 现场身体律动（收敛双臂挥动幅度，屈肘自然随节拍轻推，告别大幅度直臂指挥家挥舞）
+    const phraseMod = 0.94 + 0.06 * Math.sin(barRad * 0.5);
+    const rawWaveR = 0.5 + 0.5 * Math.cos(beatRad - 0.55);
+    const pumpR = clamp01(Math.pow(rawWaveR, 1.1) * 0.82 + 0.10 * kickPunch + 0.08 * snarePunch);
 
-    const rawWaveL = 0.5 + 0.5 * Math.cos(beatRad - 0.75); // 左手带细微真人异步差，避免机械镜像
-    const pumpL = clamp01(Math.pow(rawWaveL, 0.88) * 0.92 + 0.14 * kickPunch + 0.10 * snarePunch);
+    const rawWaveL = 0.5 + 0.5 * Math.cos(beatRad - 0.75); // 左手细微异步差
+    const pumpL = clamp01(Math.pow(rawWaveL, 1.1) * 0.80 + 0.10 * kickPunch + 0.08 * snarePunch);
 
-    // 5. 左手（+X 侧，YZX 旋转顺序）：控台拧旋钮/推推子 <-> 平滑经胸前弧线抬起 <-> 钝角到接近 180° 反复锐舞推举
+    // 5. 左手（+X 侧，YZX 旋转顺序）：混音台调音推子 <-> 抬至胸前/肩部高度保持自然屈肘微幅律动
     const knobTwist = Math.sin(t * (isBuild ? 5.5 + 6.0 * buildProgress : 2.6)) * 0.09;
     const faderPush = Math.cos(beatRad * 0.5) * 0.07 + snarePunch * 0.06;
-    const midArcL = 4.0 * rL * (1.0 - rL); // 抬落手途中自然屈肘提拉弧线
+    const midArcL = 4.0 * rL * (1.0 - rL);
 
     const deckLx = -0.68 - faderPush;
     const deckLy = 0.14 + knobTwist * 0.5;
@@ -3332,25 +3332,26 @@ export class LaserScene implements MvScene {
     const deckElLx = -0.84 + faderPush * 0.75;
     const deckElLz = -0.16;
 
-    const hypeLx = 0.0;
-    const hypeLy = lerp(-0.30, -0.20, pumpL);
-    const hypeLz = lerp(2.02, 2.50 * phraseShoulderMod, pumpL); // +X 侧外展上提
-    const hypeElLx = lerp(-0.24, -0.03, pumpL);
-    const hypeElLz = lerp(1.42, 0.04, pumpL);     // +1.42 rad (~98° 蓄力钝角) <-> +0.04 rad (~178° 接近 180° 完全顶直)
+    // 屈肘前倾姿势：大臂自然前倾 -0.38 rad，外展保持在 72°~80° 舒适区，肘关节保持 52°~68° 弹性屈曲，绝不伸直成棍
+    const hypeLx = lerp(-0.40, -0.34, pumpL);
+    const hypeLy = lerp(-0.22, -0.16, pumpL);
+    const hypeLz = lerp(1.26, 1.40 * phraseMod, pumpL);
+    const hypeElLx = lerp(-0.20, -0.14, pumpL);
+    const hypeElLz = lerp(1.16, 0.86, pumpL);
 
     dj.shoulderL.rotation.set(
-      lerp(deckLx, hypeLx, rL) - 0.28 * midArcL,
+      lerp(deckLx, hypeLx, rL) - 0.15 * midArcL,
       lerp(deckLy, hypeLy, rL),
       lerp(deckLz, hypeLz, rL),
     );
     dj.elbowL.rotation.set(
-      lerp(deckElLx, hypeElLx, rL) - 0.42 * midArcL,
+      lerp(deckElLx, hypeElLx, rL) - 0.22 * midArcL,
       lerp(-0.14, 0.06, rL),
       lerp(deckElLz, hypeElLz, rL),
     );
-    dj.handL.rotation.set(lerp(0.32, -0.06 + 0.14 * pumpL, rL), knobTwist * (1.0 - rL), 0);
+    dj.handL.rotation.set(lerp(0.32, 0.06 + 0.12 * pumpL, rL), knobTwist * (1.0 - rL), 0);
 
-    // 6. 右手（-X 侧，YZX 旋转顺序）：右侧 CDJ 搓盘 <-> 平滑经胸前弧线抬起 <-> 钝角 (~98°) 到接近 180° (~178°) 反复往上顶
+    // 6. 右手（-X 侧，YZX 旋转顺序）：CDJ 搓盘/控台 <-> 抬至胸前/肩部保持自然屈肘微幅律动
     const platterScrub = Math.sin(t * 3.4) * 0.08;
     const midArcR = 4.0 * rR * (1.0 - rR);
 
@@ -3360,23 +3361,24 @@ export class LaserScene implements MvScene {
     const deckElRx = -0.84 - platterScrub * 0.35;
     const deckElRz = 0.16;
 
-    const hypeRx = 0.0;
-    const hypeRy = lerp(0.30, 0.20, pumpR);
-    const hypeRz = lerp(-2.02, -2.52 * phraseShoulderMod, pumpR); // 蓄力时大臂斜外上 26°，重拍上顶时提举至 54°
-    const hypeElRx = lerp(-0.24, -0.03, pumpR);
-    const hypeElRz = lerp(-1.42, -0.04, pumpR);   // -1.42 rad (~98° 明显钝角收肘) <-> -0.04 rad (~178° 接近 180° 向上顶直)
+    // 屈肘前倾姿势：大臂自然前倾 -0.40 rad，外展保持在 -72°~-80°，肘关节弹性微动 (幅差仅约 17°)，律动克制帅气
+    const hypeRx = lerp(-0.40, -0.34, pumpR);
+    const hypeRy = lerp(0.22, 0.16, pumpR);
+    const hypeRz = lerp(-1.26, -1.40 * phraseMod, pumpR);
+    const hypeElRx = lerp(-0.20, -0.14, pumpR);
+    const hypeElRz = lerp(-1.16, -0.86, pumpR);
 
     dj.shoulderR.rotation.set(
-      lerp(deckRx, hypeRx, rR) - 0.28 * midArcR,
+      lerp(deckRx, hypeRx, rR) - 0.15 * midArcR,
       lerp(deckRy, hypeRy, rR),
       lerp(deckRz, hypeRz, rR),
     );
     dj.elbowR.rotation.set(
-      lerp(deckElRx, hypeElRx, rR) - 0.42 * midArcR,
+      lerp(deckElRx, hypeElRx, rR) - 0.22 * midArcR,
       lerp(0.12, -0.06, rR),
       lerp(deckElRz, hypeElRz, rR),
     );
-    dj.handR.rotation.set(lerp(0.30, -0.06 + 0.16 * pumpR, rR), 0, 0);
+    dj.handR.rotation.set(lerp(0.30, 0.06 + 0.12 * pumpR, rR), 0, 0);
   }
 
   update(ctx: FrameCtx): void {
@@ -3833,7 +3835,7 @@ export class LaserScene implements MvScene {
     u.uBlinderGlow.value = avgBlinderGlow;
     u.uBlackout.value = blackout;
     u.uConeSpin.value = t * 1.15 + leadMotion * 0.32;
-    u.uConePitch.value = -0.068 + Math.sin(t * 0.45) * 0.015;
+    u.uConePitch.value = -0.21 + Math.sin(t * 0.45) * 0.018;
     (u.uChroma0.value as THREE.Vector4).set(readChroma(0), readChroma(1), readChroma(2), readChroma(3));
     (u.uChroma1.value as THREE.Vector4).set(readChroma(4), readChroma(5), readChroma(6), readChroma(7));
     (u.uChroma2.value as THREE.Vector4).set(readChroma(8), readChroma(9), readChroma(10), readChroma(11));

@@ -722,3 +722,85 @@ test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随�
     }
   }
 });
+
+test('LaserScene 激光舞台：圆锥激光发射源位于顶部桁架且 DJ 挥手动作幅度收敛自然', () => {
+  const m = mods;
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const laser = new m.LaserScene(init, 'pulse');
+
+  // 1. 验证激光发射机位：顶部桁架而非专辑封面正中央 (y=8.6)
+  assert.ok(
+    laser.uniforms.uConePitch.value < -0.15,
+    `uConePitch 初始值应为顶部桁架下倾角 (< -0.15)，实测为 ${laser.uniforms.uConePitch.value}`,
+  );
+
+  let coneMeshFound = false;
+  laser.scene.traverse((obj) => {
+    if (obj.material && obj.material.vertexShader && obj.material.vertexShader.includes('aConeSpec')) {
+      coneMeshFound = true;
+      assert.ok(
+        !obj.material.vertexShader.includes('8.6'),
+        '激光圆锥顶点着色器不应包含中心封面高度 8.6',
+      );
+      assert.ok(
+        obj.material.vertexShader.includes('18.05'),
+        '激光圆锥顶点着色器应发射自舞台顶部桁架机位 (y=18.05)',
+      );
+    }
+  });
+  assert.ok(coneMeshFound, '应找到激光圆锥网格对象');
+
+  // 2. 验证 DJ 挥舞动作收敛：在 drop 段连续采样，手臂不出现伸直成棍 (>175°) 或狂甩指挥家姿态 (shoulderZ > 2.0 rad)
+  const dropSec = music.a.sections.find((s) => s.label === 'drop') || music.a.sections[3];
+  const dropShot = {
+    index: 0,
+    start: dropSec.start,
+    end: dropSec.end,
+    scene: 'laser',
+    variant: 'arena',
+    section: dropSec,
+    sectionIndex: music.a.sections.indexOf(dropSec),
+    seed: 12345,
+    short: false,
+  };
+
+  const dj = laser.djNodes;
+  for (let step = 0; step < 80; step++) {
+    const t = dropSec.start + step * 0.1;
+    laser.update({
+      t,
+      dt: 0.1,
+      shotT: t - dropShot.start,
+      shot: dropShot,
+      music,
+      lyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+
+    // 检查右手（常态抬手控场）
+    const rShZ = dj.shoulderR.rotation.z;
+    const rElBend = Math.hypot(dj.elbowR.rotation.x, dj.elbowR.rotation.z);
+    assert.ok(
+      Math.abs(rShZ) < 1.6,
+      `DJ 右肩 Z 轴旋转角度过大 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 1.6)，存在过度挥手问题 (t=${t})`,
+    );
+    assert.ok(
+      rElBend > 0.6,
+      `DJ 右肘应保持自然屈肘 (rElBend=${rElBend.toFixed(3)} <= 0.6)，不应伸直成棍 (t=${t})`,
+    );
+
+    // 检查左手
+    const lShZ = dj.shoulderL.rotation.z;
+    const lElBend = Math.hypot(dj.elbowL.rotation.x, dj.elbowL.rotation.z);
+    assert.ok(
+      Math.abs(lShZ) < 1.6,
+      `DJ 左肩 Z 轴旋转角度过大 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 1.6)，存在过度挥手问题 (t=${t})`,
+    );
+    assert.ok(
+      lElBend > 0.6,
+      `DJ 左肘应保持自然屈肘 (lElBend=${lElBend.toFixed(3)} <= 0.6)，不应伸直成棍 (t=${t})`,
+    );
+  }
+});
