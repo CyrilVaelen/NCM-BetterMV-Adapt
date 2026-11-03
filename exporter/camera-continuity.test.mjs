@@ -816,3 +816,107 @@ test('LaserScene 激光舞台：圆锥激光发射源位于顶部桁架且 DJ �
     }
   }
 });
+
+test('LaserScene 激光舞台：极端音频工况（超高速 BPM 200 / 极慢 BPM 50 / 极端连续底鼓军鼓冲击 / 随机跳转）动作与发射源稳健性', () => {
+  const m = mods;
+  const bpmCases = [200, 50];
+  for (const bpm of bpmCases) {
+    const { lyrics, palette, init } = buildMockFixture();
+    const duration = 60;
+    const beatLen = 60 / bpm;
+    const beats = [];
+    const downbeats = [];
+    for (let i = 0; i * beatLen <= duration; i++) {
+      const t = +(i * beatLen).toFixed(4);
+      beats.push(t);
+      if (i % 4 === 0) downbeats.push(t);
+    }
+    const sections = [
+      { start: 0, end: 15, label: 'build', energy: 0.7, group: 0, vocal: false },
+      { start: 15, end: 45, label: 'drop', energy: 1.0, group: 1, vocal: false },
+      { start: 45, end: duration, label: 'outro', energy: 0.3, group: 2, vocal: false },
+    ];
+    const kicks = beats.map((b) => [b, 1.0]);
+    const snares = beats.filter((_, i) => i % 2 === 1).map((b) => [b, 1.0]);
+    const mockMusic = new m.Music({
+      duration,
+      bpm,
+      namedBpm: bpm,
+      meter: 4,
+      beats,
+      beatInBar: beats.map((_, i) => i % 4),
+      tempo: beats.map(() => bpm),
+      downbeats,
+      sections,
+      hits: { kick: kicks, snare: snares },
+      roles: {
+        kick: kicks,
+        snare: snares,
+        synthStab: kicks,
+        lead: kicks,
+      },
+      env: {
+        kick: new Float32Array(Math.ceil(duration * 30)).fill(0.9),
+        bass: new Float32Array(Math.ceil(duration * 30)).fill(0.95),
+        snare: new Float32Array(Math.ceil(duration * 30)).fill(0.85),
+        vocal: new Float32Array(Math.ceil(duration * 30)).fill(0.1),
+        chroma: new Float32Array(Math.ceil(duration * 30) * 12).fill(0.5),
+      },
+    });
+
+    const laser = new m.LaserScene({ ...init, music: mockMusic }, 'pulse');
+    const dj = laser.djNodes;
+    const variants = ['arena', 'tunnel', 'booth', 'rig'];
+
+    for (const variant of variants) {
+      const shot = {
+        index: 0,
+        start: 0,
+        end: duration,
+        scene: 'laser',
+        variant,
+        section: sections[1],
+        sectionIndex: 1,
+        seed: 9999,
+        short: false,
+      };
+
+      const testTimes = [
+        ...Array.from({ length: 30 }, (_, i) => 15 + i * 0.9),
+        25.0, 16.0, 38.0, 18.5, 42.0,
+      ];
+
+      for (const t of testTimes) {
+        laser.update({
+          t,
+          dt: 0.05,
+          shotT: t - shot.start,
+          shot,
+          music: mockMusic,
+          lyrics,
+          palette,
+          fx: m.defaultFx(),
+          aspect: 16 / 9,
+        });
+
+        assert.ok(!Number.isNaN(laser.camera.position.x), `相机 X 坐标不应为 NaN`);
+        assert.ok(!Number.isNaN(laser.camera.position.y), `相机 Y 坐标不应为 NaN`);
+        assert.ok(!Number.isNaN(laser.camera.fov), `相机 FOV 不应为 NaN`);
+
+        const rShZ = dj.shoulderR.rotation.z;
+        const lShZ = dj.shoulderL.rotation.z;
+        assert.ok(Math.abs(rShZ) < 1.45, `极端工况下 DJ 右肩 Z 轴旋转超标 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 1.45)`);
+        assert.ok(Math.abs(lShZ) < 1.45, `极端工况下 DJ 左肩 Z 轴旋转超标 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 1.45)`);
+
+        const rElBend = Math.hypot(dj.elbowR.rotation.x, dj.elbowR.rotation.z);
+        const lElBend = Math.hypot(dj.elbowL.rotation.x, dj.elbowL.rotation.z);
+        assert.ok(rElBend >= 0.65 && rElBend <= 1.35, `极端工况下 DJ 右肘屈曲度异常 (${rElBend.toFixed(3)})`);
+        assert.ok(lElBend >= 0.65 && lElBend <= 1.35, `极端工况下 DJ 左肘屈曲度异常 (${lElBend.toFixed(3)})`);
+
+        assert.ok(dj.shoulderR.rotation.x < -0.1, `DJ 右臂大臂应保持前倾 (rotX=${dj.shoulderR.rotation.x.toFixed(3)})`);
+        assert.ok(dj.shoulderL.rotation.x < -0.1, `DJ 左臂大臂应保持前倾 (rotX=${dj.shoulderL.rotation.x.toFixed(3)})`);
+      }
+    }
+  }
+});
+
