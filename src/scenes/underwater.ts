@@ -2,7 +2,8 @@
 // Natural stratified cliffs, colossal cross-channel rock bridges, mossy subaerial peaks, and deep ocean cavern lighting.
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
-import { clamp01, rng, smooth } from './types.ts';
+import { clamp01, lerp, rng, smooth } from './types.ts';
+import { blendCameraPose, poseLookAt, sameSceneBlend } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { colorFromHsl, extractCoverTone, tuneCoverStop } from './coverTone.ts';
 
@@ -1594,9 +1595,7 @@ export class UnderwaterScene implements MvScene {
     const bassPulse = music.pulse('kick', t, 0.22);
 
     // 2. Compute Camera Trajectory FIRST so camera is at current frame
-    const variant = shot.variant || (isDrop ? 'dive' : 'canyon');
-    this.updateCamera(shotT, variant, isDrop, isBuild, t, dt, fx);
-    this.camera.updateMatrixWorld();
+    const { causticX, causticZ } = this.updateCamera(t, shot);
 
     // 3. Dynamic Infinite Canyon Scenery Recycling along Z (UW-04)
     // Seamlessly wraps scenery around camera so canyon is 100% packed forever (even 65s+ Drop)
@@ -1611,8 +1610,8 @@ export class UnderwaterScene implements MvScene {
     this.domeMesh.position.copy(this.camera.position);
     this.waterPlane.position.z = camZ;
     this.seabedMesh.position.z = camZ;
-    this.causticRays.position.z = variant === 'orbit' ? 60.0 : camZ + 28.0;
-    this.causticRays.position.x = variant === 'orbit' ? 0.0 : Math.sin(t * 0.28) * 6.0;
+    this.causticRays.position.z = causticZ;
+    this.causticRays.position.x = causticX;
 
     // 4. Update Uniforms with current frame camera parameters (zero-frame latency)
     this.waterUniforms.uTime.value = t;
@@ -1659,29 +1658,49 @@ export class UnderwaterScene implements MvScene {
   }
 
   /**
-   * Multi-act dynamic underwater camera choreography:
-   * Starts directly submerged underwater (no aerial entry), combining deep underwater dive,
-   * banking slalom around sentinel spires, deep trench upward cathedral gaze, and ascending spiral.
+   * 沿同场景连续切镜链推导当前镜头在喀斯特海底长廊中的起始 Z 里程锚点（纯函数）。
+   * 首次切入本场景时保持各机位原定起点；同场景连续切镜时无缝承接前序镜头已推进的里程，杜绝切镜高速倒车飞退。
    */
-  private updateCamera(shotT: number, variant: string, isDrop: boolean, isBuild: boolean, t: number, dt: number, fx: any): void {
-    const cam = this.camera;
-    const lookTarget = new THREE.Vector3(0, -10, 0);
-    let bankRoll = 0.0;
+  private resolveBaseZ(shot: Shot): number {
+    const chain: Shot[] = [];
+    for (let cur: Shot | undefined = shot; cur; cur = cur.prevSame) chain.push(cur);
+    chain.reverse();
 
-    // Z-locked Karst Labyrinth path: periodic with L = 240 so camera threads cleanly between every Twin-Pillar Gate!
+    const modeOf = (s: Shot) => s.variant || (s.section.label === 'drop' ? 'dive' : 'canyon');
+    const v0 = modeOf(chain[0]);
+    let baseZ = v0 === 'dive' ? -38.0 : v0 === 'canyon' ? -18.0 : v0 === 'abyss' ? -25.0 : v0 === 'orbit' ? 66.0 : 0.0;
+
+    for (let i = 1; i < chain.length; i++) {
+      const prev = chain[i - 1];
+      const curr = chain[i];
+      const pv = modeOf(prev);
+      const cutAt = curr.cutStart ?? curr.start;
+      const prevDur = Math.max(0, cutAt - prev.start);
+      const prevEndZ = pv === 'orbit' ? baseZ : baseZ + prevDur * (pv === 'abyss' ? 7.2 : 8.0);
+      const cv = modeOf(curr);
+      baseZ = cv === 'orbit'
+        ? 66.0 + 120.0 * Math.round((prevEndZ - 66.0) / 120.0)
+        : prevEndZ;
+    }
+    return baseZ;
+  }
+
+  /** 计算单个水下机位在时刻 t 的目标姿态与焦散光柱锚点（纯函数）。 */
+  private evalCameraPose(
+    t: number,
+    s: Shot,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+  ): { causticX: number; causticZ: number } {
+    const shotT = Math.max(0, t - s.start);
+    const isDrop = s.section.label === 'drop';
+    const v = s.variant || (isDrop ? 'dive' : 'canyon');
+    const baseZ = this.resolveBaseZ(s);
+
     const k1 = Math.PI / 60.0;
     const k2 = Math.PI / 120.0;
 
-    const v = variant || (isDrop ? 'dive' : 'canyon');
-
     if (v === 'dive') {
-      // Directly Submerged Multi-Act Karst Labyrinth & Twin-Pillar Odyssey (zero above-water aerial phase).
-      // A Drop starts at full depth on its first frame; on other sections the plunge still unfolds over 2.4 s.
-      // Act I (0..2.5s): Threads through Twin-Pillar Gate II (Z = -30)
-      // Act II (2.5..8.5s): Banking Karst Slalom through Twin-Pillar Portal III (Z = 0) and Twin-Pillar Gate IV (Z = +30)
-      // Act III (8.5..15.5s): Abyssal Cavern Dive (y -> -18.5) with UpwardKarst Cathedral Gaze at Z = +60
-      // Act IV (15.5..22.5s): Twin-Pillar Gate V Slalom (Z = +90) & Ascending Bioluminescent Spiral (y -> -10.8)
-      // Act V (22.5s+): Continuous winding karst labyrinth slalom
       const k = underwaterDiveEntryProgress(shotT, isDrop);
       const easePlunge = smooth(k);
 
@@ -1691,68 +1710,90 @@ export class UnderwaterScene implements MvScene {
       const longWaveY = (sin(shotT * 0.38 - 1.1) * 2.5 + cos(shotT * 0.21) * 1.2) * smooth(clamp01((shotT - 21.0) / 4.0));
       const currentY = baseUnderwaterY + trenchDive + spiralClimb + longWaveY;
 
-      const forwardZ = -38.0 + shotT * 8.0;
+      const forwardZ = baseZ + shotT * 8.0;
       const slalomX = 7.5 * sin(forwardZ * k1) - 2.0 * sin(forwardZ * k2);
       const aheadZ = forwardZ + 23.0;
       const aheadX = 7.5 * sin(aheadZ * k1) - 2.0 * sin(aheadZ * k2);
 
-      // Dynamic pitch & yaw gaze: steers into the twin-pillar gates while framing the karst cave ceiling & arches
       const upwardCathedralGaze = 4.0 * Math.exp(-Math.pow((shotT - 12.0) / 3.5, 2.0))
                                 + 2.2 * Math.max(0.0, sin(shotT * 0.36 - 0.5));
       const lookX = aheadX + cos(forwardZ * k1) * 1.8;
       const lookY = currentY - 0.4 + upwardCathedralGaze + cos(shotT * 0.38) * 1.3;
+      const bankRoll = -cos(forwardZ * k1) * 0.085;
 
-      bankRoll = -cos(forwardZ * k1) * 0.085;
-      cam.position.set(slalomX, currentY, forwardZ);
-      lookTarget.set(lookX, lookY, forwardZ + 32.0);
+      poseLookAt(pos, quat, slalomX, currentY, forwardZ, lookX, lookY, forwardZ + 32.0, bankRoll, 1.0, 0.0);
+      return { causticX: sin(t * 0.28) * 6.0, causticZ: forwardZ + 28.0 };
+    }
 
-    } else if (v === 'canyon') {
-      // CANYON: Winding Karst Labyrinth slalom threading between twin stone pillars & cavern dividers
-      const forwardZ = -18.0 + shotT * 8.0;
+    if (v === 'canyon') {
+      const forwardZ = baseZ + shotT * 8.0;
       const swayX = 7.5 * sin(forwardZ * k1) - 2.0 * sin(forwardZ * k2);
       const aheadZ = forwardZ + 23.0;
       const aheadX = 7.5 * sin(aheadZ * k1) - 2.0 * sin(aheadZ * k2);
       const y = -13.2 + cos(shotT * 0.31) * 2.8 + sin(shotT * 0.17) * 1.2;
       const lookX = aheadX + cos(forwardZ * k1) * 1.6;
       const lookY = y + 1.0 + sin(shotT * 0.29) * 2.2;
+      const bankRoll = -cos(forwardZ * k1) * 0.078;
 
-      bankRoll = -cos(forwardZ * k1) * 0.078;
-      cam.position.set(swayX, y, forwardZ);
-      lookTarget.set(lookX, lookY, forwardZ + 32.0);
+      poseLookAt(pos, quat, swayX, y, forwardZ, lookX, lookY, forwardZ + 32.0, bankRoll, 1.0, 0.0);
+      return { causticX: sin(t * 0.28) * 6.0, causticZ: forwardZ + 28.0 };
+    }
 
-    } else if (v === 'orbit') {
-      // ORBIT: 360-degree orbital sweep inside the Grand Karst Cavern Chamber gazing through surrounding twin pillars & arches
+    if (v === 'orbit') {
       const centerX = -1.8;
-      const centerZ = 66.0;
+      const centerZ = baseZ;
       const radius = 5.6;
       const angle = 0.5 + shotT * 0.24;
       const y = -13.2 + sin(shotT * 0.32) * 2.6;
+      const bankRoll = sin(angle) * 0.055;
 
-      bankRoll = sin(angle) * 0.055;
-      cam.position.set(centerX + cos(angle) * radius, y, centerZ + sin(angle) * radius);
-      lookTarget.set(sin(shotT * 0.28) * 5.5, -9.2 + cos(shotT * 0.25) * 2.2, 38.0);
+      poseLookAt(
+        pos, quat,
+        centerX + cos(angle) * radius, y, centerZ + sin(angle) * radius,
+        sin(shotT * 0.28) * 5.5, -9.2 + cos(shotT * 0.25) * 2.2, centerZ - 28.0,
+        bankRoll, 1.0, 0.0,
+      );
+      return { causticX: 0.0, causticZ: centerZ - 6.0 };
+    }
 
-    } else if (v === 'abyss') {
-      // ABYSS: Deep karst cave floor exploration weaving between the massive twin pillar bases and gazing up at the cavern vault
-      const forwardZ = -25.0 + shotT * 7.2;
+    if (v === 'abyss') {
+      const forwardZ = baseZ + shotT * 7.2;
       const y = -22.8 + sin(shotT * 0.26) * 2.0;
       const swayX = 7.5 * sin(forwardZ * k1) - 2.0 * sin(forwardZ * k2);
       const aheadZ = forwardZ + 22.0;
       const aheadX = 7.5 * sin(aheadZ * k1) - 2.0 * sin(aheadZ * k2);
+      const bankRoll = -cos(forwardZ * k1) * 0.068;
 
-      bankRoll = -cos(forwardZ * k1) * 0.068;
-      cam.position.set(swayX, y, forwardZ);
-      lookTarget.set(aheadX, -11.2 + sin(shotT * 0.22) * 2.2, forwardZ + 32.0);
-
-    } else {
-      // Fallback continuous karst labyrinth path
-      const forwardZ = shotT * 8.0;
-      const swayX = 7.5 * sin(forwardZ * k1) - 2.0 * sin(forwardZ * k2);
-      cam.position.set(swayX, -12.5, forwardZ);
-      lookTarget.set(7.5 * sin((forwardZ + 24.0) * k1), -12.0, forwardZ + 32.0);
+      poseLookAt(pos, quat, swayX, y, forwardZ, aheadX, -11.2 + sin(shotT * 0.22) * 2.2, forwardZ + 32.0, bankRoll, 1.0, 0.0);
+      return { causticX: sin(t * 0.28) * 6.0, causticZ: forwardZ + 28.0 };
     }
 
-    cam.up.set(bankRoll, 1.0, 0.0).normalize();
-    cam.lookAt(lookTarget);
+    const forwardZ = baseZ + shotT * 8.0;
+    const swayX = 7.5 * sin(forwardZ * k1) - 2.0 * sin(forwardZ * k2);
+    poseLookAt(pos, quat, swayX, -12.5, forwardZ, 7.5 * sin((forwardZ + 24.0) * k1), -12.0, forwardZ + 32.0);
+    return { causticX: sin(t * 0.28) * 6.0, causticZ: forwardZ + 28.0 };
+  }
+
+  /**
+   * Multi-act dynamic underwater camera choreography with smooth cross-cut continuity.
+   */
+  private updateCamera(t: number, shot: Shot): { causticX: number; causticZ: number } {
+    let currCaustic = { causticX: 0, causticZ: 0 };
+    blendCameraPose((time, s, pos, quat) => {
+      const c = this.evalCameraPose(time, s, pos, quat);
+      if (s === shot) currCaustic = c;
+    }, t, shot, this.camera, 1.6);
+
+    const blend = sameSceneBlend(t, shot, 1.6);
+    if (blend) {
+      const prevDummyPos = new THREE.Vector3();
+      const prevDummyQuat = new THREE.Quaternion();
+      const prevCaustic = this.evalCameraPose(t, blend.prev, prevDummyPos, prevDummyQuat);
+      return {
+        causticX: lerp(prevCaustic.causticX, currCaustic.causticX, blend.w),
+        causticZ: lerp(prevCaustic.causticZ, currCaustic.causticZ, blend.w),
+      };
+    }
+    return currCaustic;
   }
 }

@@ -10,7 +10,8 @@
 // dark glass, loud ones light up in the cover's colours, the loudest burn in the signal colour.
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit } from './types.ts';
-import { clamp01, outExpo, rng, smooth, snap as snapTo } from './types.ts';
+import { clamp01, lerp, outExpo, rng, smooth, snap as snapTo } from './types.ts';
+import { firstSameSeed, sameSceneBlend } from './cameraBlend.ts';
 import { LyricGates } from './lyricSpace.ts';
 import { VOICES, voiceFor } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
@@ -110,11 +111,13 @@ export class Kaleido implements MvScene {
     const u = this.material.uniforms;
     const info = music.at(t);
     const soft = this.look === 'ballad';
-    const random = rng((info.bar * 2654435761) ^ shot.seed);
+    const random = rng((info.bar * 2654435761) ^ firstSameSeed(shot));
     const seg = soft ? 6 : [6, 8, 12][Math.floor(random() * 3)];
     const kick = soft ? 0 : music.pulse('kick', t, 0.12);
     u.uSeg.value = seg;
-    u.uSpiral.value = shot.variant === 'spiral' ? 1 : 0;
+    const spiralB = shot.variant === 'spiral' ? 1 : 0;
+    const blend = sameSceneBlend(t, shot, 1.2);
+    u.uSpiral.value = blend ? lerp(blend.prev.variant === 'spiral' ? 1 : 0, spiralB, blend.w) : spiralB;
     if (soft) {
       u.uRot.value = t * 0.05;
       u.uZoom.value = t * 0.06;

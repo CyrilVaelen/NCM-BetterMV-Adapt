@@ -13,6 +13,7 @@ import { voiceOpts } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
 import { hue, u3 } from './fractal.ts';
 import { lastIndex } from '../director/music.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 const NB = 64;
 const RING = 512;
@@ -243,31 +244,32 @@ export class Ripple implements MvScene {
     this.ring.spec.prefetch(t, 0.8);
   }
 
-  private pose(t: number, shot: Shot): void {
-    const random = rng(shot.seed);
+  private evalPose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
-    const cam = this.camera;
-    cam.up.set(0, 1, 0);
+    const k = clamp01((t - start) / Math.max(0.5, end - start));
     if (shot.variant === 'face') {
       // From above, the far side up: the cover square in the middle.
       const r = 9.5 - 0.8 * k, a = phase * 0.05;
-      cam.position.set(Math.sin(a) * 1.2, r, 1.2 * Math.cos(a));
-      cam.up.set(0, 0, -1);
-      cam.lookAt(0, 0, 0);
-      this.az = 0;
+      poseLookAt(pos, quat, Math.sin(a) * 1.2, r, 1.2 * Math.cos(a), 0, 0, 0, 0, 0, -1);
     } else if (shot.variant === 'low') {
       const az = (phase - 3.14) * 0.15 + side * 0.12 * k, r = 6.2 - 0.6 * k;
-      cam.position.set(Math.sin(az) * r, 0.75, Math.cos(az) * r);
-      cam.lookAt(0, 0.35, 0);
-      this.az = az;
+      poseLookAt(pos, quat, Math.sin(az) * r, 0.75, Math.cos(az) * r, 0, 0.35, 0);
     } else {
       const az = phase * 0.3 - 0.45 + side * t * 0.05, el = 0.6, r = 8.8 - 0.8 * k;
-      cam.position.set(Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r);
-      cam.lookAt(0, -0.4, 0);
-      this.az = az;
+      poseLookAt(pos, quat, Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r, 0, -0.4, 0);
     }
-    cam.updateMatrixWorld();
+  }
+
+  private pose(t: number, shot: Shot): void {
+    const w = blendCameraPose((tau, s, pos, quat) => this.evalPose(tau, s, pos, quat), t, shot, this.camera, 1.35);
+    if (shot.variant === 'face' && w === 1) {
+      this.az = 0;
+    } else {
+      this.az = Math.atan2(this.camera.position.x, this.camera.position.z);
+    }
   }
 
   update(ctx: FrameCtx): void {

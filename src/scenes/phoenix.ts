@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng } from './types.ts';
+import { sameSceneBlend } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { lastIndex, type Music } from '../director/music.ts';
 import type { Palette } from '../render/palette.ts';
@@ -2471,51 +2472,80 @@ export class PhoenixScene implements MvScene {
     return Math.max(evalAt(i), evalAt(i - 1));
   }
 
-  /**
-   * Four distinct 3D camera trajectories (stage, soar, sonic, altar) that maintain the stage horizon
-   * while offering distinct spatial perspective and parallax across the grand stage.
-   */
-  private updateCamera(t: number, shot: Shot, groovePulse: number): { camShift: number; camLift: number } {
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
+  /** 计算指定镜头在时刻 t 的目标舞台相机参数（纯函数，连续时间推进基底）。 */
+  private evalCameraState(t: number, s: Shot, groovePulse: number): {
+    camX: number;
+    camY: number;
+    camZ: number;
+    yaw: number;
+    camShift: number;
+    camLift: number;
+  } {
+    const k = clamp01((t - s.start) / Math.max(0.5, s.end - s.start));
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - shot.start);
-    const variant = shot.variant || 'stage';
+    const variant = s.variant || 'stage';
 
     let camX = 0;
     let camY = 2.4;
-    let camZ = -shotT * 4.2;
+    let camZ = -t * 4.0;
     let yaw = 0;
 
     if (variant === 'soar') {
-      camX = Math.sin(shotT * 0.32) * 1.1;
-      camY = 2.7 + Math.sin(shotT * 0.24) * 0.18;
-      camZ = -8.0 - shotT * 4.5;
-      yaw = Math.sin(shotT * 0.20) * 0.025;
+      camX = Math.sin(t * 0.32) * 1.1;
+      camY = 2.7 + Math.sin(t * 0.24) * 0.18;
+      camZ = -8.0 - t * 4.0;
+      yaw = Math.sin(t * 0.20) * 0.025;
     } else if (variant === 'sonic') {
-      camX = lerp(-2.2, 2.2, e) + Math.sin(shotT * 0.28) * 0.5;
-      camY = 2.25 + Math.cos(shotT * 0.22) * 0.15;
-      camZ = -5.0 - shotT * 4.2 - groovePulse * 0.30;
+      camX = lerp(-2.2, 2.2, e) + Math.sin(t * 0.28) * 0.5;
+      camY = 2.25 + Math.cos(t * 0.22) * 0.15;
+      camZ = -5.0 - t * 4.0 - groovePulse * 0.30;
       yaw = lerp(0.035, -0.035, e);
     } else if (variant === 'altar') {
-      camX = Math.cos(shotT * 0.22) * 1.6;
-      camY = 2.85 + Math.sin(shotT * 0.18) * 0.18;
-      camZ = 6.0 - shotT * 3.6;
-      yaw = Math.sin(shotT * 0.16) * 0.028;
+      camX = Math.cos(t * 0.22) * 1.6;
+      camY = 2.85 + Math.sin(t * 0.18) * 0.18;
+      camZ = 6.0 - t * 4.0;
+      yaw = Math.sin(t * 0.16) * 0.028;
     } else {
-      camX = Math.sin(shotT * 0.20) * 0.9;
-      camY = 2.4 + Math.sin(shotT * 0.24) * 0.12;
-      camZ = -shotT * 3.8;
-      yaw = Math.sin(shotT * 0.15) * 0.020;
+      camX = Math.sin(t * 0.20) * 0.9;
+      camY = 2.4 + Math.sin(t * 0.24) * 0.12;
+      camZ = -t * 4.0;
+      yaw = Math.sin(t * 0.15) * 0.020;
+    }
+
+    return {
+      camX,
+      camY,
+      camZ,
+      yaw,
+      camShift: camX * 0.040,
+      camLift: (camY - 2.4) * 0.014,
+    };
+  }
+
+  /**
+   * Four distinct 3D camera trajectories (stage, soar, sonic, altar) that maintain the stage horizon
+   * while smoothly blending across consecutive same-scene cuts.
+   */
+  private updateCamera(t: number, shot: Shot, groovePulse: number): { camShift: number; camLift: number } {
+    const curr = this.evalCameraState(t, shot, groovePulse);
+    const blend = sameSceneBlend(t, shot, 1.45);
+    let { camX, camY, camZ, yaw, camShift, camLift } = curr;
+    if (blend) {
+      const prev = this.evalCameraState(t, blend.prev, groovePulse);
+      const w = blend.w;
+      camX = lerp(prev.camX, curr.camX, w);
+      camY = lerp(prev.camY, curr.camY, w);
+      camZ = lerp(prev.camZ, curr.camZ, w);
+      yaw = lerp(prev.yaw, curr.yaw, w);
+      camShift = lerp(prev.camShift, curr.camShift, w);
+      camLift = lerp(prev.camLift, curr.camLift, w);
     }
 
     this.camera.position.set(camX, camY, camZ);
     this.camera.quaternion.setFromEuler(new THREE.Euler(HORIZON_PITCH, yaw, 0, 'YXZ'));
     this.camera.updateMatrixWorld();
 
-    return {
-      camShift: camX * 0.040,
-      camLift: (camY - 2.4) * 0.014,
-    };
+    return { camShift, camLift };
   }
 
   update(ctx: FrameCtx): void {

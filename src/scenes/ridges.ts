@@ -16,6 +16,7 @@ import { LineBatch } from '../render/lines.ts';
 import { LyricRig } from './lyricRig.ts';
 import { lastIndex } from '../director/music.ts';
 import { INK_BLACK, ricePaper } from './ink.ts';
+import { blendCameraPose, poseLookAt, sameSceneBlend, shotInSameChain, stableShotSeed } from './cameraBlend.ts';
 
 const ROWS = 48;
 const COLS = 150;
@@ -97,7 +98,7 @@ export class Ridges implements MvScene {
   private pixelRatio = 1;
   private ys = new Float32Array(COLS);
   private tint = new THREE.Color();
-  private low = false;
+  private lowMix = 0;
   /** Ink: the ranges (crest heights at rest, the mesh, its crest attribute) and the shot being drawn. */
   private hills: { rest: Float32Array; amp: Float32Array; mesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial> } | null = null;
   private shot: Shot | null = null;
@@ -144,8 +145,13 @@ export class Ridges implements MvScene {
     this.rig.place = (root, st) => {
       const up = outExpo(clamp01((st.age + 0.5) / 1.1)), x = look === 'ballad' ? (st.index % 2 ? 1 : -1) * 2.2 : 0;
       // Low over the front ridge only that ridge is in front of the words, so they rise from right behind it, smaller.
-      if (this.low) { root.position.set(x * 0.3, 0.95 - (1 - up) * 0.7, -0.4); root.scale.setScalar(0.42); }
-      else root.position.set(x, 0.75 - (1 - up) * 1.6, -DEPTH * 0.5);
+      const m = this.lowMix;
+      root.position.set(
+        lerp(x, x * 0.3, m),
+        lerp(0.75 - (1 - up) * 1.6, 0.95 - (1 - up) * 0.7, m),
+        lerp(-DEPTH * 0.5, -0.4, m),
+      );
+      root.scale.setScalar(lerp(1, 0.42, m));
     };
     this.scene.add(this.rig.group);
     this.resize(init.aspect);
@@ -216,8 +222,10 @@ export class Ridges implements MvScene {
     this.rig.place = (root, st) => {
       const shot = this.shot;
       if (!shot) return 0;
+      const owner = shotInSameChain(shot, st.line.start);
+      const ownerStart = owner.run?.start ?? owner.start;
       const eye = new THREE.Vector3(), target = new THREE.Vector3();
-      this.hillPose(shot, Math.max(st.line.start, shot.start), eye, target);
+      this.hillPose(owner, Math.max(st.line.start, ownerStart), eye, target);
       const fw = target.sub(eye).normalize(), right = new THREE.Vector3().crossVectors(fw, new THREE.Vector3(0, 1, 0)).normalize();
       const up = new THREE.Vector3().crossVectors(right, fw);
       const d = 20, vh = 2 * d * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2), vw = vh * this.camera.aspect;
@@ -231,8 +239,10 @@ export class Ridges implements MvScene {
 
   /** The ink camera: low over the near ranges, looking out across them, moving slowly sideways like a scroll. */
   private hillPose(shot: Shot, t: number, eye: THREE.Vector3, target: THREE.Vector3): void {
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start)), e = inOutCubic(k);
-    const side = rng(shot.seed)() < 0.5 ? -1 : 1;
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const k = clamp01((t - start) / Math.max(0.5, end - start)), e = inOutCubic(k);
+    const side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
     if (shot.variant === 'low') {
       const x = side * lerp(1.6, -1.6, e);
       eye.set(x, 1.15, EYE_Z - 1.5);
@@ -273,10 +283,16 @@ export class Ridges implements MvScene {
     u.uMist.value = 0.3 + 0.35 * level;
     u.uBreath.value = 0.12 * Math.exp(-(info.inBar % music.meter) * 1.5) + 1.4 * lead.level + 2 * lead.attack;
     const eye = new THREE.Vector3(), target = new THREE.Vector3();
-    this.hillPose(shot, t, eye, target);
-    this.camera.position.copy(eye);
-    this.camera.lookAt(target);
-    this.camera.updateMatrixWorld();
+    blendCameraPose(
+      (tau, s, p, q) => {
+        this.hillPose(s, tau, eye, target);
+        poseLookAt(p, q, eye.x, eye.y, eye.z, target.x, target.y, target.z);
+      },
+      t,
+      shot,
+      this.camera,
+      1.4,
+    );
     ctx.fx.bloom = 0.04;
     ctx.fx.vignette = 0.25;
     ctx.fx.grain = 0.035;
@@ -335,19 +351,28 @@ export class Ridges implements MvScene {
     L.commit(this.resolution, this.pixelRatio);
 
     const cam = this.camera;
-    const side = random() < 0.5 ? -1 : 1;
-    this.low = shot.variant === 'low';
-    if (shot.variant === 'low') {
-      cam.position.set(side * lerp(0.6, -0.6, inOutCubic(k)), 0.55, 2.2);
-      cam.lookAt(0, 0.35, -DEPTH * 0.6);
-    } else if (shot.variant === 'drift') {
-      cam.position.set(side * lerp(-2.6, 2.6, k), 2.3, 3.4);
-      cam.lookAt(side * lerp(-0.8, 0.8, k), 0, -DEPTH * 0.45);
-    } else {
-      cam.position.set(side * lerp(0.35, -0.35, k), lerp(3.2, 2.7, inOutCubic(k)), lerp(4.6, 3.9, inOutCubic(k)));
-      cam.lookAt(0, 0.1, -DEPTH * 0.42);
-    }
-    cam.updateMatrixWorld();
+    const blend = sameSceneBlend(t, shot, 1.35);
+    const currLow = shot.variant === 'low' ? 1 : 0;
+    this.lowMix = blend ? lerp(blend.prev.variant === 'low' ? 1 : 0, currLow, blend.w) : currLow;
+    blendCameraPose(
+      (tau, s, pos, quat) => {
+        const st = s.run?.start ?? s.start;
+        const ed = s.run?.end ?? s.end;
+        const sk = clamp01((tau - st) / Math.max(0.5, ed - st));
+        const sd = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+        if (s.variant === 'low') {
+          poseLookAt(pos, quat, sd * lerp(0.6, -0.6, inOutCubic(sk)), 0.55, 2.2, 0, 0.35, -DEPTH * 0.6);
+        } else if (s.variant === 'drift') {
+          poseLookAt(pos, quat, sd * lerp(-2.6, 2.6, sk), 2.3, 3.4, sd * lerp(-0.8, 0.8, sk), 0, -DEPTH * 0.45);
+        } else {
+          poseLookAt(pos, quat, sd * lerp(0.35, -0.35, sk), lerp(3.2, 2.7, inOutCubic(sk)), lerp(4.6, 3.9, inOutCubic(sk)), 0, 0.1, -DEPTH * 0.42);
+        }
+      },
+      t,
+      shot,
+      cam,
+      1.35,
+    );
 
     ctx.fx.bloom = soft ? 0.35 : 0.45 + waveA * 0.25;
     ctx.fx.vignette = 0.55;

@@ -8,8 +8,9 @@
 // the user: "你的示波器效果不真实啊", "Oscillofun 这首歌是示波器音乐，应该在示波器效果里有图案的".) For oscilloscope music the
 // whole MV is this scope in phosphor green; `xy-near` and `xy-angle` frame it closer or from the side.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, rng } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LineBatch } from '../render/lines.ts';
 import { BeamBatch } from '../render/beam.ts';
 import { LyricRig } from './lyricRig.ts';
@@ -182,21 +183,23 @@ export class ScopeScene implements MvScene {
     for (const r of [this.readout, this.readoutXy]) r.material.color.copy(this.xyMusic ? PHOSPHOR : palette.paper).multiplyScalar(this.xyMusic ? 0.35 : 0.6);
 
     // A fixed camera on the scope, drifting in a little; closer, or from the side, for oscilloscope music.
-    const cam = this.camera, k = clamp01(ctx.shotT / Math.max(0.2, shot.end - shot.start));
-    if (shot.variant === 'xy-near') {
-      cam.position.set(0.12 * side * (1 - k), 0.05, 5.2 - 0.4 * k);
-      cam.lookAt(0, 0, 0);
-    } else if (shot.variant === 'xy-angle') {
-      const a = side * (0.42 - 0.12 * k);
-      cam.position.set(Math.sin(a) * 8.4, 0.9, Math.cos(a) * 8.4);
-      cam.lookAt(0, -0.1, 0);
-    } else {
-      // (Oscilloscope music: the screen is the whole picture, so a little closer.)
-      const z = this.xyMusic ? 7.4 - 0.6 * k : 9.2 - 0.9 * k;
-      cam.position.set(0.25 * side * (1 - k), 0.1, z);
-      cam.lookAt(0, -0.1, 0);
-    }
-    cam.updateMatrixWorld();
+    const cam = this.camera;
+    blendCameraPose((tt, s, pos, quat) => {
+      const sStart = s.run?.start ?? s.start;
+      const sEnd = s.run?.end ?? s.end;
+      const k = clamp01((tt - sStart) / Math.max(0.2, sEnd - sStart));
+      const sSide = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+      if (s.variant === 'xy-near') {
+        poseLookAt(pos, quat, 0.12 * sSide * (1 - k), 0.05, 5.2 - 0.4 * k, 0, 0, 0);
+      } else if (s.variant === 'xy-angle') {
+        const a = sSide * (0.42 - 0.12 * k);
+        poseLookAt(pos, quat, Math.sin(a) * 8.4, 0.9, Math.cos(a) * 8.4, 0, -0.1, 0);
+      } else {
+        // (Oscilloscope music: the screen is the whole picture, so a little closer.)
+        const z = this.xyMusic ? 7.4 - 0.6 * k : 9.2 - 0.9 * k;
+        poseLookAt(pos, quat, 0.25 * sSide * (1 - k), 0.1, z, 0, -0.1, 0);
+      }
+    }, t, shot, cam, 1.25);
     // A vector screen: glow, a little curvature, no scanlines.
     ctx.fx.bloom = this.xyMusic ? 0.45 : 0.6;
     ctx.fx.barrel = this.xyMusic ? 0.06 : 0.1;

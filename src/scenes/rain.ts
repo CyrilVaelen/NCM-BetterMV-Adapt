@@ -7,8 +7,9 @@
 // section's level; a chorus thins the fog and brings the lights up. Variants: pane (the glass, the city a blur),
 // close (nearer the glass: bigger drops, bigger words), clear (the focus slowly pulls through the glass to the city).
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, lerp, rng, smooth } from './types.ts';
+import { firstSameSeed, sameSceneBlend } from './cameraBlend.ts';
 import { LyricLayer } from './lyricSpace.ts';
 
 /** Running drops drawn at once. */
@@ -185,20 +186,42 @@ export class RainScene implements MvScene {
     this.material.uniforms.uAspect.value = aspect;
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的窗面距离、对焦与起雾强度。 */
+  private evalShotGlass(t: number, s: Shot, voice: number, attack: number) {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const k = clamp01((t - sStart) / Math.max(0.5, sEnd - sStart));
+    const loud = s.section.label === 'chorus' || s.section.label === 'drop';
+    const zoom = s.variant === 'close' ? 1.65 : 1;
+    const focus = s.variant === 'clear' ? lerp(0.05, 0.75, smooth((k - 0.15) / 0.7)) : 0.04;
+    const fog = (loud ? 0.6 : 0.72) * (s.variant === 'clear' ? lerp(1, 0.75, smooth(k)) : 1) * (1 - 0.16 * voice - 0.08 * attack);
+    return { zoom, focus, fog };
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.material.uniforms;
-    const random = rng(shot.seed);
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
     const loud = shot.section.label === 'chorus' || shot.section.label === 'drop';
     const foreground = music.foregroundAt(t), voice = foreground.level, attack = foreground.attack;
     const flow = music.foregroundMotion(t, 0.35);
     u.uVoice.value = voice + attack * 0.5;
     u.uTime.value = t;
-    u.uDrift.value = (random() < 0.5 ? -1 : 1) * (t * 0.004 + flow * 0.008);
-    u.uZoom.value = shot.variant === 'close' ? 1.65 : 1;
-    u.uFocus.value = shot.variant === 'clear' ? lerp(0.05, 0.75, smooth((k - 0.15) / 0.7)) : 0.04;
-    u.uFog.value = (loud ? 0.6 : 0.72) * (shot.variant === 'clear' ? lerp(1, 0.75, smooth(k)) : 1) * (1 - 0.16 * voice - 0.08 * attack);
+    // 同场景连切时固定窗外城市光斑的横向漂移方向，避免切镜瞬间整座城市灯光反向跳动
+    const driftSign = rng(firstSameSeed(shot))() < 0.5 ? -1 : 1;
+    u.uDrift.value = driftSign * (t * 0.004 + flow * 0.008);
+
+    const gB = this.evalShotGlass(t, shot, voice, attack);
+    let { zoom, focus, fog } = gB;
+    const blend = sameSceneBlend(t, shot, 1.35);
+    if (blend) {
+      const gA = this.evalShotGlass(t, blend.prev, voice, attack);
+      zoom = lerp(gA.zoom, zoom, blend.w);
+      focus = lerp(gA.focus, focus, blend.w);
+      fog = lerp(gA.fog, fog, blend.w);
+    }
+    u.uZoom.value = zoom;
+    u.uFocus.value = focus;
+    u.uFog.value = fog;
     u.uRain.value = 0.55 + 0.45 * shot.section.energy;
     u.uLights.value = (loud ? 1.05 : 0.85) + 0.7 * voice + 0.65 * attack;
     // The running drops: the latest few that are still on the pane.

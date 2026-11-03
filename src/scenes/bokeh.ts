@@ -4,8 +4,9 @@
 // The words hang among the lights, just in front of the picture and to one side, and are in and out of focus with
 // it: soft in the haze, coming sharp as the focus pulls onto the picture.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { rgbToLab } from '../render/palette.ts';
@@ -130,22 +131,16 @@ export class Bokeh implements MvScene {
   /** Viewport height in device pixels, so disc sizes match the lens. */
   setViewportHeight(h: number): void { this.height = h; }
 
-  update(ctx: FrameCtx): void {
-    const { t, music, shot } = ctx;
-    const u = this.material.uniforms;
-    const k = clamp01(ctx.shotT / Math.max(0.5, shot.end - shot.start));
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1;
-    const rms = music.env('rms', t);
-    const lead = music.foregroundAt(t);
-    (u.uLead.value as THREE.Vector3).set(lead.level, lead.attack, lead.brightness);
-    const info = music.at(t);
-    const beat = 60 / Math.max(40, info.bpm);
-    const cam = this.camera;
-    const target = new THREE.Vector3(0, 0, 0);
+  /** 纯函数求值指定镜头在时刻 t 的相机球坐标与散景景深参数，供同场景切点平滑插值使用。 */
+  private evalShotState(t: number, s: Shot, beat: number) {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const since = t - sStart;
+    const k = clamp01(since / Math.max(0.5, sEnd - sStart));
+    const side = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
     let dist = 16, focusOffset = 0, scatter = 1, rise = 0, aperture = 0.22;
     let az = 0, el = 0.05;
-    switch (shot.variant) {
+    switch (s.variant) {
       case 'haze': {
         dist = lerp(19, 15, inOutCubic(k));
         focusOffset = -9;
@@ -154,7 +149,7 @@ export class Bokeh implements MvScene {
       }
       case 'focus': {
         // Pull focus onto the picture over the first bar and a half while the lights gather into it.
-        const pull = smooth(ctx.shotT / (beat * 6));
+        const pull = smooth(since / (beat * 6));
         dist = lerp(17.5, 15.5, inOutCubic(k));
         focusOffset = lerp(-8, 0, pull);
         scatter = lerp(1, 0.12, pull);
@@ -177,12 +172,40 @@ export class Bokeh implements MvScene {
         aperture = 0.26;
       }
     }
+    return { dist, focusOffset, scatter, rise, aperture, az, el, side };
+  }
+
+  update(ctx: FrameCtx): void {
+    const { t, music, shot } = ctx;
+    const u = this.material.uniforms;
+    const rms = music.env('rms', t);
+    const lead = music.foregroundAt(t);
+    (u.uLead.value as THREE.Vector3).set(lead.level, lead.attack, lead.brightness);
+    const info = music.at(t);
+    const beat = 60 / Math.max(40, info.bpm);
+    const cam = this.camera;
+    const stB = this.evalShotState(t, shot, beat);
+    let { dist, focusOffset, scatter, rise, aperture, az, el, side } = stB;
+    const blend = sameSceneBlend(t, shot, 1.35);
+    if (blend) {
+      const stA = this.evalShotState(t, blend.prev, beat);
+      const w = blend.w;
+      dist = lerp(stA.dist, dist, w);
+      focusOffset = lerp(stA.focusOffset, focusOffset, w);
+      scatter = lerp(stA.scatter, scatter, w);
+      rise = lerp(stA.rise, rise, w);
+      aperture = lerp(stA.aperture, aperture, w);
+      az = lerp(stA.az, az, w);
+      el = lerp(stA.el, el, w);
+      side = lerp(stA.side, side, w);
+    }
     cam.position.set(Math.sin(az) * dist, Math.sin(el) * dist, Math.cos(az) * dist);
     cam.position.x += Math.sin(t * 0.33) * 0.1;
     cam.position.y += Math.sin(t * 0.27 + 2) * 0.08;
     cam.up.set(0, 1, 0);
-    cam.lookAt(target);
+    cam.lookAt(0, 0, 0);
     cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
 
     u.uTime.value = t;
     u.uFocus.value = cam.position.length() + focusOffset;

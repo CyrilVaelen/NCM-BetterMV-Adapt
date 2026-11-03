@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, lerp, outExpo, rng, smooth } from './types.ts';
+import { blendCameraPose, firstSameSeed, firstSameStart, poseLookAt, shotInSameChain, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
@@ -223,36 +224,69 @@ export class DebugScene implements MvScene {
    * From the top: lying flat over the land, read the way up the frame was as the line began.
    */
   private placeLine(root: THREE.Object3D, start: number, end: number, t: number, shot: Shot): void {
-    const len = Math.max(0.2, shot.end - shot.start);
-    const random = rng(shot.seed);
+    const owner = shotInSameChain(shot, start + 0.3);
+    const oStart = owner.run?.start ?? owner.start;
+    const oEnd = owner.run?.end ?? owner.end;
+    const len = Math.max(0.2, oEnd - oStart);
+    const random = rng(stableShotSeed(owner));
     const side = random() < 0.5 ? -1 : 1;
     random();
-    const at = Math.max(start, shot.start);
-    if (shot.variant === 'orbit') {
+    const at = Math.max(start, oStart);
+    if (owner.variant === 'orbit') {
       const a = at * 0.18 * side + random() * 6;
       root.position.set(0, 5.2, 0);
       root.rotation.set(0, Math.atan2(Math.cos(a), Math.sin(a)), 0);
       root.scale.setScalar(2.4);
-    } else if (shot.variant === 'top') {
+    } else if (owner.variant === 'top') {
       root.position.set(0, 8.5, 0);
       root.rotation.set(-Math.PI / 2, at * 0.12 * side + Math.PI, 0, 'YXZ');
       root.scale.setScalar(2.2);
     } else {
-      const k = clamp01((Math.min(t, end - 0.5) - shot.start) / len);
+      const k = clamp01((Math.min(t, end - 0.5) - oStart) / len);
       const z = lerp(16, -12, k * (0.9 + 0.1 * k)) - 6;
       const x = 0.08 * Math.sin((z / SIZE + 0.5) * 9) * SIZE;
       root.position.set(x, Math.max(this.heightAt(x, z) + 1.4, 1.6) + 0.15, z);
     }
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的相机姿态与视场角。 */
+  private evalPose(t: number, s: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): number {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const len = Math.max(0.2, sEnd - sStart), k = clamp01((t - sStart) / len);
+    const random = rng(stableShotSeed(s));
+    const side = random() < 0.5 ? -1 : 1;
+    random();
+    switch (s.variant) {
+      case 'orbit': {
+        const a = t * 0.18 * side + random() * 6;
+        poseLookAt(pos, quat, Math.cos(a) * 15, 9 + 2 * Math.sin(t * 0.3), Math.sin(a) * 15, 0, 3.5, 0);
+        return 48;
+      }
+      case 'top': {
+        const a = t * 0.12 * side;
+        poseLookAt(pos, quat, Math.sin(a) * 2, 30 - 6 * k, Math.cos(a) * 2, 0, 0, 0, Math.sin(a), 0, Math.cos(a));
+        return 52;
+      }
+      default: {
+        // Low along the valley, a little faster through the shot.
+        const z = lerp(16, -12, k * (0.9 + 0.1 * k));
+        const x = 0.08 * Math.sin((z / SIZE + 0.5) * 9) * SIZE;
+        const y = Math.max(this.heightAt(x, z) + 1.4, 1.6);
+        poseLookAt(pos, quat, x, y, z, 0.08 * Math.sin(((z - 6) / SIZE + 0.5) * 9) * SIZE, y - 0.6, z - 6);
+        return 58;
+      }
+    }
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
-    const len = Math.max(0.2, shot.end - shot.start), k = clamp01(ctx.shotT / len);
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1, first = Math.floor(random() * VIEWS.length);
+    const baseRandom = rng(firstSameSeed(shot));
+    baseRandom();
+    const first = Math.floor(baseRandom() * VIEWS.length);
     const info = music.at(t), beat = 60 / Math.max(40, info.bpm);
-    // A new view each beat of the shot, wiping down over the first quarter beat.
-    const b0 = Math.floor(music.beatPos(shot.start) + 0.5), bi = Math.max(0, Math.floor(info.pos) - b0);
+    // A new view each beat of the continuous plate chain, wiping down over the first quarter beat.
+    const b0 = Math.floor(music.beatPos(firstSameStart(shot)) + 0.5), bi = Math.max(0, Math.floor(info.pos) - b0);
     const viewOf = (n: number) => (first + n * 3) % VIEWS.length;
     const cur = viewOf(bi), prev = viewOf(bi - 1);
     const wipe = bi === 0 ? 1 : outExpo(clamp01((info.phase * beat) / (beat * 0.3)));
@@ -269,35 +303,7 @@ export class DebugScene implements MvScene {
     u.uLift.value = this.hasSound ? (shot.section.label === 'chorus' || shot.section.label === 'drop' ? 1 : 0.7) : 0;
 
     const cam = this.camera;
-    switch (shot.variant) {
-      case 'orbit': {
-        const a = t * 0.18 * side + random() * 6;
-        cam.position.set(Math.cos(a) * 15, 9 + 2 * Math.sin(t * 0.3), Math.sin(a) * 15);
-        cam.lookAt(0, 3.5, 0);
-        cam.fov = 48;
-        break;
-      }
-      case 'top': {
-        const a = t * 0.12 * side;
-        cam.position.set(Math.sin(a) * 2, 30 - 6 * k, Math.cos(a) * 2);
-        cam.up.set(Math.sin(a), 0, Math.cos(a));
-        cam.lookAt(0, 0, 0);
-        cam.up.set(0, 1, 0);
-        cam.fov = 52;
-        break;
-      }
-      default: {
-        // Low along the valley, a little faster through the shot.
-        const z = lerp(16, -12, k * (0.9 + 0.1 * k));
-        const x = 0.08 * Math.sin((z / SIZE + 0.5) * 9) * SIZE;
-        const y = Math.max(this.heightAt(x, z) + 1.4, 1.6);
-        cam.position.set(x, y, z);
-        cam.lookAt(0.08 * Math.sin(((z - 6) / SIZE + 0.5) * 9) * SIZE, y - 0.6, z - 6);
-        cam.fov = 58;
-      }
-    }
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
+    blendCameraPose((tt, s, pos, quat) => this.evalPose(tt, s, pos, quat), t, shot, cam, 1.35);
     u.uCam.value.copy(cam.position);
 
     ctx.fx.bloom = 0.35 + 0.15 * u.uFlash.value;

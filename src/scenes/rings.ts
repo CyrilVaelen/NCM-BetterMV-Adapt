@@ -4,12 +4,13 @@
 // The words run round a ring of their own between the dial and the sequencer, the word being sung at the top: the
 // ring turns a notch as each word begins and the sung words trail away round it; the translation round the bottom.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, outExpo, rng, snap } from './types.ts';
 import { LineBatch } from '../render/lines.ts';
 import { LyricOrbit } from './lyricSpace.ts';
 import { voiceOpts } from './lyricBlock.ts';
 import { COLS, Spectrogram, foregroundBand } from './viz.ts';
+import { blendCameraPose, firstSameSeed, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 const SEGMENTS = [3, 6, 8, 12, 16, 24, 32, 48, 64];
 const NB = 64;
@@ -97,8 +98,7 @@ export class Rings implements MvScene {
     const keys = music.pulse('keys', t, 0.14);
     const hat = music.pulse('hat', t, 0.06);
     const lead = music.foregroundAt(t);
-    const random = rng(shot.seed);
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
+    const random = rng(firstSameSeed(shot));
     const L = this.lines;
     L.clear();
     const beatI = Math.floor(info.pos), ph = info.pos - beatI;
@@ -154,17 +154,27 @@ export class Rings implements MvScene {
     this.disc.material.uniforms.uGlow.value = discPulse * 0.12 + 0.2 * lead.level + 0.3 * lead.attack;
 
     const cam = this.camera;
-    const sign = random() < 0.5 ? -1 : 1;
-    if (shot.variant === 'tilt') {
-      const a = sign * lerp(0.5, 0.2, inOutCubic(k)), e = lerp(0.35, 0.15, k);
-      cam.position.set(Math.sin(a) * 11 * Math.cos(e), Math.sin(e) * 11, Math.cos(a) * 11 * Math.cos(e));
-    } else {
-      cam.position.set(0, 0, lerp(12.5, 10, inOutCubic(k)));
-    }
-    cam.up.set(0, 1, 0);
-    cam.lookAt(0, 0, -0.5);
-    cam.rotateZ(soft ? 0 : Math.sin(t * 0.3) * 0.04);
-    cam.updateMatrixWorld();
+    const zRot = soft ? 0 : Math.sin(t * 0.3) * 0.04;
+    const zQuat = new THREE.Quaternion(0, 0, Math.sin(zRot * 0.5), Math.cos(zRot * 0.5));
+    blendCameraPose(
+      (tau, s, pos, quat) => {
+        const st = s.run?.start ?? s.start;
+        const ed = s.run?.end ?? s.end;
+        const sk = clamp01((tau - st) / Math.max(0.5, ed - st));
+        const sign = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+        if (s.variant === 'tilt') {
+          const a = sign * lerp(0.5, 0.2, inOutCubic(sk)), e = lerp(0.35, 0.15, sk);
+          poseLookAt(pos, quat, Math.sin(a) * 11 * Math.cos(e), Math.sin(e) * 11, Math.cos(a) * 11 * Math.cos(e), 0, 0, -0.5);
+        } else {
+          poseLookAt(pos, quat, 0, 0, lerp(12.5, 10, inOutCubic(sk)), 0, 0, -0.5);
+        }
+        if (zRot !== 0) quat.multiply(zQuat);
+      },
+      t,
+      shot,
+      cam,
+      1.25,
+    );
 
     ctx.fx.bloom = (soft ? 0.4 : 0.45) + 0.12 * lead.level + 0.25 * lead.attack;
     this.orbit.update(ctx.lyrics, t, energy);

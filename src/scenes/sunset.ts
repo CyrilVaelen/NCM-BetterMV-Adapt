@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { sameSceneBlend } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { lastIndex, type Music } from '../director/music.ts';
 import type { Palette } from '../render/palette.ts';
@@ -937,57 +938,85 @@ export class SunsetScene implements MvScene {
   }
 
   /**
-   * Four distinct 3D camera trajectories (horizon, beam, drift, halo) that all keep the 3D horizon (y=0)
-   * projected at exact vUv.y = 0.20 while providing distinct spatial motion and parallax.
-   */
-  private updateCamera(t: number, shot: Shot): { camShift: number; sunX: number; sunY: number } {
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
+  /** 计算指定镜头在时刻 t 的目标相机与落日透视参数（纯函数，连续时间推进基底）。 */
+  private evalCameraState(t: number, s: Shot): {
+    camX: number;
+    camY: number;
+    camZ: number;
+    yaw: number;
+    camShift: number;
+    sunX: number;
+    sunY: number;
+  } {
+    const k = clamp01((t - s.start) / Math.max(0.5, s.end - s.start));
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - shot.start);
-    const variant = shot.variant || 'horizon';
+    const variant = s.variant || 'horizon';
 
     let camX = 0;
     let camY = 2.4;
-    let camZ = -shotT * 4.5;
+    let camZ = -t * 4.2;
     let yaw = 0;
     let sunX = 0.725;
     let sunY = HORIZON_Y + 0.022;
 
     if (variant === 'beam') {
-      camX = 2.8 + Math.sin(shotT * 0.35) * 1.4;
-      camY = 2.1 + Math.sin(shotT * 0.28) * 0.25;
-      camZ = -12.0 - shotT * 5.2;
-      yaw = -0.06 + Math.sin(shotT * 0.22) * 0.03;
-      sunX = 0.688 + Math.sin(shotT * 0.24) * 0.020;
+      camX = 2.8 + Math.sin(t * 0.35) * 1.4;
+      camY = 2.1 + Math.sin(t * 0.28) * 0.25;
+      camZ = -12.0 - t * 4.2;
+      yaw = -0.06 + Math.sin(t * 0.22) * 0.03;
+      sunX = 0.688 + Math.sin(t * 0.24) * 0.020;
       sunY = HORIZON_Y + 0.025;
     } else if (variant === 'drift') {
-      camX = lerp(-6.5, 6.5, e) + Math.sin(shotT * 0.3) * 0.8;
-      camY = 2.6 + Math.cos(shotT * 0.25) * 0.2;
-      camZ = -6.0 - shotT * 3.8;
+      camX = lerp(-6.5, 6.5, e) + Math.sin(t * 0.3) * 0.8;
+      camY = 2.6 + Math.cos(t * 0.25) * 0.2;
+      camZ = -6.0 - t * 4.2;
       yaw = lerp(0.08, -0.08, e);
       sunX = lerp(0.745, 0.675, e);
       sunY = HORIZON_Y + 0.020;
     } else if (variant === 'halo') {
-      camX = Math.cos(shotT * 0.26) * 3.6;
-      camY = 3.2 + Math.sin(shotT * 0.20) * 0.3;
-      camZ = 8.0 - shotT * 4.0;
-      yaw = Math.sin(shotT * 0.18) * 0.05;
-      sunX = 0.712 + Math.cos(shotT * 0.20) * 0.022;
+      camX = Math.cos(t * 0.26) * 3.6;
+      camY = 3.2 + Math.sin(t * 0.20) * 0.3;
+      camZ = 8.0 - t * 4.2;
+      yaw = Math.sin(t * 0.18) * 0.05;
+      sunX = 0.712 + Math.cos(t * 0.20) * 0.022;
       sunY = HORIZON_Y + 0.028;
     } else {
-      camX = Math.sin(shotT * 0.24) * 1.8;
-      camY = 2.4 + Math.sin(shotT * 0.32) * 0.18;
-      camZ = -shotT * 4.2;
-      yaw = Math.sin(shotT * 0.16) * 0.035;
-      sunX = 0.728 + Math.sin(shotT * 0.18) * 0.015;
+      camX = Math.sin(t * 0.24) * 1.8;
+      camY = 2.4 + Math.sin(t * 0.32) * 0.18;
+      camZ = -t * 4.2;
+      yaw = Math.sin(t * 0.16) * 0.035;
+      sunX = 0.728 + Math.sin(t * 0.18) * 0.015;
       sunY = HORIZON_Y + 0.022;
+    }
+
+    return { camX, camY, camZ, yaw, camShift: camX * 0.08, sunX, sunY };
+  }
+
+  /**
+   * Four distinct 3D camera trajectories (horizon, beam, drift, halo) that all keep the 3D horizon (y=0)
+   * projected at exact vUv.y = 0.20 while smoothly blending across consecutive same-scene cuts.
+   */
+  private updateCamera(t: number, shot: Shot): { camShift: number; sunX: number; sunY: number } {
+    const curr = this.evalCameraState(t, shot);
+    const blend = sameSceneBlend(t, shot, 1.45);
+    let { camX, camY, camZ, yaw, camShift, sunX, sunY } = curr;
+    if (blend) {
+      const prev = this.evalCameraState(t, blend.prev);
+      const w = blend.w;
+      camX = lerp(prev.camX, curr.camX, w);
+      camY = lerp(prev.camY, curr.camY, w);
+      camZ = lerp(prev.camZ, curr.camZ, w);
+      yaw = lerp(prev.yaw, curr.yaw, w);
+      camShift = lerp(prev.camShift, curr.camShift, w);
+      sunX = lerp(prev.sunX, curr.sunX, w);
+      sunY = lerp(prev.sunY, curr.sunY, w);
     }
 
     this.camera.position.set(camX, camY, camZ);
     this.camera.quaternion.setFromEuler(new THREE.Euler(HORIZON_PITCH, yaw, 0, 'YXZ'));
     this.camera.updateMatrixWorld();
 
-    return { camShift: camX * 0.08, sunX, sunY };
+    return { camShift, sunX, sunY };
   }
 
   update(ctx: FrameCtx): void {

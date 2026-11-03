@@ -8,8 +8,9 @@
 // vermilion). Variants: turn (turning as it grows), bloom (only growing, closer). The words are written on the paper
 // beside it in columns, a line to the left, the next to the right (arcs in the pattern itself piled up unreadably).
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
-import { rng } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
+import { lerp, rng } from './types.ts';
+import { firstSameSeed, sameSceneBlend } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { ricePaper } from './ink.ts';
 
@@ -169,18 +170,37 @@ export class PaperCut implements MvScene {
     this.rig.frame = { vh, vw: vh * aspect };
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的窗花基础旋转角与缩放倍率。 */
+  private evalShotCut(t: number, s: Shot, dir: number): { rot: number; scale: number } {
+    const sStart = s.run?.start ?? s.start;
+    if (s.variant === 'bloom') {
+      // bloom 模式下窗花停驻在切入时刻的角度上，仅向外生长并拉近，避免与 turn 发生大角度倒转跳变
+      return { rot: dir * sStart * 0.035, scale: 1.35 };
+    }
+    return { rot: dir * t * 0.035, scale: 1 };
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.material.uniforms;
-    const random = rng(shot.seed);
-    u.uSeg.value = random() < 0.5 ? 8 : 12;
-    const dir = random() < 0.5 ? -1 : 1;
+    // 同场景连切时固定窗花折数（8/12 折）与旋转方向，避免切镜瞬间窗花瓣数重折或角度正负反转
+    const baseRandom = rng(firstSameSeed(shot));
+    u.uSeg.value = baseRandom() < 0.5 ? 8 : 12;
+    const dir = baseRandom() < 0.5 ? -1 : 1;
     const foreground = music.foregroundAt(t), travel = music.foregroundMotion(t, 0.2);
     // Integrate accepted notes in song time: sequential playback and a direct seek reveal the same fold.
     u.uZoom.value = t * 0.075 + travel * 0.018 + foreground.level * 0.08 + foreground.attack * 0.035;
-    const bloom = shot.variant === 'bloom';
-    u.uRot.value = (bloom ? 0.4 * dir : dir * t * 0.035) + dir * travel * 0.012;
-    u.uScale.value = (bloom ? 1.35 : 1) * (1 + foreground.level * 0.055 + foreground.attack * 0.035);
+
+    const cB = this.evalShotCut(t, shot, dir);
+    let rot = cB.rot, scale = cB.scale;
+    const blend = sameSceneBlend(t, shot, 1.25);
+    if (blend) {
+      const cA = this.evalShotCut(t, blend.prev, dir);
+      rot = lerp(cA.rot, rot, blend.w);
+      scale = lerp(cA.scale, scale, blend.w);
+    }
+    u.uRot.value = rot + dir * travel * 0.012;
+    u.uScale.value = scale * (1 + foreground.level * 0.055 + foreground.attack * 0.035);
     u.uLight.value = Math.min(1, foreground.level * 0.25 + foreground.attack * 0.8);
     ctx.fx.bloom = 0.04;
     ctx.fx.vignette = 0.25;

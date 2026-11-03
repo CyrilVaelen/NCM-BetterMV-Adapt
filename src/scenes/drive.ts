@@ -13,13 +13,14 @@
 //  · The words are signs hung in the tube that the camera flies through (LyricGates).
 import * as THREE from 'three';
 import type { Hit } from '../types.ts';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, outExpo, rng, smooth, snap as snapTo, surge, surgeRate } from './types.ts';
 import { LineBatch } from '../render/lines.ts';
 import { LyricGates, poseInTube } from './lyricSpace.ts';
 import { voiceOpts } from './lyricBlock.ts';
 import { lastIndex } from '../director/music.ts';
 import { Armillary } from '../sigil/armillary.ts';
+import { firstSameSeed, sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 
 const R = 2.3; // frame radius
 const S = 0.45; // spacing between frames along the tube
@@ -253,6 +254,37 @@ export class Drive implements MvScene {
     return mix(c, this.far, smooth((d - 10) / 12));
   }
 
+  /** 同场景跨段落连切时累加前序段落已行驶的管道里程，避免跨段落切点 sCam 瞬间归零跳变。 */
+  private resolveSectionBaseS(shot: Shot): number {
+    const chain: Shot[] = [];
+    let cur: Shot | undefined = shot;
+    while (cur) {
+      chain.push(cur);
+      cur = cur.prevSame;
+    }
+    chain.reverse();
+    let baseS = 0;
+    let curSecStart = chain[0].section.start;
+    let curPerBeat = 15 + 6 * chain[0].section.energy;
+    for (let i = 1; i < chain.length; i++) {
+      const s = chain[i];
+      if (s.section.start !== curSecStart) {
+        const cutT = s.cutStart ?? s.start;
+        baseS += this.travel(cutT, curSecStart, curPerBeat);
+        curSecStart = s.section.start;
+        curPerBeat = 15 + 6 * s.section.energy;
+      }
+    }
+    return baseS;
+  }
+
+  private evalSpin(t: number, s: Shot): number {
+    if (s.variant !== 'roll') return 0;
+    const sign = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    const start = s.run?.start ?? s.start;
+    return (t - start) * 0.5 * sign;
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const info = music.at(t);
@@ -265,8 +297,7 @@ export class Drive implements MvScene {
     const snareP = music.pulse(main, t, 0.09);
     const lead = music.foregroundAt(t);
     const drop = music.dropIntensity(t);
-    const random = rng(shot.seed);
-    const sign = random() < 0.5 ? -1 : 1;
+    const baseS = this.resolveSectionBaseS(shot);
 
     // Twist: a notch snapped on each snare (eased over 80 ms), turning the way of the eight bars it fell in — so
     // the tube reverses its turning every eight bars without jumping back.
@@ -279,7 +310,7 @@ export class Drive implements MvScene {
     const K = 0.006 + 0.0016 * Math.min(snap, 20) + 0.002 * lead.level * (0.5 + lead.brightness);
 
     // Camera on the tube's line, looking a little ahead; wide lens, punched by the kicks and the section's start.
-    const sCam = this.travel(t, section.start, perBeat);
+    const sCam = baseS + this.travel(t, section.start, perBeat);
     const cb = this.basis(sCam, this.bA);
     const cam = this.camera;
     cam.position.copy(cb.c);
@@ -287,10 +318,13 @@ export class Drive implements MvScene {
     cam.lookAt(center(sCam + 7, this.tmp));
     // The roll camera keeps turning, half a radian a second: the signs turn with it (below) and read level — hung
     // in the tube they were upside down six seconds into the shot.
-    const spin = shot.variant === 'roll' ? (t - shot.start) * 0.5 * sign : 0;
-    cam.rotateZ(0.03 * Math.sin(u * 2.1) + snareP * 0.05 + spin);
+    const blend = sameSceneBlend(t, shot, 1.0);
+    const spinCurr = this.evalSpin(t, shot);
+    const spin = blend ? lerp(this.evalSpin(t, blend.prev), spinCurr, blend.w) : spinCurr;
+    cam.rotateZ(0.03 * Math.sin(t * 2.1) + snareP * 0.05 + spin);
     const leadPunch = (section.label === 'drop' ? 10 : 7) * lead.attack;
-    cam.fov = FOV + 8 * Math.exp(-u / 0.12) + 4 * kick + leadPunch;
+    const punchEnv = shot.prevSame && shot.prevSame.section.start !== section.start ? 0 : Math.exp(-u / 0.12);
+    cam.fov = FOV + 8 * punchEnv + 4 * kick + leadPunch;
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld();
 
@@ -331,11 +365,11 @@ export class Drive implements MvScene {
     const phraseBeats = PHRASE * music.meter, b0 = music.beatPos(section.start);
     const phrase = Math.max(0, Math.floor((music.beatPos(t) - b0) / phraseBeats));
     // One visual world for the entire uninterrupted Drop. Only a new shot after an audible pause changes it.
-    const stable=this.world(shot.sectionIndex,(shot.seed>>>8)%6),dropWorld=stable==='strobe'?'well':stable;
+    const stable=this.world(shot.sectionIndex,(firstSameSeed(shot)>>>8)%6),dropWorld=stable==='strobe'?'well':stable;
     const prevW = section.label==='drop'?dropWorld:this.world(shot.sectionIndex, phrase - 1), here = section.label==='drop'?dropWorld:this.world(shot.sectionIndex, phrase), nextW = section.label==='drop'?dropWorld:this.world(shot.sectionIndex, phrase + 1);
     const tHere = music.timeOfBeat(b0 + phrase * phraseBeats), tNext = music.timeOfBeat(b0 + (phrase + 1) * phraseBeats);
-    const sHere = section.label!=='drop'&&phrase > 0 ? this.travel(tHere, section.start, perBeat) : -Infinity;
-    const sNext = section.label!=='drop'&&tNext < section.end - 0.05 ? this.travel(tNext, section.start, perBeat) : Infinity;
+    const sHere = section.label!=='drop'&&phrase > 0 ? baseS + this.travel(tHere, section.start, perBeat) : -Infinity;
+    const sNext = section.label!=='drop'&&tNext < section.end - 0.05 ? baseS + this.travel(tNext, section.start, perBeat) : Infinity;
     const outline = (wd: World): Outline => (wd === 'strobe' ? this.strobe(t) : OUTLINE[wd]);
     const oPrev = outline(prevW), oHere = outline(here), oNext = outline(nextW);
     const radA = this.radA, radB = this.radB, radC = this.radC;

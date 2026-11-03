@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, punch } from './types.ts';
+import { firstSameSeed, sameSceneBlend, shotInSameChain, stableShotSeed } from './cameraBlend.ts';
 import { LyricLayer } from './lyricSpace.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex } from '../director/music.ts';
@@ -70,7 +71,7 @@ const fragmentShader = /* glsl */ `
     float chroma = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
     float sig = clamp(1.0 - length(c - uSig) * 1.5, 0.0, 1.0) * clamp(chroma / max(0.04, max(uSig.r, max(uSig.g, uSig.b)) - min(uSig.r, min(uSig.g, uSig.b))), 0.0, 1.0);
     float acc = clamp(1.0 - length(c - uAcc) * 1.5, 0.0, 1.0) * clamp(chroma / max(0.04, max(uAcc.r, max(uAcc.g, uAcc.b)) - min(uAcc.r, min(uAcc.g, uAcc.b))), 0.0, 1.0);
-    float lit = uNegative > 0.5 ? pow(1.0 - l, 1.2) : pow(l, 1.6);
+    float lit = mix(pow(l, 1.6), pow(1.0 - l, 1.2), uNegative);
     if (which == 0) v = uNeon > 0.5 ? lit * (1.0 - 0.6 * max(sig, acc)) : (1.0 - l) * (1.0 - 0.6 * max(sig, acc));
     else if (which == 1) v = sig;
     else v = acc;
@@ -133,7 +134,7 @@ export class Halftone implements MvScene {
   private res = new THREE.Vector2(1920, 1080);
   private readonly neon: boolean;
   private ring: SpecRing;
-  private meter: { shot: Shot | null; negative: boolean; gain: number; levels: [number, number] } = { shot: null, negative: false, gain: 1, levels: [0, 1] };
+  private meterCache = new WeakMap<Shot, { aspect: number; negative: boolean; gain: number; levels: [number, number] }>();
 
   constructor(private init: SceneInit, look: 'pulse' | 'ballad' = 'pulse') {
     const { palette } = init;
@@ -232,18 +233,87 @@ export class Halftone implements MvScene {
     this.ring.spec.prefetch(t, 0.8);
   }
 
+  /** 按镜头缓存封面局部测光结果，保证纯函数无状态且跨切点混合零重复采样开销。 */
+  private meterForShot(s: Shot, aspect: number) {
+    const cached = this.meterCache.get(s);
+    if (cached && Math.abs(cached.aspect - aspect) < 1e-3) return cached;
+    const r = rng(stableShotSeed(s));
+    r();
+    const sx = r() < 0.5 ? -1 : 1;
+    const pan = new THREE.Vector2();
+    const zoom = this.move(s.variant, 0.5, sx, pan);
+    const entry = { aspect, ...this.meterView(zoom, pan, aspect) };
+    this.meterCache.set(s, entry);
+    return entry;
+  }
+
+  /** 纯函数求值指定镜头在时刻 t 的网屏缩放、平移与测光参数。 */
+  private evalShotView(t: number, s: Shot, aspect: number) {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const k = clamp01((t - sStart) / Math.max(0.5, sEnd - sStart));
+    const r = rng(stableShotSeed(s));
+    r();
+    const sx = r() < 0.5 ? -1 : 1;
+    const pan = new THREE.Vector2();
+    const zoom = this.move(s.variant, inOutCubic(k), sx, pan);
+    const fineScale = s.variant === 'fine' ? 1.6 : 1;
+    const m = this.meterForShot(s, aspect);
+    return { zoom, pan, sx, fineScale, negative: m.negative ? 1 : 0, gain: m.gain, levels: m.levels };
+  }
+
+  /** 计算单个镜头全程扫过的封面 UV 包围范围与中位缩放。 */
+  private shotCoverBounds(s: Shot) {
+    const r = rng(stableShotSeed(s));
+    r();
+    const sx = r() < 0.5 ? -1 : 1;
+    const long = Math.max(this.res.x, this.res.y);
+    const at = new THREE.Vector2(), end = new THREE.Vector2();
+    const midZoom = this.move(s.variant, 0.5, sx, at);
+    const z0 = this.move(s.variant, 0, sx, at), x0 = at.x, y0 = at.y, z1 = this.move(s.variant, 1, sx, end);
+    const hw = 0.5 * (this.res.x / long) / Math.min(z0, z1);
+    const hh = 0.5 * (this.res.y / long) / Math.min(z0, z1);
+    return {
+      minX: 0.5 + Math.min(x0, end.x) - hw,
+      maxX: 0.5 + Math.max(x0, end.x) + hw,
+      minY: 0.5 + Math.min(y0, end.y) - hh,
+      maxY: 0.5 + Math.max(y0, end.y) + hh,
+      midZoom,
+    };
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.quad.material.uniforms;
     const foreground = music.foregroundAt(t);
     u.uForeground.value.set(foreground.level, foreground.attack);
-    const random = rng(shot.seed);
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
     const kick = foreground.attack * (this.neon ? 1 : 0.65);
-    // Ruling: one of three per bar (a fixed number of cells down the frame, so it reads the same at any size).
+
+    const vB = this.evalShotView(t, shot, ctx.aspect);
+    let zoomView = vB.zoom;
+    const panView = vB.pan.clone();
+    let fineScale = vB.fineScale;
+    let negative = vB.negative;
+    let gain = vB.gain;
+    let lvLo = vB.levels[0], lvHi = vB.levels[1];
+
+    const blend = sameSceneBlend(t, shot, 1.2);
+    if (blend) {
+      const vA = this.evalShotView(t, blend.prev, ctx.aspect);
+      const w = blend.w;
+      zoomView = lerp(vA.zoom, zoomView, w);
+      panView.lerpVectors(vA.pan, vB.pan, w);
+      fineScale = lerp(vA.fineScale, fineScale, w);
+      negative = lerp(vA.negative, negative, w);
+      gain = lerp(vA.gain, gain, w);
+      lvLo = lerp(vA.levels[0], lvLo, w);
+      lvHi = lerp(vA.levels[1], lvHi, w);
+    }
+
+    // Ruling: 同场景连切时固定基础网线档位，fine 变体倍率走平滑插值，避免切点全屏网点粗细阶跃
     const rulings = [70, 52, 90];
-    // (On paper a finer screen: the coarse one read as a pattern rather than a picture, and shimmered when moving.)
-    const cells = rulings[Math.floor(random() * 3)] * (shot.variant === 'fine' ? 1.6 : 1) * (this.neon ? 1 : 1.45);
+    const baseCells = rulings[Math.floor(rng(firstSameSeed(shot))() * 3)];
+    const cells = baseCells * fineScale * (this.neon ? 1 : 1.45);
     u.uCell.value = this.res.y / cells;
     u.uKick.value = kick;
     const now = t * COLS;
@@ -255,17 +325,12 @@ export class Halftone implements MvScene {
     const slip = this.neon && si >= 0 ? punch(sAge, 0.12) * u.uCell.value * 0.6 * music.foregroundEventWeight(this.snares[si], t) : 0;
     const dir = rng(si + 3)() * Math.PI * 2;
     u.uMisreg.value.set(Math.cos(dir) * slip, Math.sin(dir) * slip);
-    // A slow move over the cover: in, out or across.
-    const sx = random() < 0.5 ? -1 : 1;
-    u.uZoom.value = this.move(shot.variant, inOutCubic(k), sx, u.uPan.value) * (1 + foreground.level * 0.025 + foreground.attack * 0.015);
-    // Meter the shot once, over the view halfway through it.
-    if (this.meter.shot !== shot) {
-      const pan = new THREE.Vector2(), zoom = this.move(shot.variant, 0.5, sx, pan);
-      this.meter = { shot, ...this.meterView(zoom, pan, ctx.aspect) };
-    }
-    u.uNegative.value = this.meter.negative ? 1 : 0;
-    u.uGain.value = this.meter.gain;
-    u.uLevels.value.set(this.meter.levels[0], this.meter.levels[1]);
+
+    u.uPan.value.copy(panView);
+    u.uZoom.value = zoomView * (1 + foreground.level * 0.025 + foreground.attack * 0.015);
+    u.uNegative.value = negative;
+    u.uGain.value = gain;
+    u.uLevels.value.set(lvLo, lvHi);
     u.uAngle.value = this.neon ? Math.sin(music.foregroundMotion(t, 0.16) * 0.15) * 0.04 : 0;
     this.camera.position.set(0, 0, 10);
     this.camera.lookAt(0, 0, 0);
@@ -274,18 +339,33 @@ export class Halftone implements MvScene {
     ctx.fx.vignette = this.neon ? 0.45 : 0.15;
     ctx.fx.grain = this.neon ? 0.04 : 0.02;
     // Each line lies on the cover where the view was as it began (a ballad's column to one side), and the move carries
-    // it on from there. The words are as big as the view is halfway through the shot; the layer covers all the cover
-    // the shot travels over.
-    const long = Math.max(this.res.x, this.res.y), at = new THREE.Vector2(), end = new THREE.Vector2();
-    const zoom = this.move(shot.variant, 0.5, sx, at), w = this.res.x / long / zoom, h = this.res.y / long / zoom;
-    const z0 = this.move(shot.variant, 0, sx, at), x0 = at.x, y0 = at.y, z1 = this.move(shot.variant, 1, sx, end);
-    const rw = Math.abs(end.x - x0) + this.res.x / long / Math.min(z0, z1), rh = Math.abs(end.y - y0) + this.res.y / long / Math.min(z0, z1);
-    const cx = 0.5 + (x0 + end.x) / 2, cy = 0.5 + (y0 + end.y) / 2;
+    // it on from there. 跨切点时歌词锚定在其出场所属镜头上，不随新镜头切点瞬移。
+    const long = Math.max(this.res.x, this.res.y), at = new THREE.Vector2();
+    const bB = this.shotCoverBounds(shot);
+    let { minX, maxX, minY, maxY, midZoom } = bB;
+    if (blend) {
+      const bA = this.shotCoverBounds(blend.prev);
+      const settle = clamp01((blend.w - 0.65) / 0.35);
+      minX = lerp(Math.min(bA.minX, bB.minX), bB.minX, settle);
+      maxX = lerp(Math.max(bA.maxX, bB.maxX), bB.maxX, settle);
+      minY = lerp(Math.min(bA.minY, bB.minY), bB.minY, settle);
+      maxY = lerp(Math.max(bA.maxY, bB.maxY), bB.maxY, settle);
+      midZoom = lerp(bA.midZoom, bB.midZoom, blend.w);
+    }
+    const w = this.res.x / long / midZoom, h = this.res.y / long / midZoom;
+    const rw = Math.max(1e-3, maxX - minX), rh = Math.max(1e-3, maxY - minY);
+    const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5;
     (u.uLyricRect.value as THREE.Vector4).set(cx, cy, rw, rh);
-    const len = Math.max(0.5, shot.end - shot.start);
     this.layer.rig.place = (root, st) => {
-      const zl = this.move(shot.variant, inOutCubic(clamp01((Math.max(st.line.start, shot.start) - shot.start) / len)), sx, at);
-      root.position.set(0.5 + at.x - cx + (this.neon ? 0 : sx * 0.22 * (this.res.x / long / zl)), 0.5 + at.y - cy, -10);
+      const owner = shotInSameChain(shot, st.line.start);
+      const oStart = owner.run?.start ?? owner.start;
+      const oEnd = owner.run?.end ?? owner.end;
+      const oLen = Math.max(0.5, oEnd - oStart);
+      const rr = rng(stableShotSeed(owner));
+      rr();
+      const osx = rr() < 0.5 ? -1 : 1;
+      const zl = this.move(owner.variant, inOutCubic(clamp01((Math.max(st.line.start, oStart) - oStart) / oLen)), osx, at);
+      root.position.set(0.5 + at.x - cx + (this.neon ? 0 : osx * 0.22 * (this.res.x / long / zl)), 0.5 + at.y - cy, -10);
     };
     // On paper the poem's thin serif over the dots read too small (its size follows the frame given): set twice as large.
     const big = this.neon ? 1 : 2;

@@ -13,6 +13,7 @@ import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
 import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { passMesh } from '../render/engine.ts';
 import { INK_BLACK, ricePaper } from './ink.ts';
+import { blendCameraPose, evalChainPose, sameSceneBlend, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 const SHAPE = 96, DETAIL = 32;
 /** The cloud slab (m). */
@@ -421,8 +422,10 @@ export class Clouds implements MvScene {
    * rise: from inside a cloud (one is put on the path) climbing out into the light over the shot's first bars.
    */
   private pose(t: number, shot: Shot, out: Pose): Pose {
-    const random = rng(shot.seed);
-    const sk = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const random = rng(stableShotSeed(shot));
+    const sk = clamp01((t - start) / Math.max(0.5, end - start));
     const side = random() < 0.5 ? -1 : 1;
     const z = -t * this.speed;
     const sway = Math.sin(t * 0.21) * 60;
@@ -436,7 +439,7 @@ export class Clouds implements MvScene {
       bank = Math.sin(t * 0.25) * 0.05;
       yaw = side * 0.05;
     } else if (variant === 'rise') {
-      const k = smooth(clamp01((t - shot.start) / Math.max(2, Math.min(6, (shot.end - shot.start) * 0.6))));
+      const k = smooth(clamp01((t - start) / Math.max(2, Math.min(6, (end - start) * 0.6))));
       y = lerp(2650, 3230, k);
       pitch = lerp(0.12, -0.06, inOutCubic(sk));
       yaw = side * lerp(0.02, 0.1, sk);
@@ -451,19 +454,33 @@ export class Clouds implements MvScene {
     const soft = this.look !== 'pulse';
     const foreground = music.foregroundAt(t);
     this.shot = shot;
-    const pose = this.pose(t, shot, { pos: new THREE.Vector3(), quat: new THREE.Quaternion() });
-    this.camera.position.copy(pose.pos);
-    this.camera.quaternion.copy(pose.quat);
-    this.camera.updateMatrixWorld();
+    const posed = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => {
+      this.pose(tau, s, posed);
+      pp.copy(posed.pos);
+      qq.copy(posed.quat);
+    };
+    blendCameraPose(rawPose, t, shot, this.camera, 1.5);
     const mu = this.march.uniforms;
     // Accepted note travel advects the actual cloud volume; it is a pure function of song time after a seek.
     mu.uT.value = t + music.foregroundMotion(t, 0.22) * (soft ? 0.16 : 0.26);
     mu.uForeground.value.set(foreground.level, foreground.attack);
-    // A cloud on the path where a rise begins, so it starts inside one.
-    if (shot.variant === 'rise' && !shot.run) {
-      const p0 = this.pose(shot.start, shot, { pos: new THREE.Vector3(), quat: new THREE.Quaternion() }).pos;
-      (mu.uBump.value as THREE.Vector4).set(p0.x, p0.z - this.speed * 1.5, 1600, 1);
-    } else (mu.uBump.value as THREE.Vector4).set(0, 0, 1000, 0);
+    // A cloud on the path where a rise begins, so it starts inside one; 同场景切镜时平滑渐入渐出，避免云团突兀闪现或消失。
+    const blend = sameSceneBlend(t, shot, 1.5);
+    const currRise = shot.variant === 'rise' && !shot.run;
+    const prevRise = !!blend && blend.prev.variant === 'rise' && !blend.prev.run;
+    if (currRise) {
+      const s0 = shot.run?.start ?? shot.start;
+      const p0 = this.pose(s0, shot, posed).pos;
+      (mu.uBump.value as THREE.Vector4).set(p0.x, p0.z - this.speed * 1.5, 1600, blend && !prevRise ? blend.w : 1);
+    } else if (prevRise && blend) {
+      const prevShot = blend.prev;
+      const s0 = prevShot.run?.start ?? prevShot.start;
+      const p0 = this.pose(s0, prevShot, posed).pos;
+      (mu.uBump.value as THREE.Vector4).set(p0.x, p0.z - this.speed * 1.5, 1600, 1 - blend.w);
+    } else {
+      (mu.uBump.value as THREE.Vector4).set(0, 0, 1000, 0);
+    }
     mu.uSteps.value = this.scale >= 0.55 ? 40 : 48;
     this.sky.uniforms.uKick.value = foreground.attack + foreground.level * 0.25;
     this.sky.uniforms.uSunR.value = THREE.MathUtils.degToRad(6.5) * (1 + foreground.level * 0.055 + foreground.attack * 0.035);
@@ -472,10 +489,10 @@ export class Clouds implements MvScene {
     // carried ahead until it is within `far`, then stays, and the camera comes up to it as the line ends and flies on
     // past it.
     const view = { reach: 170, far: 240, fov: this.camera.fov, aspect: this.camera.aspect, em: 0.076 };
-    const posed = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
-    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => { this.pose(time, shot, posed); pp.copy(posed.pos); qq.copy(posed.quat); };
+    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.5);
     this.blocks.update(ctx.lyrics, t, shot.section.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, at, 13, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const s = this.stands.get(anchorStart, st, leave, at, 13, view, size);
       s.apply(time, root);
       return smooth((s.depth(time) - 45) / 80);
     });

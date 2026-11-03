@@ -17,6 +17,7 @@ import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
 import type { Palette } from '../render/palette.ts';
 import { colorFromHsl, extractCoverTone, linearVec3FromHsl } from './coverTone.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 /** 水面最大并发确定性涟漪波包数（配合 uZero 屏障保障 D3D11 秒级着色器编译） */
 const MAX_RIPPLES = 14;
@@ -1761,45 +1762,52 @@ export class StarryScene implements MvScene {
     return Math.max(one(i), one(i - 1));
   }
 
-  /** 四组电影级运镜机位（mirror / glide / astrolabe / zenith），保持正面半球以令水下星盘封面始终端正 */
-  private updateCamera(t: number, shot: Shot, buildCharge: number): void {
-    const span = Math.max(0.8, (shot.run?.end ?? shot.end) - (shot.run?.start ?? shot.start));
-    const k = clamp01((t - (shot.run?.start ?? shot.start)) / span);
+  /** 四组电影级运镜机位（mirror / glide / astrolabe / zenith）的纯函数姿态求值，保持正面半球以令水下星盘封面始终端正 */
+  private evalCameraPose(t: number, s: Shot, buildCharge: number, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const start = s.run?.start ?? s.start;
+    const end = s.run?.end ?? s.end;
+    const span = Math.max(0.8, end - start);
+    const k = clamp01((t - start) / span);
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - (shot.run?.start ?? shot.start));
-    const dir = (shot.seed & 1) === 0 ? 1 : -1;
-    const variant = shot.variant || 'mirror';
+    const dir = (stableShotSeed(s) & 1) === 0 ? 1 : -1;
+    const variant = s.variant || 'mirror';
 
     if (variant === 'glide') {
       // 贴水巡航：沿晶莹镜面盐湖向远方神圣星象环门匀速滑翔，诠释 Trance 138 BPM 催眠推进感
       const x = lerp(-1.8 * dir, 1.8 * dir, e);
       const z = lerp(16.2, 9.6, e) + 0.8 * buildCharge;
-      const y = 1.85 + 0.12 * Math.sin(shotT * 0.28);
-      this.camera.position.set(x, y, z);
-      this.camera.lookAt(x * 0.25, 3.6 + 0.2 * Math.sin(shotT * 0.22), -24.0);
+      const y = 1.85 + 0.12 * Math.sin(t * 0.28);
+      poseLookAt(pos, quat, x, y, z, x * 0.25, 3.6 + 0.2 * Math.sin(t * 0.22), -24.0);
     } else if (variant === 'astrolabe') {
       // 星盘俯掠：斜高机位环绕水下发光星盘封面与十二宫刻度，缓缓抬头收纳远方星门与银河倒影
       const theta = lerp(-0.38 * dir, 0.38 * dir, e);
       const rad = lerp(12.6, 10.8, e);
       const y = lerp(7.6, 5.4, e);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(0, lerp(0.6, 2.2, e), lerp(-1.2, -10.5, e));
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, 0, lerp(0.6, 2.2, e), lerp(-1.2, -10.5, e));
     } else if (variant === 'zenith') {
       // 苍穹星旋：低机位仰望跨天银河拱桥、密集生长的琶音星座网、神圣星门与划破长空的流星雨
       const theta = lerp(-0.24 * dir, 0.24 * dir, e);
       const rad = lerp(12.4, 10.6, e);
-      const y = 1.48 + 0.10 * Math.sin(shotT * 0.24);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(Math.sin(theta) * 1.2, 7.6 + 0.8 * e, -26.0);
+      const y = 1.48 + 0.10 * Math.sin(t * 0.24);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, Math.sin(theta) * 1.2, 7.6 + 0.8 * e, -26.0);
     } else {
       // mirror（镜湖主景，默认黄金构图）：兼顾前景水下星盘封面、天空之镜对称倒影、地平线星门与苍穹银河
       const theta = lerp(-0.22 * dir, 0.22 * dir, e);
       const rad = lerp(14.2, 12.6, e) + 0.9 * buildCharge;
-      const y = 2.68 + 0.14 * Math.sin(shotT * 0.25);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(0, 3.35 + 0.15 * Math.sin(shotT * 0.2), -18.0);
+      const y = 2.68 + 0.14 * Math.sin(t * 0.25);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, 0, 3.35 + 0.15 * Math.sin(t * 0.2), -18.0);
     }
-    this.camera.updateMatrixWorld();
+  }
+
+  /** 同场景跨切点相机平滑过渡（1.45s），消除镜湖多机位切换时的视角跳变 */
+  private updateCamera(t: number, shot: Shot, buildCharge: number): void {
+    blendCameraPose(
+      (tau, s, pos, quat) => this.evalCameraPose(tau, s, buildCharge, pos, quat),
+      t,
+      shot,
+      this.camera,
+      1.45,
+    );
   }
 
   update(ctx: FrameCtx): void {

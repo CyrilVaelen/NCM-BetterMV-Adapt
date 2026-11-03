@@ -5,11 +5,15 @@
 // while the grooves turn under it. Into a louder section the platter spins back for half a beat (a DJ's rewind).
 // The words run round the label, the word being sung at the top; the translation round the bottom.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LyricOrbit } from './lyricSpace.ts';
 import { voiceOpts } from './lyricBlock.ts';
 import { lastIndex } from '../director/music.ts';
+
+const _zAxis = new THREE.Vector3(0, 0, 1);
+const _rollQuat = new THREE.Quaternion();
 
 const R = 4;
 const LABEL = 0.32;
@@ -176,6 +180,32 @@ export class Vinyl implements MvScene {
     return a;
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的相机姿态与视场角，供同场景切点平滑插值使用。 */
+  private evalPose(t: number, s: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): number {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const sk = clamp01((t - sStart) / Math.max(0.5, sEnd - sStart));
+    const side = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    if (s.variant === 'tilt') {
+      // A three-quarter view across the turntable, drifting round.
+      const az = side * lerp(0.35, 0.05, inOutCubic(sk)) + 0.25, el = lerp(0.6, 0.7, sk), d = lerp(9.6, 8.4, inOutCubic(sk));
+      poseLookAt(pos, quat, Math.sin(az) * Math.cos(el) * d, -Math.cos(az) * Math.cos(el) * d, Math.sin(el) * d, 0.5, 0.1, 0, 0, 0, 1);
+      return 40;
+    }
+    if (s.variant === 'groove') {
+      // Low over the grooves at the rim, the label and the words ahead; the grooves sweep by underneath.
+      const a = -1.2 + side * 0.25 + sk * 0.25 * side;
+      const rr = lerp(R * 1.02, R * 0.88, inOutCubic(sk));
+      poseLookAt(pos, quat, Math.cos(a) * rr, Math.sin(a) * rr, lerp(1.2, 0.95, sk), Math.cos(a) * R * 0.15, Math.sin(a) * R * 0.15, 0, 0, 0, 1);
+      return 52;
+    }
+    // Straight down, pushing in slowly; the frame turns a little against the record.
+    poseLookAt(pos, quat, 0.6 * side * (1 - sk), -0.3, lerp(12.4, 10.4, inOutCubic(sk)), 0.3 * side * (1 - sk), 0, 0, 0, 1, 0);
+    _rollQuat.setFromAxisAngle(_zAxis, side * lerp(0.06, -0.02, sk));
+    quat.multiply(_rollQuat);
+    return 40;
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const soft = this.look === 'ballad';
@@ -201,34 +231,7 @@ export class Vinyl implements MvScene {
     u.uTime.value = t;
     u.uNeedle.value = this.placeArm(play);
 
-    const random = rng(shot.seed);
-    const sk = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
-    const cam = this.camera;
-    const side = random() < 0.5 ? -1 : 1;
-    cam.up.set(0, 0, 1);
-    if (shot.variant === 'tilt') {
-      // A three-quarter view across the turntable, drifting round.
-      const az = side * lerp(0.35, 0.05, inOutCubic(sk)) + 0.25, el = lerp(0.6, 0.7, sk), d = lerp(9.6, 8.4, inOutCubic(sk));
-      cam.fov = 40;
-      cam.position.set(Math.sin(az) * Math.cos(el) * d, -Math.cos(az) * Math.cos(el) * d, Math.sin(el) * d);
-      cam.lookAt(0.5, 0.1, 0);
-    } else if (shot.variant === 'groove') {
-      // Low over the grooves at the rim, the label and the words ahead; the grooves sweep by underneath.
-      const a = -1.2 + side * 0.25 + sk * 0.25 * side;
-      const rr = lerp(R * 1.02, R * 0.88, inOutCubic(sk));
-      cam.fov = 52;
-      cam.position.set(Math.cos(a) * rr, Math.sin(a) * rr, lerp(1.2, 0.95, sk));
-      cam.lookAt(Math.cos(a) * R * 0.15, Math.sin(a) * R * 0.15, 0);
-    } else {
-      // Straight down, pushing in slowly; the frame turns a little against the record.
-      cam.fov = 40;
-      cam.up.set(0, 1, 0);
-      cam.position.set(0.6 * side * (1 - sk), -0.3, lerp(12.4, 10.4, inOutCubic(sk)));
-      cam.lookAt(0.3 * side * (1 - sk), 0, 0);
-      cam.rotateZ(side * lerp(0.06, -0.02, sk));
-    }
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
+    blendCameraPose((tt, s, pos, quat) => this.evalPose(tt, s, pos, quat), t, shot, this.camera, 1.35);
 
     ctx.fx.bloom = (soft ? 0.35 : 0.4) + foreground.level * 0.08 + accent * 0.18;
     ctx.fx.vignette = 0.6;

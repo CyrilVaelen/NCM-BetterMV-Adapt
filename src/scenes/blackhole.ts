@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
@@ -1515,9 +1516,12 @@ export class BlackHoleScene implements MvScene {
     this.rig = new LyricRig(lyricPalette, 'caption');
     this.rig.faces = voiceFaces(look, seed);
     this.scene.add(this.rig.group);
+    this.diskRollSign = ((this.flares.length + seed) & 1) === 0 ? 1 : -1;
 
     this.resize(init.aspect);
   }
+
+  private readonly diskRollSign: number;
 
   private updateDiskBasis(tiltX: number, rollZ: number): void {
     this.eulerTmp.set(tiltX, 0, rollZ, 'ZXY');
@@ -1554,45 +1558,44 @@ export class BlackHoleScene implements MvScene {
     return Math.max(one(i), one(i - 1));
   }
 
-  /** 四组史诗电影级机位（observatory / glide / astrolabe / horizon），确保星盘完整端正、双光拱与水面倒影完美同框 */
-  private updateCamera(t: number, shot: Shot, buildCharge: number): void {
-    const span = Math.max(0.8, (shot.run?.end ?? shot.end) - (shot.run?.start ?? shot.start));
-    const k = clamp01((t - (shot.run?.start ?? shot.start)) / span);
+  /** 计算单个黑洞观测机位在时刻 t 的目标姿态（纯函数）。 */
+  private evalCameraPose(t: number, s: Shot, buildCharge: number, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const span = Math.max(0.8, s.end - s.start);
+    const k = clamp01((t - s.start) / span);
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - (shot.run?.start ?? shot.start));
-    const dir = (shot.seed & 1) === 0 ? 1 : -1;
-    const variant = shot.variant || 'observatory';
+    const dir = (stableShotSeed(s) & 1) === 0 ? 1 : -1;
+    const variant = s.variant || 'observatory';
 
     if (variant === 'glide') {
       // 掠水巡航：贴着黑曜石超流体镜面水道向远方黑洞双光拱滑翔推进，展现天地对称的极致流体奇观
       const x = lerp(-2.2 * dir, 2.2 * dir, e);
       const z = lerp(11.6, 5.2, e) - 0.85 * buildCharge;
-      const y = 2.35 + 0.12 * Math.sin(shotT * 0.26);
-      this.camera.position.set(x, y, z);
-      this.camera.lookAt(x * 0.22, 5.2 + 0.22 * Math.sin(shotT * 0.20), -44.0);
+      const y = 2.35 + 0.12 * Math.sin(t * 0.26);
+      poseLookAt(pos, quat, x, y, z, x * 0.22, 5.2 + 0.22 * Math.sin(t * 0.20), -44.0);
     } else if (variant === 'astrolabe') {
       // 星盘俯掠：斜高机位环绕近景发光蓝宝石封面星盘与 12 宫引力刻度环，同时完整保留上方卡冈图雅黑洞光拱
       const theta = lerp(-0.30 * dir, 0.30 * dir, e);
       const rad = lerp(13.6, 12.2, e);
       const y = lerp(5.4, 4.3, e);
-      this.camera.position.set(Math.sin(theta) * rad, y, MEDALLION_Z + Math.cos(theta) * rad);
-      this.camera.lookAt(0, lerp(3.8, 4.9, e), lerp(-22.0, -34.0, e));
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, MEDALLION_Z + Math.cos(theta) * rad, 0, lerp(3.8, 4.9, e), lerp(-22.0, -34.0, e));
     } else if (variant === 'horizon') {
       // 视界仰望：越过前盘，低机位仰望横贯天幕的巨型引力透镜双光拱、光子环与贯通天地的双极圣光喷流
       const theta = lerp(-0.18 * dir, 0.18 * dir, e);
       const z = lerp(7.2, 3.8, e) - 1.0 * buildCharge;
-      const y = 1.72 + 0.10 * Math.sin(shotT * 0.22);
-      this.camera.position.set(Math.sin(theta) * 8.5, y, z);
-      this.camera.lookAt(Math.sin(theta) * 1.2, 8.8 + 0.8 * e, -52.0);
+      const y = 1.72 + 0.10 * Math.sin(t * 0.22);
+      poseLookAt(pos, quat, Math.sin(theta) * 8.5, y, z, Math.sin(theta) * 1.2, 8.8 + 0.8 * e, -52.0);
     } else {
       // observatory（星台主景，默认黄金构图）：下方 100% 完整收纳端正圆形封面星盘，中景黑曜石水道完整倒映黑洞，远景卡冈图雅高悬苍穹
       const theta = lerp(-0.16 * dir, 0.16 * dir, e);
       const distFromMed = lerp(13.2, 11.8, e) - 0.55 * buildCharge;
-      const y = 4.25 + 0.12 * Math.sin(shotT * 0.24);
-      this.camera.position.set(Math.sin(theta) * 10.5, y, MEDALLION_Z + distFromMed);
-      this.camera.lookAt(0, 3.65 + 0.14 * Math.sin(shotT * 0.18), -26.0);
+      const y = 4.25 + 0.12 * Math.sin(t * 0.24);
+      poseLookAt(pos, quat, Math.sin(theta) * 10.5, y, MEDALLION_Z + distFromMed, 0, 3.65 + 0.14 * Math.sin(t * 0.18), -26.0);
     }
-    this.camera.updateMatrixWorld();
+  }
+
+  /** 四组史诗电影级机位（observatory / glide / astrolabe / horizon），同场景切镜时平滑衔接 */
+  private updateCamera(t: number, shot: Shot, buildCharge: number): void {
+    blendCameraPose((time, s, pos, quat) => this.evalCameraPose(time, s, buildCharge, pos, quat), t, shot, this.camera, 1.5);
   }
 
   update(ctx: FrameCtx): void {
@@ -1622,7 +1625,8 @@ export class BlackHoleScene implements MvScene {
 
     this.updateCamera(t, shot, buildCharge);
 
-    const rollSign = ((this.flares.length + shot.seed) & 1) === 0 ? 1 : -1;
+    // 吸积盘倾角方向绑定全曲恒定种子，避免同场景切镜时黑洞双光拱与喷流左右镜像瞬跳翻转
+    const rollSign = this.diskRollSign;
     const tiltX = 0.252 + 0.020 * Math.sin(t * 0.11);
     const rollZ = rollSign * 0.106 + 0.025 * Math.cos(t * 0.085);
     this.updateDiskBasis(tiltX, rollZ);

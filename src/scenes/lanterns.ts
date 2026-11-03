@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
 import { LyricRig } from './lyricRig.ts';
+import { blendCameraPose, poseLookAt, shotInSameChain, stableShotSeed } from './cameraBlend.ts';
 
 /** Lanterns drawn at once. */
 const MAX = 480;
@@ -196,8 +197,10 @@ export class LanternScene implements MvScene {
     this.rig.place = (root, st) => {
       const shot = this.shot;
       if (!shot) return 0;
+      const owner = shotInSameChain(shot, st.line.start);
+      const ownerStart = owner.run?.start ?? owner.start;
       const eye = new THREE.Vector3(), target = new THREE.Vector3();
-      this.pose(shot, Math.max(st.line.start, shot.start), eye, target);
+      this.pose(owner, Math.max(st.line.start, ownerStart), eye, target);
       const fw = target.sub(eye).normalize(), right = new THREE.Vector3().crossVectors(fw, new THREE.Vector3(0, 1, 0)).normalize();
       const up = new THREE.Vector3().crossVectors(right, fw);
       const d = 30, vh = 2 * d * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2), vw = vh * this.camera.aspect;
@@ -217,8 +220,10 @@ export class LanternScene implements MvScene {
 
   /** The camera at t on a shot. */
   private pose(shot: Shot, t: number, eye: THREE.Vector3, target: THREE.Vector3): void {
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start)), e = inOutCubic(k);
-    const side = rng(shot.seed)() < 0.5 ? -1 : 1;
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const k = clamp01((t - start) / Math.max(0.5, end - start)), e = inOutCubic(k);
+    const side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
     if (shot.variant === 'rise') {
       eye.set(side * 1.5, lerp(1.2, 9, e), lerp(5, 1, e));
       target.set(side * 0.5, lerp(5, 14, e), -40);
@@ -237,10 +242,16 @@ export class LanternScene implements MvScene {
     const flow = music.foregroundMotion(t, 0.35);
     this.shot = shot;
     const eye = new THREE.Vector3(), target = new THREE.Vector3();
-    this.pose(shot, t, eye, target);
-    this.camera.position.copy(eye);
-    this.camera.lookAt(target);
-    this.camera.updateMatrixWorld();
+    blendCameraPose(
+      (tau, s, pos, quat) => {
+        this.pose(s, tau, eye, target);
+        poseLookAt(pos, quat, eye.x, eye.y, eye.z, target.x, target.y, target.z);
+      },
+      t,
+      shot,
+      this.camera,
+      1.5,
+    );
     // The lanterns up at t.
     const L = this.lanterns, lamp = this.aLamp.array as Float32Array, state = this.aState.array as Float32Array;
     let n = 0;

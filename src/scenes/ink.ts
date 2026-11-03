@@ -6,8 +6,9 @@
 // rest of the ink, and the painting clears a little round them, as round an inscription). Variants: scroll (a slow pan along the painting), bloom (the ink spreads out from the
 // middle), mist (a close, drifting detail with fog rising through it).
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { firstSameStart, sameSceneBlend, shotInSameChain, stableShotSeed } from './cameraBlend.ts';
 import { LyricLayer } from './lyricSpace.ts';
 import { textTexture } from '../render/text.ts';
 
@@ -142,49 +143,111 @@ export class Ink implements MvScene {
     return 1.7;
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的水墨卷轴缩放、平移、云雾与晕染圆心。 */
+  private evalShotScroll(t: number, s: Shot) {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const len = Math.max(0.5, sEnd - sStart);
+    const k = clamp01((t - sStart) / len), e = inOutCubic(k);
+    const sx = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    const pan = new THREE.Vector2();
+    const zoom = this.view(s.variant, e, sx, pan);
+    const spread = new THREE.Vector2();
+    let mist = 0.45;
+    switch (s.variant) {
+      case 'bloom': spread.set(0, 0); mist = 0.2; break;
+      case 'mist': spread.set(sx * 0.3, -0.2); mist = 1.1; break;
+      default: spread.set(-sx * 0.35, 0.05); mist = 0.45;
+    }
+    return { zoom, pan, spread, mist, sx };
+  }
+
+  /** 计算单个镜头全程扫过的水墨画 UV 包围范围与中位缩放。 */
+  private shotCoverBounds(s: Shot) {
+    const sx = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    const long = Math.max(this.res.x, this.res.y);
+    const at = new THREE.Vector2(), end = new THREE.Vector2();
+    const midZoom = this.view(s.variant, 0.5, sx, at);
+    const z0 = this.view(s.variant, 0, sx, at), x0 = at.x, y0 = at.y, z1 = this.view(s.variant, 1, sx, end);
+    const hw = 0.5 * (this.res.x / long) / Math.min(z0, z1);
+    const hh = 0.5 * (this.res.y / long) / Math.min(z0, z1);
+    return {
+      minX: 0.5 + Math.min(x0, end.x) - hw,
+      maxX: 0.5 + Math.max(x0, end.x) + hw,
+      minY: 0.5 + Math.min(y0, end.y) - hh,
+      maxY: 0.5 + Math.max(y0, end.y) + hh,
+      midZoom,
+    };
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.quad.material.uniforms;
-    const random = rng(shot.seed);
-    const since = t - shot.start, len = Math.max(0.5, shot.end - shot.start);
-    const k = clamp01(since / len), e = inOutCubic(k);
+    const chainSince = Math.max(0, t - firstSameStart(shot));
     const foreground = music.foregroundAt(t);
     u.uTime.value = t;
     u.uForeground.value.set(foreground.level, foreground.attack);
     u.uBreath.value = foreground.level + foreground.attack;
-    const sx = random() < 0.5 ? -1 : 1;
-    // The ink spreads in over the first two seconds of a shot.
-    u.uReveal.value = lerp(0.05, 2.2, smooth(since / 2.2));
-    u.uZoom.value = this.view(shot.variant, e, sx, u.uPan.value) * (1 + foreground.level * 0.055 + foreground.attack * 0.025);
-    switch (shot.variant) {
-      case 'bloom': u.uSpread.value.set(0, 0); u.uMist.value = 0.2; break;
-      case 'mist': u.uSpread.value.set(sx * 0.3, -0.2); u.uMist.value = 1.1; break;
-      default: u.uSpread.value.set(-sx * 0.35, 0.05); u.uMist.value = 0.45; // scroll
+
+    const scB = this.evalShotScroll(t, shot);
+    let zoomBase = scB.zoom, mist = scB.mist, sx = scB.sx;
+    const pan = scB.pan.clone(), spread = scB.spread.clone();
+    const blend = sameSceneBlend(t, shot, 1.4);
+    if (blend) {
+      const scA = this.evalShotScroll(t, blend.prev);
+      const w = blend.w;
+      zoomBase = lerp(scA.zoom, zoomBase, w);
+      mist = lerp(scA.mist, mist, w);
+      sx = lerp(scA.sx, sx, w);
+      pan.lerpVectors(scA.pan, scB.pan, w);
+      spread.lerpVectors(scA.spread, scB.spread, w);
     }
+
+    // 仅在首次进入水墨场景的前两秒从宣纸晕开，同场景连切时画卷持续展开不重洗白纸
+    u.uReveal.value = lerp(0.05, 2.2, smooth(chainSince / 2.2));
+    u.uPan.value.copy(pan);
+    u.uZoom.value = zoomBase * (1 + foreground.level * 0.055 + foreground.attack * 0.025);
+    u.uSpread.value.copy(spread);
+    u.uMist.value = mist;
+
     const cam = this.camera;
     cam.position.set(0, 0, 10);
     cam.lookAt(0, 0, 0);
     cam.updateMatrixWorld();
     // The seal sits low in the corner away from the lyrics, pressed in when the shot opens.
     const vh = 2 * 10 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2), vw = vh * ctx.aspect;
-    const size = vh * 0.075, press = 1 + (1 - smooth(since / 0.35)) * 0.25;
+    const size = vh * 0.075, press = 1 + (1 - smooth(chainSince / 0.35)) * 0.25;
     this.seal.position.set(sx * (vw * 0.5 - size * 1.1), -vh * 0.5 + size * 1.3, 0);
     this.seal.scale.setScalar(size * press);
     ctx.fx.bloom = 0.04;
     ctx.fx.vignette = 0.25;
     ctx.fx.grain = 0.035;
     // Each line is written on the painting where the view was as it began, in a column to one side, and the scroll
-    // carries it on from there. The words are as big as the view is halfway through the shot; the layer covers all
-    // the painting the shot travels over.
-    const long = Math.max(this.res.x, this.res.y), at = new THREE.Vector2(), end = new THREE.Vector2();
-    const zoom = this.view(shot.variant, 0.5, sx, at), w = this.res.x / long / zoom, h = this.res.y / long / zoom;
-    const z0 = this.view(shot.variant, 0, sx, at), x0 = at.x, y0 = at.y, z1 = this.view(shot.variant, 1, sx, end);
-    const rw = Math.abs(end.x - x0) + this.res.x / long / Math.min(z0, z1), rh = Math.abs(end.y - y0) + this.res.y / long / Math.min(z0, z1);
-    const cx = 0.5 + (x0 + end.x) / 2, cy = 0.5 + (y0 + end.y) / 2;
+    // carries it on from there.
+    const long = Math.max(this.res.x, this.res.y), at = new THREE.Vector2();
+    const bB = this.shotCoverBounds(shot);
+    let { minX, maxX, minY, maxY, midZoom } = bB;
+    if (blend) {
+      const bA = this.shotCoverBounds(blend.prev);
+      const settle = clamp01((blend.w - 0.65) / 0.35);
+      minX = lerp(Math.min(bA.minX, bB.minX), bB.minX, settle);
+      maxX = lerp(Math.max(bA.maxX, bB.maxX), bB.maxX, settle);
+      minY = lerp(Math.min(bA.minY, bB.minY), bB.minY, settle);
+      maxY = lerp(Math.max(bA.maxY, bB.maxY), bB.maxY, settle);
+      midZoom = lerp(bA.midZoom, bB.midZoom, blend.w);
+    }
+    const w = this.res.x / long / midZoom, h = this.res.y / long / midZoom;
+    const rw = Math.max(1e-3, maxX - minX), rh = Math.max(1e-3, maxY - minY);
+    const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5;
     (u.uLyricRect.value as THREE.Vector4).set(cx, cy, rw, rh);
     this.layer.rig.place = (root, st) => {
-      const zl = this.view(shot.variant, inOutCubic(clamp01((Math.max(st.line.start, shot.start) - shot.start) / len)), sx, at);
-      root.position.set(0.5 + at.x - cx + sx * 0.3 * (this.res.x / long / zl), 0.5 + at.y - cy + 0.04 * h, -10);
+      const owner = shotInSameChain(shot, st.line.start);
+      const oStart = owner.run?.start ?? owner.start;
+      const oEnd = owner.run?.end ?? owner.end;
+      const oLen = Math.max(0.5, oEnd - oStart);
+      const osx = rng(stableShotSeed(owner))() < 0.5 ? -1 : 1;
+      const zl = this.view(owner.variant, inOutCubic(clamp01((Math.max(st.line.start, oStart) - oStart) / oLen)), osx, at);
+      root.position.set(0.5 + at.x - cx + osx * 0.3 * (this.res.x / long / zl), 0.5 + at.y - cy + 0.04 * h, -10);
     };
     // (Set a little larger than the view's own type: brush-written, it should hold its own against the painting.)
     this.layer.update(ctx.lyrics, t, shot.section.energy, w * 1.35, h * 1.35, rw, rh);

@@ -9,9 +9,10 @@
 // into the corona (up).
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
-import { rng, smooth, surge } from './types.ts';
+import { lerp, rng, smooth, surge } from './types.ts';
 import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { lastIndex } from '../director/music.ts';
+import { blendCameraPose, evalChainPose, sameSceneBlend, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 const SURGES = 4;
 /**
@@ -247,29 +248,39 @@ export class Aurora implements MvScene {
 
   /** lake: low over the ice, gliding towards the curtains; wide: higher on the shore, panning; up: tilting up into the sky. */
   private pose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
-    const random = rng(shot.seed);
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
-    const k = Math.max(0, t - shot.start), len = Math.max(1, shot.end - shot.start);
+    const k = Math.max(0, t - start), len = Math.max(1, end - start);
+    // 统一冰湖纵向巡航速度基底 -t * 2.4，防止歌曲后段不同机位 z 相差数百米导致切镜时高速倒飞
+    const baseZ = -t * 2.4;
     if (shot.variant === 'up') {
       // (All the way up only in a chorus, when the curtains come overhead; elsewhere there'd be nothing but stars.)
       const loud = shot.section.label === 'chorus' || shot.section.label === 'drop';
       const e = smooth(k / Math.min(len, 6));
-      pos.set(Math.sin(phase) * 30, 1.7, -t * 1.2);
+      pos.set(Math.sin(phase) * 24, 1.7, baseZ + 4);
       quat.setFromEuler(new THREE.Euler(0.25 + (loud ? 1.0 : 0.25) * e, side * 0.2 + k * 0.02 * side, 0, 'YXZ'));
     } else if (shot.variant === 'wide') {
-      pos.set(Math.sin(phase) * 60, 16, 40 - t * 2);
+      pos.set(Math.sin(phase) * 38, 16, baseZ + 18);
       quat.setFromEuler(new THREE.Euler(0.13, side * 0.25 + Math.sin(t * 0.04 + phase) * 0.18, 0, 'YXZ'));
     } else {
-      pos.set(Math.sin(t * 0.07 + phase) * 15, 2.2 + Math.sin(t * 0.3) * 0.1, -t * 3.5);
+      pos.set(Math.sin(t * 0.07 + phase) * 15, 2.2 + Math.sin(t * 0.3) * 0.1, baseZ);
       quat.setFromEuler(new THREE.Euler(0.24 + Math.sin(t * 0.11) * 0.02, side * 0.12 + Math.sin(t * 0.06) * 0.05, Math.sin(t * 0.13) * 0.01, 'YXZ'));
     }
+  }
+
+  private evalOver(t: number, s: Shot): number {
+    const loud = s.section.label === 'chorus' || s.section.label === 'drop';
+    const start = s.run?.start ?? s.start;
+    return s.variant === 'up' && loud ? smooth((t - start) / 2.5) : 0;
   }
 
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const cam = this.camera;
-    this.pose(t, shot, cam.position, cam.quaternion);
-    cam.updateMatrixWorld();
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(tau, s, pp, qq);
+    blendCameraPose(rawPose, t, shot, cam, 1.5);
     const u = this.u, sec = shot.section;
     const loud = sec.label === 'chorus' || sec.label === 'drop';
     (u.uCam.value as THREE.Vector3).copy(cam.position);
@@ -286,9 +297,10 @@ export class Aurora implements MvScene {
       shove += 1.1 * surge(age, 0.12);
     }
     u.uFlow.value = t * (bpm / 120) * (this.soft ? 0.45 : 0.7) + (this.soft ? 0.5 : 0.8) * music.foregroundMotion(t, 0.3) + 0.25 * activity + (this.soft ? 0.3 : 0.5) * shove;
-    // Looking up in a chorus: the curtains come overhead.
-    // (Elsewhere a sheet half overhead is seen edge-on as an odd blob: only a chorus brings them all the way over.)
-    u.uOver.value = shot.variant === 'up' && loud ? smooth((t - shot.start) / 2.5) : 0;
+    // Looking up in a chorus: the curtains come overhead（同场景切镜时平滑收放天顶极光冕）.
+    const blend = sameSceneBlend(t, shot, 1.5);
+    const overB = this.evalOver(t, shot);
+    u.uOver.value = blend ? lerp(this.evalOver(t, blend.prev), overB, blend.w) : overB;
     u.uExposure.value = 1;
 
     let m = 0;
@@ -305,9 +317,10 @@ export class Aurora implements MvScene {
     // and the mountains, where the camera will have it in view while it is sung (lyricBlock.ts); the camera drifts
     // up to it as the line ends.
     const view = { reach: 30, far: 48, fov: cam.fov, aspect: cam.aspect, em: this.soft ? 0.064 : 0.068 };
-    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(time, shot, pp, qq);
+    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.5);
     this.blocks.update(ctx.lyrics, t, sec.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, pose, 2.8, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const s = this.stands.get(anchorStart, st, leave, pose, 2.8, view, size);
       s.apply(time, root);
       return smooth((s.depth(time) - 9) / 7);
     });

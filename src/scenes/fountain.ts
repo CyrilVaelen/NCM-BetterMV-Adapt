@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
@@ -1904,45 +1905,44 @@ export class FountainScene implements MvScene {
     return Math.max(one(i), one(i - 1));
   }
 
-  /** 四组电影级丝滑镜头机位（courtyard / orbit / skim / crown），保持正面半球以令池底琉璃封面始终端正朝向观众 */
-  private updateCamera(t: number, shot: Shot): void {
-    const span = Math.max(0.8, (shot.run?.end ?? shot.end) - (shot.run?.start ?? shot.start));
-    const k = clamp01((t - (shot.run?.start ?? shot.start)) / span);
+  /** 计算单个喷泉庭院机位在时刻 t 的目标姿态（纯函数）。 */
+  private evalCameraPose(t: number, s: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const span = Math.max(0.8, s.end - s.start);
+    const k = clamp01((t - s.start) / span);
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - (shot.run?.start ?? shot.start));
-    const dir = (shot.seed & 1) === 0 ? 1 : -1;
-    const variant = shot.variant || 'courtyard';
+    const dir = (stableShotSeed(s) & 1) === 0 ? 1 : -1;
+    const variant = s.variant || 'courtyard';
 
     if (variant === 'orbit') {
       // 中景环池巡礼：沿正面宽幅圆弧平滑巡游，尽览双层发光花海、对称水拱与池底封面
       const theta = lerp(-0.68 * dir, 0.68 * dir, e);
       const rad = 16.4 - 0.9 * Math.sin(k * Math.PI);
-      const y = 4.65 + 0.35 * Math.sin(shotT * 0.25);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(Math.sin(theta) * 0.6, 1.55, 0);
+      const y = 4.65 + 0.35 * Math.sin(t * 0.25);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, Math.sin(theta) * 0.6, 1.55, 0);
     } else if (variant === 'skim') {
       // 低角度掠水穿拱：贴近内圈花沿与波光池面滑行，仰望晶莹的抛物线水拱在头顶交织
       const theta = lerp(-0.42 * dir, 0.36 * dir, e);
       const rad = lerp(9.6, 7.25, e);
-      const y = 1.24 + 0.10 * Math.sin(shotT * 0.32);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(0, 2.25 + 0.15 * Math.sin(shotT * 0.24), -0.8);
+      const y = 1.24 + 0.10 * Math.sin(t * 0.32);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, 0, 2.25 + 0.15 * Math.sin(t * 0.24), -0.8);
     } else if (variant === 'crown') {
       // 斜高机位花冠俯瞰：圆形琉璃封面、12 重放射抛物线水拱与双层花海构成盛开的光之曼陀罗
       const theta = lerp(-0.34 * dir, 0.34 * dir, e);
       const rad = lerp(11.6, 9.8, e);
       const y = lerp(13.2, 14.4, Math.sin(k * Math.PI));
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(0, 0.45, -0.35);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, 0, 0.45, -0.35);
     } else {
       // courtyard（花畔平视微仰）：前景柔焦摇曳发光花簇，中景冲天水幕与镜面倒影，纵深感极强
       const theta = lerp(-0.26 * dir, 0.26 * dir, e);
       const rad = lerp(14.3, 12.8, e);
-      const y = 2.08 + 0.14 * Math.sin(shotT * 0.26);
-      this.camera.position.set(Math.sin(theta) * rad, y, Math.cos(theta) * rad);
-      this.camera.lookAt(0, 2.15 + 0.12 * Math.sin(shotT * 0.2), -0.4);
+      const y = 2.08 + 0.14 * Math.sin(t * 0.26);
+      poseLookAt(pos, quat, Math.sin(theta) * rad, y, Math.cos(theta) * rad, 0, 2.15 + 0.12 * Math.sin(t * 0.2), -0.4);
     }
-    this.camera.updateMatrixWorld();
+  }
+
+  /** 四组电影级丝滑镜头机位（courtyard / orbit / skim / crown），同场景切镜时平滑衔接 */
+  private updateCamera(t: number, shot: Shot): void {
+    blendCameraPose((time, s, pos, quat) => this.evalCameraPose(time, s, pos, quat), t, shot, this.camera, 1.45);
   }
 
   update(ctx: FrameCtx): void {

@@ -13,6 +13,7 @@ import { lerp, rng, smooth, snap } from './types.ts';
 import { LyricGates, chunksOf, type Chunk } from './lyricSpace.ts';
 import type { Music } from '../director/music.ts';
 import { hasCjk } from '../render/text.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 /** Half the street's width; how far ahead of the camera a sign hangs when its chunk begins; metres per beat. */
 const W = 4.2, AHEAD = 15, STEP = 1.7;
@@ -292,7 +293,7 @@ export class NeonScene implements MvScene {
   }
 
   private pose(shot: Shot, t: number, music: Music, eye: THREE.Vector3, target: THREE.Vector3): void {
-    const z = -walked(music, t), info = music.at(t), side = rng(shot.seed)() < 0.5 ? -1 : 1;
+    const z = -walked(music, t), info = music.at(t), side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
     const bob = Math.sin(Math.PI * (info.pos % 1)) * 0.04;
     if (shot.variant === 'low') {
       eye.set(side * 0.6, 0.45, z);
@@ -308,11 +309,18 @@ export class NeonScene implements MvScene {
 
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
-    const eye = new THREE.Vector3(), target = new THREE.Vector3();
-    this.pose(shot, t, music, eye, target);
-    this.camera.position.copy(eye);
-    this.camera.lookAt(target);
-    this.camera.updateMatrixWorld();
+    const tmpEye = new THREE.Vector3(), tmpTarget = new THREE.Vector3();
+    blendCameraPose(
+      (tau, s, pos, quat) => {
+        this.pose(s, tau, music, tmpEye, tmpTarget);
+        poseLookAt(pos, quat, tmpEye.x, tmpEye.y, tmpEye.z, tmpTarget.x, tmpTarget.y, tmpTarget.z);
+      },
+      t,
+      shot,
+      this.camera,
+      1.2,
+    );
+    const eye = this.camera.position;
     const foreground = music.foregroundAt(t);
     for (const u of this.wallU) {
       (u.uCam.value as THREE.Vector3).copy(eye);

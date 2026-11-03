@@ -61,9 +61,15 @@ function cutTimes(music: Music, style: Style, section: Section, next: Section | 
   const hero = style.heroBars?.(section) ?? per;
   const rising = style.accelerate && !!next && next.energy > section.energy + 0.08 && section.label !== 'intro';
   const accelFrom = rising ? Math.max(0, downs.length + 1 - 4) : Infinity;
+  const barLenAt = (t: number) => (60 / Math.max(40, music.at(t).bpm)) * music.meter;
   for (let i = 0; i < downs.length; i++) {
     const bar = i + 1;
-    if (bar >= accelFrom || (bar >= hero && bar % per === 0)) cuts.push(downs[i]);
+    if (bar >= accelFrom) {
+      cuts.push(downs[i]);
+    } else if (bar >= hero && bar % per === 0 && section.end - downs[i] >= barLenAt(downs[i]) * 0.9) {
+      // 非加速段不在距段落末尾不足一小节处切刀，消除余拍无转场硬切碎镜头
+      cuts.push(downs[i]);
+    }
   }
   if (rising) {
     const lastTwo = downs.length >= 2 ? downs[downs.length - 2] : section.start;
@@ -72,6 +78,40 @@ function cutTimes(music: Music, style: Style, section: Section, next: Section | 
   cuts.sort((a, b) => a - b);
   cuts.push(section.end);
   return cuts;
+}
+
+/** 具有连续三维空间纵深的世界场景：在段落尾加速推进（short）中保持同一机位连贯行进，避免每拍硬跳换机位抽搐 */
+const CONTINUOUS_WORLD_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
+  'velvet', 'sunset', 'phoenix', 'fountain', 'underwater', 'starry', 'blackhole', 'laser',
+  'clouds', 'city', 'aurora', 'lanterns', 'pillars', 'ridges', 'channel', 'neon', 'rain',
+  'canvas', 'menger', 'sierpinski', 'cantor', 'drive', 'tunnel',
+]);
+
+/** 仅靠平面版式切页/横甩切换构图的场景，保留同场景切点处的轻微动态拖影 */
+const WHIP_SAME_PLATES: ReadonlySet<SceneId> = new Set<SceneId>(['poster', 'typewall', 'flip', 'align']);
+
+/** 将镜头展开为其所属加速串（Shot.run）的连续时钟视图，同时保留子镜头自身的真实切点区间 */
+export function toTimedShot(s: Shot): Shot {
+  return s.run
+    ? { ...s, start: s.run.start, end: s.run.end, seed: s.run.seed ?? s.seed, cutStart: s.start, cutEnd: s.end }
+    : s;
+}
+
+/** 为所有紧邻的同场景镜头挂接前序同场景镜头引用 prevSame，供各场景跨切点纯函数平滑过渡相机 */
+export function linkSameSceneShots(shots: Shot[]): Shot[] {
+  let prevTimed: Shot | undefined;
+  for (let i = 0; i < shots.length; i++) {
+    const s = shots[i];
+    s.cutStart = undefined;
+    s.cutEnd = undefined;
+    if (i > 0 && shots[i - 1].scene === s.scene) {
+      s.prevSame = prevTimed;
+    } else {
+      s.prevSame = undefined;
+    }
+    prevTimed = toTimedShot(s);
+  }
+  return shots;
 }
 
 /** 使用确定性伪随机数执行加权轮盘赌抽样 */
@@ -206,9 +246,12 @@ export function planShots(music: Music, style: Style, songSeed: number, song: So
         here.set(plate.scene, (here.get(plate.scene) ?? 0) + 1);
       }
       const variants = plate.variants;
-      const validVariants = plate.scene === prevScene && variants.length > 1
-        ? variants.filter(v => v !== prevVariant)
-        : variants;
+      const keepContinuous = short && plate.scene === prevScene && CONTINUOUS_WORLD_PLATES.has(plate.scene) && !!prevVariant && variants.includes(prevVariant);
+      const validVariants = keepContinuous
+        ? [prevVariant]
+        : (plate.scene === prevScene && variants.length > 1
+          ? variants.filter(v => v !== prevVariant)
+          : variants);
       const variant = validVariants.length <= 1
         ? (validVariants[0] ?? variants[0])
         : pickWeighted(validVariants, v => Math.pow(0.45, usedVariants.get(`${plate.scene}:${v}`) ?? 0), random);
@@ -231,7 +274,8 @@ export function planShots(music: Music, style: Style, songSeed: number, song: So
   const finale=finaleRoll&&!off.has('canvas')&&!closingDropScenes.has('canvas');
   if (!off.has('crystal')) placeArmillary(shots, music, style, songSeed, !finale);
   if (finale) placeFinale(shots, music, songSeed);
-  return off.has('cards') ? shots : placeOpening(shots, music, songSeed);
+  const planned = off.has('cards') ? shots : placeOpening(shots, music, songSeed);
+  return linkSameSceneShots(planned);
 }
 
 /**
@@ -257,7 +301,7 @@ function joinRuns(shots: Shot[], barLen: (t: number) => number): void {
   for (let i = 0; i < shots.length;) {
     let j = i + 1;
     while (j < shots.length && shots[j].scene === shots[i].scene && shots[j].section === shots[i].section && short(shots[j])) j++;
-    if (j - i >= 2) for (let k = i; k < j; k++) shots[k].run = { start: shots[i].start, end: shots[j - 1].end };
+    if (j - i >= 2) for (let k = i; k < j; k++) shots[k].run = { start: shots[i].start, end: shots[j - 1].end, seed: shots[i].seed };
     i = j;
   }
 }
@@ -272,10 +316,20 @@ function placeOpening(shots: Shot[], music: Music, songSeed: number): Shot[] {
   const inIntro = Array.from(downs).filter(d => d > 0.3 && d <= first.end + 0.05);
   const end = inIntro.length >= 3 ? inIntro[2] : inIntro.length >= 2 ? inIntro[1] : NaN;
   if (!(end > 1.5)) return shots;
-  const out: Shot[] = [{ scene: 'cards', start: 0, end, section: first, sectionIndex: 0, variant: 'stack', seed: (songSeed * 131 + 7) >>> 0 }];
-  for (const s of shots) {
+  const cardShot: Shot = { scene: 'cards', start: 0, end, section: first, sectionIndex: 0, variant: 'stack', seed: (songSeed * 131 + 7) >>> 0 };
+  const out: Shot[] = [cardShot];
+  for (let i = 0; i < shots.length; i++) {
+    const s = shots[i];
     if (s.end <= end + 1e-3) continue;
-    out.push(s.start < end ? { ...s, start: end } : s);
+    if (s.start < end) {
+      if (s.end - end < 0.85 && i + 1 < shots.length && Math.abs(shots[i + 1].start - s.end) < 0.05) {
+        cardShot.end = s.end;
+        continue;
+      }
+      out.push({ ...s, start: end });
+    } else {
+      out.push(s);
+    }
   }
   return out;
 }
@@ -289,14 +343,37 @@ function placeOpening(shots: Shot[], music: Music, songSeed: number): Shot[] {
 export function carve(shots: Shot[], music: Music, scene: SceneId, from: number, to: number, sectionIndex: number, variant: string, songSeed: number): void {
   if (to - from < 0.8) return;
   const out: Shot[] = [];
+  const trimmed = new Set<Shot>();
   for (const s of shots) {
     if (s.end <= from + 1e-3 || s.start >= to - 1e-3) { out.push(s); continue; }
     // Shots overlapping the new one keep what lies outside it.
-    if (s.start < from - 0.05) out.push({ ...s, end: from });
-    if (s.end > to + 0.05) out.push({ ...s, start: to });
+    if (s.start < from - 1e-3) { const l = { ...s, end: from }; trimmed.add(l); out.push(l); }
+    if (s.end > to + 1e-3) { const r = { ...s, start: to }; trimmed.add(r); out.push(r); }
   }
-  out.push({ scene, start: from, end: to, section: music.a.sections[sectionIndex], sectionIndex, variant, seed: (songSeed * 131 + Math.round(from * 1000)) >>> 0 });
+  const carved: Shot = { scene, start: from, end: to, section: music.a.sections[sectionIndex], sectionIndex, variant, seed: (songSeed * 131 + Math.round(from * 1000)) >>> 0 };
+  out.push(carved);
   out.sort((a, b) => a.start - b.start);
+  // 吸收因切入浑天仪或片尾画布而产生的不足 0.85s 的亚秒级碎残片，确保时间轴无缝且无闪切
+  const ci = out.indexOf(carved);
+  if (ci > 0 && trimmed.has(out[ci - 1]) && out[ci - 1].end - out[ci - 1].start < 0.85) {
+    const frag = out[ci - 1];
+    if (ci >= 2 && out[ci - 2].section === frag.section && Math.abs(out[ci - 2].end - frag.start) < 1e-3) {
+      out[ci - 2].end = frag.end;
+    } else {
+      carved.start = frag.start;
+    }
+    out.splice(ci - 1, 1);
+  }
+  const ci2 = out.indexOf(carved);
+  if (ci2 >= 0 && ci2 + 1 < out.length && trimmed.has(out[ci2 + 1]) && out[ci2 + 1].end - out[ci2 + 1].start < 0.85) {
+    const frag = out[ci2 + 1];
+    if (ci2 + 2 < out.length && out[ci2 + 2].section === frag.section && Math.abs(out[ci2 + 2].start - frag.end) < 1e-3) {
+      out[ci2 + 2].start = frag.start;
+    } else {
+      carved.end = frag.end;
+    }
+    out.splice(ci2 + 1, 1);
+  }
   shots.length = 0;
   shots.push(...out);
 }
@@ -503,6 +580,7 @@ export class Director {
     /** Each section's look (planLooks). */
     readonly looks: Array<LookId | null> = [],
   ) {
+    linkSameSceneShots(shots);
     this.starts = Float64Array.from(shots, s => s.start);
     // Each plate's lens (depth of field, motion blur), read by the engine's ShotPass off its scene.
     for (const [id, s] of Object.entries(scenes)) if (s) s.scene.userData.lens = PLATE_LENS[id as SceneId];
@@ -560,8 +638,8 @@ export class Director {
       }
       const hurried = prev.end - prev.start < beat * this.music.meter * 0.9;
       if (prev.scene === shot.scene) {
-        // (The speeding-up cuts of a build stay hard: a whip on every beat would blur them into mush.)
-        if (!hurried) {
+        // 仅对平面版式类场景保留同场景切点横甩拖影；三维连续运镜场景已在场景内平滑过渡相机
+        if (!hurried && WHIP_SAME_PLATES.has(shot.scene)) {
           const a = random() * Math.PI * 2;
           cut.whip = [Math.cos(a), Math.sin(a) * 0.6];
         }
@@ -593,6 +671,20 @@ export class Director {
         if (hurried) return; // the speeding-up cuts stay hard
         const k = tr.within ? pick(tr.within) : moving();
         run(k, THROUGH_CUT.has(k) ? (shot.section.energy > 0.8 ? 0.75 : 1) : shot.section.energy > 0.8 ? 0.25 : 0.5);
+      }
+      // 按相邻镜头的实际时长安全钳制转场 pre/post，杜绝短镜头下转场中途截断或前后抢占引发画面跳变
+      if (cut.kind) {
+        const maxPre = Math.max(0, (prev.end - prev.start) * 0.45);
+        const maxPost = Math.max(0, (shot.end - shot.start) * 0.45);
+        if (THROUGH_CUT.has(cut.kind)) {
+          const half = Math.min(cut.pre, maxPre, maxPost);
+          if (half < 0.06) { cut.kind = 0; cut.pre = cut.post = 0; }
+          else { cut.pre = cut.post = half; }
+        } else {
+          cut.pre = Math.min(cut.pre, maxPre);
+          cut.post = Math.min(cut.post, maxPost);
+          if (cut.pre + cut.post < 0.06) { cut.kind = 0; cut.pre = cut.post = 0; }
+        }
       }
       if (cut.kind === TransitionKind.iris || cut.kind === TransitionKind.triangle) {
         cut.center = random() < 0.6 ? [0.5, 0.5] : [0.3 + random() * 0.4, 0.35 + random() * 0.3];
@@ -650,8 +742,8 @@ export class Director {
       // entry: a change of colour and shape, not of light.
       if (tr.flash && shot.section.label !== 'drop' && jump > 0.3 && since < 0.05) { fx.impact = 1; fx.impactInvert = shot.sectionIndex % 2; }
       if (tr.dropPunch && shot.section.label === 'drop') fx.zoom = Math.exp(-since / 0.35) * 0.9;
-    } else if (tr.glitch && prev && !(shot.section.label === 'drop' && prev.section.label !== 'drop') && shot.section.energy > 0.55 && since < 0.12 && !cut.kind && !(shot.run && shot.run.start < shot.start)) {
-      // (Not on the cuts inside a run: a glitch on every beat is a twitch of its own.)
+    } else if (tr.glitch && prev && prev.scene !== shot.scene && !(shot.section.label === 'drop' && prev.section.label !== 'drop') && shot.section.energy > 0.55 && since < 0.12 && !cut.kind && !(shot.run && shot.run.start < shot.start)) {
+      // (Not on the cuts inside a run or smooth same-scene camera blends: a glitch there breaks continuity.)
       fx.glitch = Math.exp(-since / 0.045) * (0.5 + shot.section.energy * 0.5);
     }
     // A cut on the same plate: the camera whips into the new setup.
@@ -662,7 +754,7 @@ export class Director {
     }
 
     // Scenes see a shot inside a run as the whole run (Shot.run): its moves carry on across the cuts.
-    const timed = (s: Shot): Shot => (s.run ? { ...s, start: s.run.start, end: s.run.end } : s);
+    const timed = toTimedShot;
     const own = timed(shot);
     const ctx: FrameCtx = { t, dt, music: this.music, lyrics: this.lyrics, palette: this.palette, shot: own, shotT: t - own.start, aspect, fx };
     scene.update(ctx);
@@ -689,9 +781,25 @@ export class Director {
       transition = { from: scene, hide: 'to', ...join(nextCut, following) };
     }
 
-    // Dips to ink around cuts: full at section changes, half inside a section — unless a transition joins them.
+    // 城市天际场景跨数公里远距同场景切镜（非峡谷走廊连续推进）时，以 0.25s 柔和暗场呼吸衔接，避免飞穿摩天楼或硬闪跳变
+    if (!this.pure) {
+      const farCityCut = (a: Shot | undefined, b: Shot | undefined) =>
+        !!a && !!b && a.scene === 'city' && b.scene === 'city' &&
+        !(a.variant === 'canyon' && b.variant === 'canyon') &&
+        (a.variant !== b.variant || (a.run?.seed ?? a.seed) !== (b.run?.seed ?? b.seed));
+      const cityOut = following && farCityCut(shot, following) ? 0.92 * (1 - smooth((following.start - t) / 0.25)) : 0;
+      const cityIn = prev && farCityCut(prev, shot) ? 0.92 * (1 - smooth(since / 0.25)) : 0;
+      fx.fade = Math.max(fx.fade, cityOut, cityIn);
+    }
+
+    // Dips to ink around cuts: full at section changes, half inside a section — unless a transition or smooth camera blend joins them.
     if (tr.dip > 0) {
-      const depth = (a: Shot | undefined, b: Shot | undefined, c: Cut | undefined) => (!a || !b || b.section.label === 'drop' ? 0 : a.section !== b.section ? 1 : c && c.kind ? 0 : 0.55);
+      const depth = (a: Shot | undefined, b: Shot | undefined, c: Cut | undefined) => (
+        !a || !b || b.section.label === 'drop' ? 0
+        : a.section !== b.section ? 1
+        : (c && c.kind) || (a.scene === b.scene && !WHIP_SAME_PLATES.has(b.scene)) ? 0
+        : 0.55
+      );
       const outOf = following ? depth(shot, following, this.cuts[i + 1]) * (1 - smooth((following.start - t) / tr.dip)) : 0;
       const into = depth(prev, shot, cut) * (1 - smooth(since / tr.dip));
       fx.fade = Math.max(fx.fade, outOf, into);

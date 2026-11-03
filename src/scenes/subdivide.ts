@@ -4,13 +4,14 @@
 // the sphere within a sixth of a second, the new edges flashing in the signal colour. At the last level it is a
 // ball that breathes with the bass, a ripple running over it on each kick. Beside it, the level and the count.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, lerp, rng, smooth } from './types.ts';
 import { SEEDS, type Vec } from '../sigil/polyhedron.ts';
 import { textMesh } from '../render/text.ts';
 import { LyricOrbit } from './lyricSpace.ts';
 import { voiceOpts } from './lyricBlock.ts';
 import { COLS, Spectrogram, foregroundBand } from './viz.ts';
+import { blendCameraPose, firstSameSeed, firstSameStart, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 type V = [number, number, number];
 const MAX_TRIS = 70000;
@@ -195,9 +196,9 @@ export class SubdivideScene implements MvScene {
     const { t, music, shot } = ctx;
     const foreground = music.foregroundAt(t), voice = foreground.level, attack = foreground.attack;
     const flow = music.foregroundMotion(t, 0.3);
-    const len = Math.max(0.2, shot.end - shot.start), k = clamp01(ctx.shotT / len);
     const beat = 60 / Math.max(40, music.at(t).bpm), step = this.soft ? 1 : 0.5;
-    const since = music.beatPos(t) - music.beatPos(shot.start);
+    // 首次切入该场景时从 LOD 0 逐拍细分生长；同场景连续切镜时保持已细分的满级球体继续随重低音呼吸，避免退回四面体
+    const since = music.beatPos(t) - music.beatPos(firstSameStart(shot));
     const level = Math.min(this.levels.length - 1, Math.max(0, Math.floor(since / step)));
     const age = (since - level * step) * beat; // seconds since this level split
     const L = this.levels[level], u = this.mesh.material.uniforms;
@@ -215,14 +216,23 @@ export class SubdivideScene implements MvScene {
     u.uRipple.value = kick ? 0.1 * kick[1] * music.foregroundEventWeight(kick[0], t) * Math.exp(-ka / 0.35) : 0;
     u.uRippleAt.value = ka * 4.5;
 
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1;
+    const side = rng(firstSameSeed(shot))() < 0.5 ? -1 : 1;
     this.mesh.rotation.set(0.35 + 0.065 * voice, (t * 0.3 + flow * 0.35) * side, 0);
     const cam = this.camera;
-    const d = lerp(3.8, 3.1, smooth(k));
-    cam.position.set(Math.sin(0.4 * side) * d, 0.5, Math.cos(0.4 * side) * d);
-    cam.lookAt(0, 0, 0);
-    cam.updateMatrixWorld();
+    blendCameraPose(
+      (tau, s, pos, quat) => {
+        const st = s.run?.start ?? s.start;
+        const ed = s.run?.end ?? s.end;
+        const sk = clamp01((tau - st) / Math.max(0.2, ed - st));
+        const camSide = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+        const d = lerp(3.8, 3.1, smooth(sk));
+        poseLookAt(pos, quat, Math.sin(0.4 * camSide) * d, 0.5, Math.cos(0.4 * camSide) * d, 0, 0, 0);
+      },
+      t,
+      shot,
+      cam,
+      1.25,
+    );
 
     // The level's label, low beside the ball, facing the camera.
     this.labels.forEach((m, i) => {
@@ -237,9 +247,10 @@ export class SubdivideScene implements MvScene {
     // The band turns with the ball; the camera's angle round it at a time, in the band's frame then.
     this.orbit.group.rotation.copy(this.mesh.rotation);
     const eye = new THREE.Vector3(), turn = new THREE.Matrix4();
+    const camDir = cam.position.clone().normalize();
     this.orbit.update(ctx.lyrics, t, shot.section.energy, tt => {
       turn.makeRotationFromEuler(new THREE.Euler(0.35 + 0.065 * music.foregroundAt(tt).level, (tt * 0.3 + music.foregroundMotion(tt, 0.3) * 0.35) * side, 0)).invert();
-      eye.set(Math.sin(0.4 * side), 0.5 / 3.5, Math.cos(0.4 * side)).applyMatrix4(turn);
+      eye.copy(camDir).applyMatrix4(turn);
       return Math.atan2(eye.x, eye.z);
     });
   }

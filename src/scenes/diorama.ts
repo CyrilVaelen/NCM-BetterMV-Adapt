@@ -5,10 +5,11 @@
 // The words are one more layer of the stack, set just behind the front sheet to one side of the picture: that sheet
 // covers them where its cut-out reaches, and the camera's moves slide them against the paper.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 const LAYERS = 6;
 const GAP = 0.85;
@@ -283,52 +284,49 @@ export class Diorama implements MvScene {
     this.camera.updateProjectionMatrix();
   }
 
+  private evalPose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): number {
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const k = clamp01((t - start) / Math.max(0.5, end - start));
+    const e = inOutCubic(k);
+    const side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
+    let ex = 0, ey = 0, ez = CAMERA_Z, tx = 0, ty = 0, tz = -1.8, fov = 40;
+    switch (shot.variant) {
+      case 'push':
+        tx = this.focus.x * 0.6; ty = this.focus.y * 0.6; tz = -1.5;
+        ex = lerp(side * 1.2, this.focus.x * 0.4, e);
+        ey = lerp(0.6, this.focus.y * 0.4, e);
+        ez = lerp(20.5, 13, e);
+        break;
+      case 'truck':
+        ex = lerp(-7, 7, e) * side; ey = lerp(1.5, -0.5, e); ez = 16;
+        tx = lerp(-1, 1, e) * side; ty = 0; tz = -2;
+        fov = 42;
+        break;
+      case 'tilt':
+        ex = side * 1.5; ey = lerp(-5.5, 1.2, e); ez = 17.5;
+        tx = 0; ty = lerp(-1.5, 0.3, e); tz = -2;
+        break;
+      case 'pullback':
+        ex = 0; ey = 0.3; ez = lerp(15, 28, e);
+        break;
+      default:
+        ex = lerp(-1.6, 1.6, e) * side; ey = lerp(0.8, -0.4, e); ez = CAMERA_Z + 0.5 - e;
+        break;
+    }
+    ex += Math.sin(t * 0.37) * 0.08;
+    ey += Math.sin(t * 0.29 + 1) * 0.06;
+    poseLookAt(pos, quat, ex, ey, ez, tx, ty, tz);
+    return fov;
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
-    const k = clamp01(ctx.shotT / Math.max(0.5, shot.end - shot.start));
-    const e = inOutCubic(k);
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1;
     const foreground = music.foregroundAt(t);
     const breath = foreground.level, accent = foreground.attack;
     const vocalWarmth = shot.section.vocal ? 0.15 : 0;
     const cam = this.camera;
-    const target = new THREE.Vector3(0, 0, -1.8);
-    let fov = 40;
-    switch (shot.variant) {
-      case 'push': {
-        // Slow push towards the heart of the picture.
-        target.set(this.focus.x * 0.6, this.focus.y * 0.6, -1.5);
-        cam.position.set(lerp(side * 1.2, this.focus.x * 0.4, e), lerp(0.6, this.focus.y * 0.4, e), lerp(20.5, 13, e));
-        break;
-      }
-      case 'truck': {
-        // Across the stack at an angle: the most parallax.
-        cam.position.set(lerp(-7, 7, e) * side, lerp(1.5, -0.5, e), 16);
-        target.set(lerp(-1, 1, e) * side, 0, -2);
-        fov = 42;
-        break;
-      }
-      case 'tilt': {
-        cam.position.set(side * 1.5, lerp(-5.5, 1.2, e), 17.5);
-        target.set(0, lerp(-1.5, 0.3, e), -2);
-        break;
-      }
-      case 'pullback': {
-        cam.position.set(0, 0.3, lerp(15, 28, e));
-        break;
-      }
-      default: { // drift
-        cam.position.set(lerp(-1.6, 1.6, e) * side, lerp(0.8, -0.4, e), CAMERA_Z + 0.5 - e);
-      }
-    }
-    // A slow handheld breath.
-    cam.position.x += Math.sin(t * 0.37) * 0.08;
-    cam.position.y += Math.sin(t * 0.29 + 1) * 0.06;
-    cam.fov = fov;
-    cam.updateProjectionMatrix();
-    cam.up.set(0, 1, 0);
-    cam.lookAt(target);
+    blendCameraPose((tau, s, pos, quat) => this.evalPose(tau, s, pos, quat), t, shot, cam, 1.4);
 
     // The paper stack opens with the leading instrument; an accepted articulation catches its cut edges.
     // A full-mix swell or a snare alone no longer opens or lights every sheet.

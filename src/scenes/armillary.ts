@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import type { Music } from '../director/music.ts';
 import { clamp01, lerp, outExpo, rng, smooth, snap } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LineBatch } from '../render/lines.ts';
 import { LyricOrbit } from './lyricSpace.ts';
 import { voiceOpts } from './lyricBlock.ts';
@@ -82,8 +83,10 @@ export class ArmillaryScene implements MvScene {
 
   /** The camera at the song's end: settling in, then drawing slowly closer as the rings close up. Returns the fov. */
   private gatherEye(t: number, shot: Shot, out: THREE.Vector3): number {
-    const k = clamp01((t - shot.start) / Math.max(0.2, shot.end - shot.start));
-    const side = rng(shot.seed)() < 0.5 ? -1 : 1;
+    const sStart = shot.run?.start ?? shot.start;
+    const sEnd = shot.run?.end ?? shot.end;
+    const k = clamp01((t - sStart) / Math.max(0.2, sEnd - sStart));
+    const side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
     const d = lerp(5.2, 3.9, snap(k)) - 0.9 * smooth((k - 0.4) / 0.6);
     out.set(Math.sin(0.3 * side) * d, 0.35, Math.cos(0.3 * side) * d);
     return 40;
@@ -97,9 +100,11 @@ export class ArmillaryScene implements MvScene {
    * runs down it and ends looking at the core. Returns the field of view.
    */
   private orbitEye(t: number, shot: Shot, music: Music, out: THREE.Vector3, look = this.lookAt, tunnel = this.tunnel): number {
-    const beat = 60 / Math.max(40, music.at(shot.end - 0.01).bpm);
-    const B = Math.max(1, (shot.end - shot.start) / beat), bb = Math.max(0, (shot.end - t) / beat), u = clamp01(1 - bb / B);
-    const side = rng(shot.seed)() < 0.5 ? -1 : 1;
+    const sStart = shot.run?.start ?? shot.start;
+    const sEnd = shot.run?.end ?? shot.end;
+    const beat = 60 / Math.max(40, music.at(sEnd - 0.01).bpm);
+    const B = Math.max(1, (sEnd - sStart) / beat), bb = Math.max(0, (sEnd - t) / beat), u = clamp01(1 - bb / B);
+    const side = rng(stableShotSeed(shot))() < 0.5 ? -1 : 1;
     const ang = side * (0.25 + 1.4 * smooth((B - bb) / Math.max(1, B - 1.75)));
     const y = lerp(0.75, 0.04, smooth((B - bb) / Math.max(1, B - 1.5)));
     const dir = this.eyeDir.set(Math.sin(ang), y, Math.cos(ang)).normalize();
@@ -113,7 +118,9 @@ export class ArmillaryScene implements MvScene {
 
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
-    const len = Math.max(0.2, shot.end - shot.start), k = clamp01(ctx.shotT / len);
+    const sStart = shot.run?.start ?? shot.start;
+    const sEnd = shot.run?.end ?? shot.end;
+    const len = Math.max(0.2, sEnd - sStart), k = clamp01((t - sStart) / len);
     const info = music.at(t);
     const foreground = music.foregroundAt(t), voice = foreground.level;
     const kick = foreground.attack + 0.25 * voice, flow = music.foregroundMotion(t, 0.3);
@@ -122,11 +129,20 @@ export class ArmillaryScene implements MvScene {
     arm.group.scale.setScalar(ARM_SCALE * (1 + 0.065 * voice + 0.03 * foreground.attack));
     const beat = 60 / Math.max(40, info.bpm), B = len / beat;
     let glow: number, push = 0;
+    const tmpEye = new THREE.Vector3(), tmpLook = new THREE.Vector3(), tmpTun = new THREE.Vector3();
+    blendCameraPose((tt, s, pos, quat) => {
+      if (s.variant === 'gather') {
+        const f = this.gatherEye(tt, s, tmpEye);
+        poseLookAt(pos, quat, tmpEye.x, tmpEye.y, tmpEye.z, 0, 0, 0);
+        return f;
+      }
+      const f = this.orbitEye(tt, s, music, tmpEye, tmpLook, tmpTun);
+      poseLookAt(pos, quat, tmpEye.x, tmpEye.y, tmpEye.z, tmpLook.x, tmpLook.y, tmpLook.z);
+      return f;
+    }, t, shot, cam, 1.1);
     if (shot.variant === 'gather') {
-      cam.fov = this.gatherEye(t, shot, cam.position);
-      cam.lookAt(0, 0, 0);
       // Each ring lands on the next one in on a beat, the first a little before the middle of the shot.
-      const bs = ctx.shotT / beat;
+      const bs = (t - sStart) / beat;
       const m0 = Math.round(B * 0.45), gap = Math.max(1, Math.round((B * 0.3) / n));
       let merge = 0;
       for (let j = 0; j < n; j++) merge += smooth((bs - (m0 + j * gap - 0.75)) / 0.75);
@@ -134,21 +150,18 @@ export class ArmillaryScene implements MvScene {
         alpha: smooth(k / 0.08) * (1 - 0.8 * smooth((k - 0.88) / 0.12)) });
       glow = 0.6 + 0.5 * (merge / n);
     } else {
-      cam.fov = this.orbitEye(t, shot, music, cam.position);
-      cam.lookAt(this.lookAt);
-      const bb = Math.max(0, (shot.end - t) / beat);
+      this.orbitEye(t, shot, music, tmpEye, this.lookAt, this.tunnel);
+      const bb = Math.max(0, (sEnd - t) / beat);
       push = clamp01((1.25 - bb) / 1.25);
       // Stepping back on the eighth notes from two and a half beats before the drop.
       const gap = Math.max(0.25, Math.round((1.5 / Math.max(1, n - 1)) * 4) / 4);
       let recede = 0;
       for (let j = 0; j < n - 1; j++) recede += snap((2.5 - bb - j * gap) / 0.4);
       this.toward.copy(this.tunnel).multiplyScalar(10);
-      arm.set({ turn: shot.start * 0.3 + ctx.shotT * 0.3 + flow * 0.3, beat: info.pos, bar: info.barPhase, whirl: 2.4 * Math.pow(smooth((B - bb) / Math.max(1, B - 2.5)), 2),
+      arm.set({ turn: t * 0.3 + flow * 0.3, beat: info.pos, bar: info.barPhase, whirl: 2.4 * Math.pow(smooth((B - bb) / Math.max(1, B - 2.5)), 2),
         open: 1, align: smooth((4 - bb) / 1.5), recede, merge: 0, pulse: 0.8 * kick, alpha: 1 }, this.toward);
       glow = 0.8 + 0.5 * k + 0.4 * push;
     }
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
     this.bg.material.uniforms.uGlow.value = glow * (0.7 + 0.5 * kick + 0.35 * voice);
     const L = this.lines;
     L.clear();

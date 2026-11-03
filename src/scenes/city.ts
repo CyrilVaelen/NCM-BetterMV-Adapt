@@ -16,6 +16,7 @@ import { rng, smooth } from './types.ts';
 import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { lastIndex } from '../director/music.ts';
 import { CANYON_X, CANYON_Y, CENTERS, TOWER_VERT, towerFrag, Towers } from './cityTowers.ts';
+import { blendCameraPose, evalChainPose, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 const SURGES = 8;
 
@@ -591,9 +592,9 @@ export class City implements MvScene {
 
   /** The camera at time t (m): high sinks slowly looking down; horizon runs low towards the glow; glide flies forward. */
   private pose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
-    const random = rng(shot.seed);
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
-    const k = Math.max(0, t - shot.start);
+    const k = Math.max(0, t - (shot.run?.start ?? shot.start));
     if (shot.variant === 'canyon') {
       // Low between the towers down the corridor kept clear for it (cityTowers.ts).
       pos.set(CANYON_X + Math.sin(t * 0.11 + phase) * 14, CANYON_Y - 12 + Math.sin(t * 0.23) * 6, -t * 70);
@@ -613,8 +614,9 @@ export class City implements MvScene {
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const cam = this.camera;
-    this.pose(t, shot, cam.position, cam.quaternion);
-    cam.updateMatrixWorld();
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(tau, s, pp, qq);
+    // 近距离同走廊切镜（如 canyon -> canyon，<= 420m）平滑运镜；跨城区远距切镜保持原位由导演层暗场呼吸衔接，避免横穿摩天楼
+    blendCameraPose(rawPose, t, shot, cam, 1.25, 420);
     const u = this.u, sec = shot.section;
     const loud = sec.label === 'chorus' || sec.label === 'drop';
     (u.uCam.value as THREE.Vector3).copy(cam.position);
@@ -639,7 +641,7 @@ export class City implements MvScene {
     for (let i = lastIndex(this.surgeT, t); i >= 0 && n < SURGES; i--) {
       const s = this.surges[i], age = t - s.t;
       if (age > 2.6) break;
-      this.pose(s.t, shot, p, q);
+      evalChainPose(rawPose, s.t, shot, p, q, 1.25, 420);
       // The ground point at the given share down the frame from the centre of view.
       f.set(0, 0, -1).applyQuaternion(q);
       r.set(1, 0, 0).applyQuaternion(q);
@@ -656,9 +658,10 @@ export class City implements MvScene {
     // up, which hardly moves, it just stands there.
     const reach = shot.variant === 'high' ? 520 : shot.variant === 'glide' ? 300 : shot.variant === 'canyon' ? 150 : 220;
     const view = { reach, far: reach * 1.9, fov: cam.fov, aspect: cam.aspect, em: this.soft ? 0.064 : 0.068 };
-    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(time, shot, pp, qq);
+    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.25, 420);
     this.blocks.update(ctx.lyrics, t, sec.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, pose, 40, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15, 420);
+      const s = this.stands.get(anchorStart, st, leave, pose, 40, view, size);
       s.apply(time, root);
       // Gone before the camera is on top of it (it would fill the frame).
       return smooth((s.depth(time) - reach * 0.3) / (reach * 0.25));

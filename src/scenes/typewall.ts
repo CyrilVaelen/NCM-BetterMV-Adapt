@@ -4,8 +4,9 @@
 // the newest row out of a solid signal block; kicks jolt the whole wall. Behind: the cover as a hard ink / signal
 // duotone — a strip down one side (split), full-bleed and dark (stack), or nothing but ink (solo, one row at a time).
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
-import { clamp01, outExpo, rng, snap } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
+import { clamp01, lerp, outExpo, rng, snap } from './types.ts';
+import { sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { textMesh, hasCjk } from '../render/text.ts';
 import type { LineState } from '../director/lyrics.ts';
 import { lastIndex } from '../director/music.ts';
@@ -177,9 +178,16 @@ export class TypeWall implements MvScene {
       }
     }
 
+    const evalRoll = (s: Shot) => {
+      const rr = rng(stableShotSeed(s));
+      const sSide = rr() < 0.5 ? -1 : 1;
+      return (rr() - 0.5) * 0.06 + kick * 0.01 * sSide;
+    };
+    const blend = sameSceneBlend(t, shot, 0.8);
+    const roll = blend ? lerp(evalRoll(blend.prev), evalRoll(shot), blend.w) : evalRoll(shot);
     cam.position.set(0, 0, 0);
     cam.lookAt(0, 0, -1);
-    cam.rotateZ((random() - 0.5) * 0.06 + kick * 0.01 * side);
+    cam.rotateZ(roll);
     cam.updateMatrixWorld();
     this.cover.position.z = -DIST - 0.5;
     this.cover.lookAt(cam.position);

@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, outExpo, rng, smooth, punch } from './types.ts';
+import { poseLookAt, sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { textMesh, hasCjk } from '../render/text.ts';
 import type { LineState } from '../director/lyrics.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
@@ -80,7 +81,7 @@ const vertexShader = /* glsl */ `
     float edge = max(abs(rel.x), abs(rel.y)) / ${(W / 2).toFixed(4)};
     vec3 world = vec3(xz.x + p.x, p.y - smoothstep(0.62, 1.0, edge) * uSink, xz.y + p.z);
     // Island mode: everything outside one tile drops away.
-    world.y -= step(0.5, uIsland) * step(0.999, edge) * 40.0;
+    world.y -= uIsland * step(0.999, edge) * 40.0;
     // Once the terrain settles into a flat cover, let that cover breathe too.
     world.xz = mix(world.xz, uOrigin + (world.xz-uOrigin) * (1.0+uLeadSwell), uFlat);
     vWorld = world; vNormal = normal; vColor = aColor; vLum = aLum;
@@ -194,9 +195,11 @@ export class Relief implements MvScene {
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
     dir.normalize();
     const right = new THREE.Vector3(-dir.z, 0, dir.x);
-    const shotLen = Math.max(0.2, shot.end - shot.start);
-    const k = clamp01((t - shot.start) / shotLen);
-    const random = rng(shot.seed);
+    const sStart = shot.run?.start ?? shot.start;
+    const sEnd = shot.run?.end ?? shot.end;
+    const shotLen = Math.max(0.2, sEnd - sStart);
+    const k = clamp01((t - sStart) / shotLen);
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1;
     let fov = 55, flat = 0, island = 0, origin = new THREE.Vector2(p.x, p.z - W * 0.22);
     const pos = new THREE.Vector3(p.x, 4.2, p.z);
@@ -207,7 +210,7 @@ export class Relief implements MvScene {
     switch (shot.variant) {
       case 'rise': {
         // Pull up from the field to the whole cover, which settles into a flat, readable image floating in the dark.
-        const from = this.flyer(shot.start);
+        const from = this.flyer(sStart);
         const tileX = (Math.floor(from.x / W) + 0.5) * W, tileZ = (Math.floor(from.z / W) + 0.5) * W;
         const e = inOutCubic(k);
         flat = smooth((k - 0.25) / 0.5);
@@ -259,7 +262,15 @@ export class Relief implements MvScene {
       default:
         lookAlong(-0.2);
     }
-    return { p, pos, look, fov, flat, island, origin, bank, k };
+    const fogDensity = shot.variant === 'rise' ? lerp(0.03, 0.006, smooth(k * 1.4)) : shot.variant === 'crane' ? 0.018 : 0.026;
+    const quat = new THREE.Quaternion();
+    const tmpPos = new THREE.Vector3();
+    poseLookAt(tmpPos, quat, pos.x, pos.y, pos.z, look.x, look.y, look.z);
+    if (bank) {
+      const bankRoll = -(this.flyer(t + 0.35).x - this.flyer(t - 0.35).x) * 0.06;
+      quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), bankRoll));
+    }
+    return { p, pos, look, quat, fov, flat, island, origin, bank, side, fogDensity, k };
   }
 
   update(ctx: FrameCtx): void {
@@ -275,9 +286,32 @@ export class Relief implements MvScene {
     const lead = music.foregroundAt(t);
     u.uHeight.value = (1.6 + energy * 2.2) * (1 + 0.2 * lead.level + 0.12 * lead.attack);
     u.uLeadSwell.value = 0.03 * lead.level + 0.025 * lead.attack;
-    const framing = this.pose(t, shot);
-    const { p, pos, look, flat, island, origin, bank, k } = framing;
-    let fov = framing.fov;
+
+    const fB = this.pose(t, shot);
+    const blend = sameSceneBlend(t, shot, 1.35);
+    const fA = blend ? this.pose(t, blend.prev) : null;
+    const p = fB.p;
+    const pos = fB.pos.clone();
+    const quat = fB.quat.clone();
+    let fov = fB.fov;
+    let flat = fB.flat;
+    let island = fB.island;
+    const origin = fB.origin.clone();
+    let fogDensity = fB.fogDensity;
+
+    if (blend && fA) {
+      const w = blend.w;
+      pos.lerpVectors(fA.pos, fB.pos, w);
+      const qA = fA.quat.clone();
+      if (qA.dot(quat) < 0) qA.set(-qA.x, -qA.y, -qA.z, -qA.w);
+      quat.slerpQuaternions(qA, fB.quat, w);
+      fov = lerp(fA.fov, fov, w);
+      flat = lerp(fA.flat, flat, w);
+      island = lerp(fA.island, island, w);
+      origin.lerpVectors(fA.origin, fB.origin, w);
+      fogDensity = lerp(fA.fogDensity, fogDensity, w);
+    }
+
     const cam = this.camera;
     // Downbeat punch, the bob of the beat, and (while heating up) a widening lens and a shake.
     fov -= info.inBar < 1 ? punch(info.inBar, 1 / 6, 0.12) * 2.5 * (0.4 + energy) : 0;
@@ -303,9 +337,8 @@ export class Relief implements MvScene {
     cam.fov = fov;
     cam.updateProjectionMatrix();
     cam.position.copy(pos);
-    cam.up.set(0, 1, 0);
-    cam.lookAt(look);
-    if (bank) cam.rotateZ(-(this.flyer(t + 0.35).x - this.flyer(t - 0.35).x) * 0.06);
+    cam.quaternion.copy(quat);
+    cam.updateMatrixWorld();
 
     // Heat: the air turns towards the signal colour and the scan line goes from once a bar to every beat.
     u.uFog.value.copy(palette.ink).lerp(palette.signal, build * 0.16);
@@ -313,9 +346,9 @@ export class Relief implements MvScene {
     u.uKeyColor.value.copy(palette.paper).lerp(palette.signal, build * 0.45);
     u.uOrigin.value.copy(origin);
     u.uKick.value = kick;
-    u.uSink.value = island ? 0 : 6;
+    u.uSink.value = lerp(6, 0, island);
     u.uCam.value.copy(cam.position);
-    u.uFogDensity.value = shot.variant === 'rise' ? lerp(0.03, 0.006, smooth(k * 1.4)) : shot.variant === 'crane' ? 0.018 : 0.026;
+    u.uFogDensity.value = fogDensity;
     const perBeat = build > 0.45;
     const scanPhase = perBeat ? info.phase : info.barPhase;
     u.uScanZ.value = p.z - scanPhase * (perBeat ? 16 : 34);
@@ -326,7 +359,7 @@ export class Relief implements MvScene {
     // Through the closing outro the picture dims to a quarter (the closing credits stand over it).
     ctx.fx.fade = 0.75 * smooth(music.endingProgress(t));
 
-    this.updateBanners(ctx, framing);
+    this.updateBanners(ctx, fB, fA, blend?.w ?? 1);
   }
 
   /** Ripples from the latest kicks, centred on the path ahead of where the camera was. */
@@ -395,19 +428,50 @@ export class Relief implements MvScene {
     return { root, words, trans };
   }
 
+  /** 求值单个镜头下某句歌词横幅的位置、朝向与缩放。 */
+  private evalBannerPose(
+    shot: Shot,
+    framing: ReturnType<Relief['pose']>,
+    t: number,
+    pass: number,
+    exit: number,
+    aspect: number,
+    baseLift: number,
+    outPos: THREE.Vector3,
+    outQuat: THREE.Quaternion,
+  ): { scale: number; isRise: number } {
+    if (shot.variant === 'rise') {
+      outPos.set(framing.origin.x, 0.6 + exit * 1.2, framing.origin.y + 1.5 - exit * 1.4);
+      outQuat.setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+      return { scale: 3.2 * Math.min(1, aspect / 1.2), isRise: 1 };
+    }
+    const tb = Math.min(t + (shot.variant === 'side' ? RIDE * 0.6 : RIDE), pass);
+    const at = this.flyer(tb);
+    const dir = this.flyer(tb + 0.2).sub(this.flyer(tb - 0.2));
+    const yaw = Math.atan2(dir.x, dir.z) + Math.PI;
+    outPos.set(at.x, (shot.variant === 'side' ? 2.5 : 3.9) + exit * 1.1 - baseLift, at.z);
+    outQuat.setFromEuler(new THREE.Euler(0, shot.variant === 'side' ? yaw + framing.side * Math.PI / 2 : yaw, 0));
+    return { scale: Math.min(1, aspect / 1.5), isRise: 0 };
+  }
+
   /**
    * Each line stands across the flight line as a banner of words, revealed word by word as sung. It rides
    * RIDE seconds ahead of the camera, then holds still for the last stretch so the camera flies through it
    * just after the line ends. Tracking alongside, the banner turns to face the camera's side of the line, so it
    * goes by like a sign at the roadside; rising over the cover, the line lies on it, big, read from above.
    */
-  private updateBanners(ctx: FrameCtx, framing: ReturnType<Relief['pose']>): void {
+  private updateBanners(
+    ctx: FrameCtx,
+    fB: ReturnType<Relief['pose']>,
+    fA: ReturnType<Relief['pose']> | null,
+    w: number,
+  ): void {
     const { t, lyrics, palette, shot } = ctx;
     const live = new Set<number>();
-    const variant = shot.variant;
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1;
+    const prevShot = shot.prevSame;
     const lines = lyrics.lines;
+    const posA = new THREE.Vector3(), quatA = new THREE.Quaternion();
+    const posB = new THREE.Vector3(), quatB = new THREE.Quaternion();
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const leave = lyrics.leaveAt(i);
@@ -420,27 +484,24 @@ export class Relief implements MvScene {
       const state = lyrics.state(i, t, exit);
       const b = this.banners.get(i) ?? this.banners.set(i, this.buildBanner(state)).get(i)!;
       const rise = outExpo((t - (line.start - 0.5)) / 0.45);
-      let lift = (1 - rise) * 3;
-      if (variant === 'rise') {
-        // 俯视模式下横幅铺在封面上，退场句向上轻抬并淡出，避免与下一句原位重影
-        b.root.position.set(framing.origin.x, 0.6 + exit * 1.2, framing.origin.y + 1.5 - exit * 1.4);
-        b.root.rotation.set(-Math.PI / 2, 0, 0);
-        b.root.scale.setScalar(3.2 * Math.min(1, ctx.aspect / 1.2));
-        lift = 0;
+      const baseLift = (1 - rise) * 3;
+      const stB = this.evalBannerPose(shot, fB, t, pass, exit, ctx.aspect, baseLift, posB, quatB);
+      let scale = stB.scale;
+      let isRise = stB.isRise;
+      if (fA && prevShot && w < 1) {
+        const stA = this.evalBannerPose(prevShot, fA, t, pass, exit, ctx.aspect, baseLift, posA, quatA);
+        b.root.position.lerpVectors(posA, posB, w);
+        if (quatA.dot(quatB) < 0) quatA.set(-quatA.x, -quatA.y, -quatA.z, -quatA.w);
+        b.root.quaternion.slerpQuaternions(quatA, quatB, w);
+        scale = lerp(stA.scale, scale, w);
+        isRise = lerp(stA.isRise, isRise, w);
       } else {
-        const tb = Math.min(t + (variant === 'side' ? RIDE * 0.6 : RIDE), pass);
-        const at = this.flyer(tb);
-        const dir = this.flyer(tb + 0.2).sub(this.flyer(tb - 0.2));
-        const yaw = Math.atan2(dir.x, dir.z) + Math.PI;
-        // (Alongside, lower: the camera looks down at the line from above the wall, and a banner at 3.9 left the frame.)
-        b.root.position.set(at.x, (variant === 'side' ? 2.5 : 3.9) + exit * 1.1, at.z);
-        // Alongside: turned to face the camera's side of the line.
-        b.root.rotation.set(0, variant === 'side' ? yaw + side * Math.PI / 2 : yaw, 0);
-        b.root.scale.setScalar(Math.min(1, ctx.aspect / 1.5));
+        b.root.position.copy(posB);
+        b.root.quaternion.copy(quatB);
       }
-      b.root.position.y -= lift;
+      b.root.scale.setScalar(scale);
       const dist = this.camera.position.distanceTo(b.root.position);
-      const near = (variant === 'rise' ? 1 : clamp01((dist - 0.6) / 2.6)) * (1 - exit);
+      const near = lerp(clamp01((dist - 0.6) / 2.6), 1, isRise) * (1 - exit);
       state.words.forEach((ws, wi) => {
         const g = b.words[wi];
         if (!g) return;

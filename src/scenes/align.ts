@@ -5,8 +5,9 @@
 // angle on a downbeat (the pieces close, a flash, a hairline frame round the cover), holds a beat, and drifts off
 // again as it falls apart, on round until the shot ends.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, lerp, outExpo, rng, smooth, snap } from './types.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LineBatch } from '../render/lines.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
@@ -140,37 +141,44 @@ export class AlignScene implements MvScene {
     pos.needsUpdate = col.needsUpdate = true;
   }
 
-  update(ctx: FrameCtx): void {
-    const { t, music, shot } = ctx;
-    const foreground = music.foregroundAt(t);
-    const random = rng(shot.seed);
-    const side = random() < 0.5 ? -1 : 1;
-    const beat = 60 / Math.max(40, music.at(t).bpm), bar = beat * music.meter;
-    // The magic moment: the downbeat about a bar into the shot (or its middle).
-    let tm = music.downbeatAtOrAfter(shot.start + bar * 0.9);
-    if (!(tm < shot.end - beat * 0.5)) tm = (shot.start + shot.end) / 2;
-    const whip = 0.32; // seconds of the whip onto the angle
-    // Off-axis angles: drifting before, whipped to 0 on the beat, held a beat, drifting off after.
+  /** 纯函数求值指定镜头在时刻 t 的偏轴角与合拢时刻。 */
+  private evalAngles(t: number, s: Shot, music: FrameCtx['music'], beat: number, bar: number) {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const side = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    let tm = music.downbeatAtOrAfter(sStart + bar * 0.9);
+    if (!(tm < sEnd - beat * 0.5)) tm = (sStart + sEnd) / 2;
+    const whip = 0.32;
     const th0 = 0.95 * side, ph0 = 0.32;
     let th: number, ph: number;
     if (t < tm - whip) {
-      const drift = (t - shot.start) * 0.08 * side;
+      const drift = (t - sStart) * 0.08 * side;
       th = th0 + drift; ph = ph0;
     } else if (t < tm) {
-      const e = snap((t - (tm - whip)) / whip), before = th0 + (tm - whip - shot.start) * 0.08 * side;
+      const e = snap((t - (tm - whip)) / whip), before = th0 + (tm - whip - sStart) * 0.08 * side;
       th = lerp(before, 0, e); ph = lerp(ph0, 0, e);
     } else {
-      // …and keeps drifting once it is off (it used to stop dead there, the frame frozen for the rest of the shot).
       const after = Math.max(0, t - tm - beat), off = smooth(after / (bar * 1.5));
       th = -(0.45 * off + 0.06 * after) * side; ph = -0.12 * off - 0.02 * after;
     }
+    return { th, ph, tm, whip };
+  }
+
+  update(ctx: FrameCtx): void {
+    const { t, music, shot } = ctx;
+    const foreground = music.foregroundAt(t);
+    const beat = 60 / Math.max(40, music.at(t).bpm), bar = beat * music.meter;
+    const cur = this.evalAngles(t, shot, music, beat, bar);
+    const { tm, whip } = cur;
     this.settled = smooth((t - (tm - whip)) / whip);
     const cam = this.camera;
-    cam.position.set(EYE * Math.sin(th) * Math.cos(ph), EYE * Math.sin(ph), EYE * Math.cos(th) * Math.cos(ph));
-    cam.lookAt(0, 0, 0);
-    cam.fov = 40;
-    cam.updateProjectionMatrix();
-    cam.updateMatrixWorld();
+    blendCameraPose((tt, s, pos, quat) => {
+      const a = this.evalAngles(tt, s, music, beat, bar);
+      poseLookAt(pos, quat, EYE * Math.sin(a.th) * Math.cos(a.ph), EYE * Math.sin(a.ph), EYE * Math.cos(a.th) * Math.cos(a.ph), 0, 0, 0);
+      return 40;
+    }, t, shot, cam, 0.95);
+    const th = Math.atan2(cam.position.x, cam.position.z);
+    const ph = Math.asin(THREE.MathUtils.clamp(cam.position.y / EYE, -1, 1));
 
     // Hairline seams on every shard; on the close, a frame round the whole cover, and a flash.
     const closed = t >= tm ? Math.exp(-(t - tm) / 0.5) : 0;

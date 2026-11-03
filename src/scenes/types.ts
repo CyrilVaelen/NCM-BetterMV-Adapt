@@ -26,7 +26,12 @@ export interface Shot {
    * A run of shots under a bar long on one plate (the speeding-up cuts at the end of a build): the scene times its
    * moves over the whole run, so cutting to another camera carries on the move instead of starting it again.
    */
-  run?: { start: number; end: number };
+  run?: { start: number; end: number; seed?: number };
+  /** 紧邻的前序同场景镜头（已映射 run 时钟），供同场景切镜时纯函数平滑过渡视角，消除瞬移。 */
+  prevSame?: Shot;
+  /** 当前子镜头自身的实际切入/切出时刻（当 Shot.run 覆盖 start/end 时保留真实切点）。 */
+  cutStart?: number;
+  cutEnd?: number;
   /** (Development: a film's own look for this shot, over its section's.) */
   look?: LookId;
 }

@@ -7,8 +7,9 @@
 // The words are printed on the board (a LyricLayer, on both faces of every tile), so each wave rolls the letters over
 // with the tiles they sit on, like the letters of a split-flap board.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng } from './types.ts';
+import { blendCameraPose, firstSameSeed, firstSameStart, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 import { LyricLayer } from './lyricSpace.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { COLS as SPEC_COLS, Spectrogram } from './viz.ts';
@@ -259,7 +260,8 @@ export class Flip implements MvScene {
     u.uForeground.value.set(foreground.level, foreground.attack);
     u.uSelective.value = +music.selectiveAt(t);
     this.levels(t);
-    const random = rng(shot.seed);
+    // 同场景连切时翻牌波纹以连续链起点与首镜种子为准，防止切镜瞬间翻牌计数重置导致整板花色突变
+    const boardRandom = rng(firstSameSeed(shot));
     // Straight on, the frame shows VIEW_W board units across (fewer on a wider screen, so the edge stays out).
     const dist = 25 * Math.min(1, (16 / 9) / ctx.aspect);
     const viewH = 2 * dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2), viewW = viewH * ctx.aspect;
@@ -275,42 +277,45 @@ export class Flip implements MvScene {
     u.uWidth.value = soft ? 0.7 : burst ? 0.16 : 0.22;
     u.uLift.value = (soft ? 0.6 : burst ? 1 : 1.2) * (1 + foreground.level * 0.35 + foreground.attack * 0.4);
     u.uBack.value = soft ? 0 : 1.2;
-    u.uBeat.value = music.beatPos(t) - music.beatPos(shot.start);
-    const pattern = soft ? 0 : burst ? (random() < 0.6 ? 1 : 0) : (random() < 0.5 ? 0 : 2);
+    u.uBeat.value = music.beatPos(t) - music.beatPos(firstSameStart(shot));
+    const pattern = soft ? 0 : burst ? (boardRandom() < 0.6 ? 1 : 0) : (boardRandom() < 0.5 ? 0 : 2);
     u.uPattern.value = pattern;
-    u.uAngle.value = (random() < 0.5 ? 0 : Math.PI) + (random() - 0.5) * 1.6;
-    const ox = (random() - 0.5) * viewW * 0.5, oy = (random() - 0.5) * viewH * 0.4;
+    u.uAngle.value = (boardRandom() < 0.5 ? 0 : Math.PI) + (boardRandom() - 0.5) * 1.6;
+    const ox = (boardRandom() - 0.5) * viewW * 0.5, oy = (boardRandom() - 0.5) * viewH * 0.4;
     u.uOrigin.value.set(ox, oy);
     u.uReach.value = Math.hypot(viewW / 2 + Math.abs(ox), viewH / 2 + Math.abs(oy));
-    u.uAlt.value = Math.floor(random() * 2);
-    u.uDetail.value.set(0.3 + random() * 0.4, 0.3 + random() * 0.4);
+    u.uAlt.value = Math.floor(boardRandom() * 2);
+    u.uDetail.value.set(0.3 + boardRandom() * 0.4, 0.3 + boardRandom() * 0.4);
     u.uKick.value = foreground.attack * (soft ? 0.7 : 1);
 
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
-    const sign = random() < 0.5 ? -1 : 1;
     const cam = this.camera;
-    if (soft) {
-      cam.position.set(sign * lerp(1.2, -1.2, k), lerp(0.8, -0.4, k), lerp(dist, dist * 0.92, inOutCubic(k)));
-      cam.lookAt(0, 0, 0);
-    } else if (burst) {
-      // Straight on, pushing in.
-      cam.position.set(sign * lerp(0.8, -0.8, k), lerp(0.5, -0.3, k), lerp(dist, dist * 0.86, inOutCubic(k)));
-      cam.lookAt(0, 0, 0);
-    } else if (random() < 0.5) {
-      // From the side, swinging round towards the front.
-      const a = sign * lerp(0.32, 0.18, inOutCubic(k));
-      cam.position.set(Math.sin(a) * dist, lerp(0.6, 1.6, k), Math.cos(a) * dist);
-      cam.lookAt(-sign * 0.8, 0, 0);
-    } else {
-      // From below, drifting across.
-      const a = lerp(0.3, 0.2, inOutCubic(k));
-      cam.position.set(sign * lerp(1.6, -1.6, k), -Math.sin(a) * dist, Math.cos(a) * dist);
-      cam.lookAt(0, 0.6, 0);
-    }
-    cam.updateMatrixWorld();
+    const alignSign = rng(firstSameSeed(shot))() < 0.5 ? 1 : -1;
+    blendCameraPose((tt, s, pos, quat) => {
+      const sStart = s.run?.start ?? s.start;
+      const sEnd = s.run?.end ?? s.end;
+      const k = clamp01((tt - sStart) / Math.max(0.5, sEnd - sStart));
+      const r = rng(stableShotSeed(s));
+      const sign = r() < 0.5 ? -1 : 1;
+      const modePick = r();
+      const sBurst = !soft && s.variant === 'burst';
+      if (soft) {
+        poseLookAt(pos, quat, sign * lerp(1.2, -1.2, k), lerp(0.8, -0.4, k), lerp(dist, dist * 0.92, inOutCubic(k)), 0, 0, 0);
+      } else if (sBurst) {
+        // Straight on, pushing in.
+        poseLookAt(pos, quat, sign * lerp(0.8, -0.8, k), lerp(0.5, -0.3, k), lerp(dist, dist * 0.86, inOutCubic(k)), 0, 0, 0);
+      } else if (modePick < 0.5) {
+        // From the side, swinging round towards the front.
+        const a = sign * lerp(0.32, 0.18, inOutCubic(k));
+        poseLookAt(pos, quat, Math.sin(a) * dist, lerp(0.6, 1.6, k), Math.cos(a) * dist, -sign * 0.8, 0, 0);
+      } else {
+        // From below, drifting across.
+        const a = lerp(0.3, 0.2, inOutCubic(k));
+        poseLookAt(pos, quat, sign * lerp(1.6, -1.6, k), -Math.sin(a) * dist, Math.cos(a) * dist, 0, 0.6, 0);
+      }
+    }, t, shot, cam, 1.25);
     ctx.fx.bloom = (soft ? 0.35 : 0.4) + foreground.attack * 0.15;
     // The words over the part of the board a straight-on camera frames.
-    this.layer.rig.align = sign > 0 ? 'left' : 'right';
+    this.layer.rig.align = alignSign > 0 ? 'left' : 'right';
     (u.uLyricRect.value as THREE.Vector4).set(0, 0, viewW, viewH);
     this.layer.update(ctx.lyrics, t, shot.section.energy, viewW, viewH);
   }

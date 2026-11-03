@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { sameSceneBlend } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
@@ -973,61 +974,91 @@ export class VelvetScene implements MvScene {
   }
 
   /**
-   * 四组零顿挫丝滑长镜头轨道（lounge, skim, platter, gallery）：
-   * 全部使用连续三角阻尼与平滑插值，契合 Deep House 催眠流动的长镜头呼吸感。
+   * 计算指定镜头在时刻 t 的目标相机姿态与着色器透视构图参数（纯函数）。
+   * 纵向推进基底绑定全曲连续时间 t，呼吸摆动采用连续相位，消除切点重置跳变。
    */
-  private updateCamera(t: number, shot: Shot): { camShift: number; camLift: number; platterTilt: number } {
-    const k = clamp01((t - shot.start) / Math.max(0.8, shot.end - shot.start));
+  private evalCameraState(t: number, s: Shot): {
+    camX: number;
+    camY: number;
+    camZ: number;
+    yaw: number;
+    camShift: number;
+    camLift: number;
+    platterTilt: number;
+  } {
+    const k = clamp01((t - s.start) / Math.max(0.8, s.end - s.start));
     const e = inOutCubic(k);
-    const shotT = Math.max(0, t - shot.start);
-    const variant = shot.variant || 'lounge';
+    const variant = s.variant || 'lounge';
 
     let camX = 0;
     let camY = 2.2;
-    let camZ = -shotT * 2.4;
+    let camZ = -t * 2.3;
     let yaw = 0;
     let camLift = 0;
     let platterTilt = 0;
 
     if (variant === 'skim') {
       // 贴近薄水镜面低掠推进，强化玄武岩水波焦散与长倒影纵深
-      camX = Math.sin(shotT * 0.22) * 1.4;
-      camY = 1.65 + Math.sin(shotT * 0.28) * 0.12;
-      camZ = -4.0 - shotT * 2.8;
-      yaw = Math.sin(shotT * 0.16) * 0.028;
-      camLift = -0.35 + 0.12 * Math.sin(shotT * 0.24);
-      platterTilt = 0.22 * Math.sin(shotT * 0.20);
+      camX = Math.sin(t * 0.22) * 1.4;
+      camY = 1.65 + Math.sin(t * 0.28) * 0.12;
+      camZ = -4.0 - t * 2.3;
+      yaw = Math.sin(t * 0.16) * 0.028;
+      camLift = -0.35 + 0.12 * Math.sin(t * 0.24);
+      platterTilt = 0.22 * Math.sin(t * 0.20);
     } else if (variant === 'platter') {
       // 斜侧微倾凝视悬浮琥珀黑胶与唱针星芒，缓步横移
       camX = lerp(-3.8, 3.8, e);
-      camY = 2.45 + Math.cos(shotT * 0.20) * 0.15;
-      camZ = -2.0 - shotT * 2.0;
+      camY = 2.45 + Math.cos(t * 0.20) * 0.15;
+      camZ = -2.0 - t * 2.3;
       yaw = lerp(0.055, -0.055, e);
       camLift = 0.22;
       platterTilt = lerp(-0.55, 0.55, e);
     } else if (variant === 'gallery') {
       // 宽幅巡礼两侧 12 片电钢琴发光磨砂玻璃光栅
-      camX = lerp(4.2, -4.2, e) + Math.sin(shotT * 0.18) * 0.6;
-      camY = 2.35 + Math.sin(shotT * 0.22) * 0.16;
-      camZ = -6.0 - shotT * 2.2;
+      camX = lerp(4.2, -4.2, e) + Math.sin(t * 0.18) * 0.6;
+      camY = 2.35 + Math.sin(t * 0.22) * 0.16;
+      camZ = -6.0 - t * 2.3;
       yaw = lerp(-0.06, 0.06, e);
-      camLift = 0.08 * Math.cos(shotT * 0.20);
+      camLift = 0.08 * Math.cos(t * 0.20);
       platterTilt = lerp(0.32, -0.32, e);
     } else {
       // lounge: 经典中轴微醺环绕，沉稳优雅
-      camX = Math.sin(shotT * 0.18) * 2.1;
-      camY = 2.15 + Math.sin(shotT * 0.25) * 0.14;
-      camZ = -shotT * 2.3;
-      yaw = Math.sin(shotT * 0.14) * 0.032;
-      camLift = 0.10 * Math.sin(shotT * 0.19);
-      platterTilt = 0.28 * Math.sin(shotT * 0.17);
+      camX = Math.sin(t * 0.18) * 2.1;
+      camY = 2.15 + Math.sin(t * 0.25) * 0.14;
+      camZ = -t * 2.3;
+      yaw = Math.sin(t * 0.14) * 0.032;
+      camLift = 0.10 * Math.sin(t * 0.19);
+      platterTilt = 0.28 * Math.sin(t * 0.17);
+    }
+
+    return { camX, camY, camZ, yaw, camShift: camX * 0.12, camLift, platterTilt };
+  }
+
+  /**
+   * 四组零顿挫丝滑长镜头轨道（lounge, skim, platter, gallery）：
+   * 同场景连续切镜时以 1.6s 三次平滑曲线无缝衔接相机与着色器视角参数，彻底杜绝视角瞬移。
+   */
+  private updateCamera(t: number, shot: Shot): { camShift: number; camLift: number; platterTilt: number } {
+    const curr = this.evalCameraState(t, shot);
+    const blend = sameSceneBlend(t, shot, 1.6);
+    let { camX, camY, camZ, yaw, camShift, camLift, platterTilt } = curr;
+    if (blend) {
+      const prev = this.evalCameraState(t, blend.prev);
+      const w = blend.w;
+      camX = lerp(prev.camX, curr.camX, w);
+      camY = lerp(prev.camY, curr.camY, w);
+      camZ = lerp(prev.camZ, curr.camZ, w);
+      yaw = lerp(prev.yaw, curr.yaw, w);
+      camShift = lerp(prev.camShift, curr.camShift, w);
+      camLift = lerp(prev.camLift, curr.camLift, w);
+      platterTilt = lerp(prev.platterTilt, curr.platterTilt, w);
     }
 
     this.camera.position.set(camX, camY, camZ);
     this.camera.quaternion.setFromEuler(new THREE.Euler(HORIZON_PITCH, yaw, 0, 'YXZ'));
     this.camera.updateMatrixWorld();
 
-    return { camShift: camX * 0.12, camLift, platterTilt };
+    return { camShift, camLift, platterTilt };
   }
 
   update(ctx: FrameCtx): void {

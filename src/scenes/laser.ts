@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import type { Section } from '../types.ts';
 import { clamp01, inOutCubic, lerp, rng, smooth } from './types.ts';
+import { sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
@@ -3097,33 +3098,22 @@ export class LaserScene implements MvScene {
     this.camera.updateProjectionMatrix();
   }
 
-  /** 四组电影级电音节现场运镜（底鼓+军鼓同步驱动相机位置与视线角，确保前景舞台与远景专辑封面 100% 同频共振无割裂） */
-  private poseCamera(
-    t: number,
-    shot: Shot,
-    shotT: number,
-    kickPunch: number,
-    snarePunch: number,
-    dropPower: number,
-  ): void {
-    const dur = Math.max(1.2, shot.end - shot.start);
-    const u = clamp01(shotT / dur);
+  /** 计算单个激光舞台机位在时刻 t 的无微震基准轨道（纯函数）。 */
+  private evalCameraSetup(t: number, s: Shot, dropPower: number): {
+    cx: number; cy: number; cz: number; tx: number; ty: number; tz: number; roll: number; baseFov: number;
+  } {
+    const dur = Math.max(1.2, s.end - s.start);
+    const u = clamp01((t - s.start) / dur);
     const easeU = inOutCubic(u);
-    const r = rng((shot.seed ^ 0x4c19a2d1) >>> 0);
+    const r = rng((stableShotSeed(s) ^ 0x4c19a2d1) >>> 0);
     const sideSign = r() < 0.5 ? -1 : 1;
-
-    // 克制细腻的低频底鼓与军鼓声压微震（幅度下调约 83%，保留音乐律动呼吸感而绝不晃成地震）
-    const kickImpact = kickPunch * (0.40 + 0.60 * dropPower);
-    const snareImpact = snarePunch * (0.50 + 0.50 * dropPower);
-    const shakeY = Math.sin(t * 38.0) * 0.0050 * kickImpact + Math.sin(t * 62.0 + 0.6) * 0.0065 * snareImpact;
-    const shakeX = Math.cos(t * 31.0) * 0.0032 * kickImpact + Math.cos(t * 54.0 + 1.1) * 0.0045 * snareImpact;
 
     let cx = 0, cy = 3.0, cz = 2.0;
     let tx = 0, ty = 8.4, tz = STAGE_Z;
     let roll = 0;
     let baseFov = CAM_FOV;
 
-    switch (shot.variant) {
+    switch (s.variant) {
       case 'tunnel': {
         // 激光锥笼穿行视角：抬升至旋转激光圆锥笼轴心高度，伴随呼吸式微倾角向前穿梭
         cx = Math.sin(t * 0.38) * 1.45;
@@ -3174,6 +3164,39 @@ export class LaserScene implements MvScene {
         break;
       }
     }
+    return { cx, cy, cz, tx, ty, tz, roll, baseFov };
+  }
+
+  /** 四组电影级电音节现场运镜（支持同场景切镜丝滑过渡，确保前景舞台与远景专辑封面 100% 同频共振无割裂） */
+  private poseCamera(
+    t: number,
+    shot: Shot,
+    _shotT: number,
+    kickPunch: number,
+    snarePunch: number,
+    dropPower: number,
+  ): void {
+    const curr = this.evalCameraSetup(t, shot, dropPower);
+    const blend = sameSceneBlend(t, shot, 1.35);
+    let { cx, cy, cz, tx, ty, tz, roll, baseFov } = curr;
+    if (blend) {
+      const prev = this.evalCameraSetup(t, blend.prev, dropPower);
+      const w = blend.w;
+      cx = lerp(prev.cx, curr.cx, w);
+      cy = lerp(prev.cy, curr.cy, w);
+      cz = lerp(prev.cz, curr.cz, w);
+      tx = lerp(prev.tx, curr.tx, w);
+      ty = lerp(prev.ty, curr.ty, w);
+      tz = lerp(prev.tz, curr.tz, w);
+      roll = lerp(prev.roll, curr.roll, w);
+      baseFov = lerp(prev.baseFov, curr.baseFov, w);
+    }
+
+    // 克制细腻的低频底鼓与军鼓声压微震（幅度下调约 83%，保留音乐律动呼吸感而绝不晃成地震）
+    const kickImpact = kickPunch * (0.40 + 0.60 * dropPower);
+    const snareImpact = snarePunch * (0.50 + 0.50 * dropPower);
+    const shakeY = Math.sin(t * 38.0) * 0.0050 * kickImpact + Math.sin(t * 62.0 + 0.6) * 0.0065 * snareImpact;
+    const shakeX = Math.cos(t * 31.0) * 0.0032 * kickImpact + Math.cos(t * 54.0 + 1.1) * 0.0045 * snareImpact;
 
     // 同步微震机制：将微小的声压位移与极克制的视线俯仰角脉冲同步施加到 lookAt 焦点，使封面巨幕与前景舞台轻柔同频共振
     const distToTarget = Math.max(12.0, Math.hypot(tx - cx, ty - cy, tz - cz));

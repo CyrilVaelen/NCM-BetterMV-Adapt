@@ -8,13 +8,14 @@
 // The words are in the tunnel: pulse, a sign for every few words that the camera flies through (LyricGates); ballad,
 // each line a hanging scroll to one side of the path that the camera glides past (the rig's world mode).
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, lerp, rng, smooth, punch } from './types.ts';
 import { LineBatch } from '../render/lines.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces, voiceOpts } from './lyricBlock.ts';
 import { LyricGates, poseInTube } from './lyricSpace.ts';
 import { lastIndex } from '../director/music.ts';
+import { sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 
 const R = 2.3; // frame circumradius
 const S = 0.45; // spacing between frames along the path
@@ -162,16 +163,29 @@ export class Tunnel implements MvScene {
     K += 0.06 * whip * whip;
     const phi = (this.soft ? 0.05 : 0.12) * t - 1.6 * Math.pow(whip, 2.5);
 
-    // Camera on the path, looking ahead.
+    // Camera on the path, looking ahead（同场景切镜时平滑过渡侧壁偏移与滚转角）.
     const sCam = this.travel(t, Math.min(1, energy + build * 0.5)) + 14 * Math.pow(whip, 3);
     const cb = this.basis(sCam);
     const cam = this.camera;
-    cam.position.copy(cb.c);
-    if (shot.variant === 'wall') cam.position.addScaledVector(cb.r, 1.1 * sign).addScaledVector(cb.u, 0.5);
+    const evalVar = (s: Shot) => {
+      const sg = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+      const st = s.run?.start ?? s.start;
+      return {
+        offR: s.variant === 'wall' ? 1.1 * sg : 0,
+        offU: s.variant === 'wall' ? 0.5 : 0,
+        sp: s.variant === 'roll' ? (t - st) * (this.soft ? 0.15 : 0.6) * sg : 0,
+      };
+    };
+    const vB = evalVar(shot);
+    const blend = sameSceneBlend(t, shot, 1.1);
+    const vA = blend ? evalVar(blend.prev) : vB;
+    const offR = blend ? lerp(vA.offR, vB.offR, blend.w) : vB.offR;
+    const offU = blend ? lerp(vA.offU, vB.offU, blend.w) : vB.offU;
+    const spin = blend ? lerp(vA.sp, vB.sp, blend.w) : vB.sp;
+    cam.position.copy(cb.c).addScaledVector(cb.r, offR).addScaledVector(cb.u, offU);
     cam.up.copy(cb.u);
     cam.lookAt(center(sCam + 7, new THREE.Vector3()));
     // The roll camera keeps turning: the words turn with it (below) and read level instead of going round with the tunnel.
-    const spin = shot.variant === 'roll' ? (t - shot.start) * (this.soft ? 0.15 : 0.6) * sign : 0;
     cam.rotateZ(0.025 * Math.sin(t * 0.9) + spin + 0.5 * Math.pow(whip, 3));
     cam.fov = FOV + 8 * whip * whip + build * 8 + (this.soft?2:6.5)*lead.attack;
     cam.updateProjectionMatrix();
@@ -202,7 +216,7 @@ export class Tunnel implements MvScene {
         ringA[nr++] = this.accentV[i]*music.foregroundEventWeight(this.kicks[i],t)*Math.pow(0.5, age / 0.3);
       }
     }
-    const comet = (t - shot.start) * (this.soft ? 0.12 : 0.5);
+    const comet = t * (this.soft ? 0.12 : 0.5);
     const bright = 1 + 0.8 * whip * whip + build * 0.5 + 0.25 * lead.level + 0.4 * lead.attack;
     const A = new THREE.Vector3(), B = new THREE.Vector3(), P = new THREE.Vector3(), Q = new THREE.Vector3();
     // Two frame buffers, swapped each step: `ring` is this frame, `prev` the one before it.

@@ -5,8 +5,9 @@
 // they are printed on; when the wall bursts, the shards carrying them stay where they were, so the line hangs whole
 // in the swarm.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, outExpo, rng, smooth, punch } from './types.ts';
+import { firstSameSeed, poseLookAt, sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { LyricLayer } from './lyricSpace.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
@@ -223,6 +224,114 @@ export class Shatter implements MvScene {
     this.ring.spec.prefetch(t, 0.8);
   }
 
+  /** 纯函数求值指定镜头在时刻 t 的相机姿态、视场角与墙面歌词区域参数。 */
+  private evalShotCam(
+    t: number,
+    s: Shot,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    rect: THREE.Vector4,
+    aspect: number,
+    infoPos: number,
+    music: FrameCtx['music'],
+  ): { fov: number; holdTilt: number; holdYaw: number } {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const k = clamp01((t - sStart) / Math.max(0.3, sEnd - sStart));
+    const random = rng(stableShotSeed(s));
+    const sign = random() < 0.5 ? -1 : 1;
+    let fov = 42, roll = 0, holdYaw = 0;
+    const holdTilt = ['wall', 'wall-close', 'wall-dutch', 'wall-edge', 'wall-orbit', 'swarm-a', 'swarm-b', 'swarm-d'].includes(s.variant) ? 0 : 1;
+    let tx = 0, ty = 0, tz = 0;
+    let ex = 0, ey = 0, ez = 22;
+    rect.set(0, 0, SIZE * Math.min(1, aspect), SIZE);
+    switch (s.variant) {
+      case 'wall': {
+        ex = Math.sin(k * 2.2) * 1.2 * sign;
+        ey = 0.4 + Math.sin(k * 1.7) * 0.5;
+        ez = lerp(25, 18, inOutCubic(k));
+        break;
+      }
+      case 'wall-close': {
+        // Close on one part of the artwork, drifting across it.
+        const cx = (random() - 0.5) * 9, cy = (random() - 0.5) * 9;
+        tx = cx + lerp(-1, 1, k) * sign;
+        ty = cy;
+        ex = tx;
+        ey = ty + 0.4;
+        ez = lerp(8.5, 6.5, inOutCubic(k));
+        fov = 38;
+        const vh = 2 * 7.5 * Math.tan(THREE.MathUtils.degToRad(fov / 2));
+        rect.set(cx, cy, vh * aspect, vh);
+        break;
+      }
+      case 'wall-dutch': {
+        ex = lerp(-7, 5, inOutCubic(k)) * sign;
+        ey = 2.5;
+        ez = 17;
+        roll = 0.24 * sign;
+        break;
+      }
+      case 'wall-edge': {
+        // Grazing the wall: it recedes in steep perspective and the flip waves read as a surface.
+        ex = 15 * sign;
+        ey = lerp(2, 5, k);
+        ez = 5;
+        tx = -3 * sign;
+        fov = 48;
+        break;
+      }
+      case 'wall-orbit': {
+        const a = THREE.MathUtils.degToRad(lerp(-34, 18, inOutCubic(k)) * sign);
+        ex = Math.sin(a) * 22;
+        ey = 2.5;
+        ez = Math.cos(a) * 22;
+        break;
+      }
+      case 'swarm-a': {
+        const a = infoPos * 0.11 * sign + random() * 6;
+        ex = Math.sin(a) * 15;
+        ey = 3 + Math.sin(infoPos * 0.2) * 2;
+        ez = Math.cos(a) * 15;
+        fov = 55;
+        break;
+      }
+      case 'swarm-b': {
+        ex = Math.sin(k * 3) * 2 * sign;
+        ey = 1.5;
+        ez = lerp(34, 2, inOutCubic(k));
+        tz = -20;
+        fov = 60;
+        roll = Math.sin(k * 2.4) * 0.12 * sign;
+        break;
+      }
+      case 'swarm-d': {
+        // Inside the cloud, shards rushing past the lens; far enough back from the wall to read the held line.
+        const a = random() * 6 + k * 1.2 * sign;
+        ex = Math.sin(a) * 3;
+        ey = 0.5;
+        ez = Math.cos(a) * 2.5 + 14;
+        tx = Math.sin(a + 1.2) * 3;
+        fov = 72;
+        break;
+      }
+      default: {
+        const a = infoPos * 0.08 * sign;
+        // The words lying flat read the right way up from where the camera was as the shot began.
+        holdYaw = music.beatPos(sStart) * 0.08 * sign;
+        ex = Math.sin(a) * 8;
+        ey = 26;
+        ez = Math.cos(a) * 8;
+        fov = 50;
+      }
+    }
+    poseLookAt(pos, quat, ex, ey, ez, tx, ty, tz);
+    if (roll) {
+      quat.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll));
+    }
+    return { fov, holdTilt, holdYaw };
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.material.uniforms;
@@ -258,90 +367,43 @@ export class Shatter implements MvScene {
     u.uKick.value = selective?lead.attack:Math.max(kick, (drop ? 0.85 : 0.4) * lead.attack);
     u.uHat.value = selective?lead.attack:hat;
     u.uShake.value = shake;
-    u.uPattern.value = Math.floor(rng((info.bar * 2654435761) ^ shot.seed)() * 6);
+    // 同场景连切时保持同一小节翻转波纹序列不跳变
+    u.uPattern.value = Math.floor(rng((info.bar * 2654435761) ^ firstSameSeed(shot))() * 6);
     u.uFlip.value = drop ? -1 : -0.25 + inOutCubic(Math.min(1, info.barPhase * 1.35)) * 1.6;
     u.uEdge.value = drop ? 0.55 : 0.28 + kick * 0.3;
-    // The overhead camera (the drop's usual one) sees the wall edge on: there the held words lie down.
-    u.uHoldTilt.value = ['wall', 'wall-close', 'wall-dutch', 'wall-edge', 'wall-orbit', 'swarm-a', 'swarm-b', 'swarm-d'].includes(shot.variant) ? 0 : 1;
 
     const cam = this.camera;
-    const k = clamp01(ctx.shotT / Math.max(0.3, shot.end - shot.start));
-    const random = rng(shot.seed);
-    const sign = random() < 0.5 ? -1 : 1;
-    let fov = 42, roll = 0;
-    const target = new THREE.Vector3(0, 0, 0);
-    // Where on the wall the words are set: the part the camera frames (the whole wall, or the patch it is close on).
+    const posB = new THREE.Vector3(), quatB = new THREE.Quaternion(), rectB = new THREE.Vector4();
+    const stB = this.evalShotCam(t, shot, posB, quatB, rectB, ctx.aspect, info.pos, music);
+    let fov = stB.fov, holdTilt = stB.holdTilt, holdYaw = stB.holdYaw;
     const rect = this.material.uniforms.uLyricRect.value as THREE.Vector4;
-    rect.set(0, 0, SIZE * Math.min(1, ctx.aspect), SIZE);
-    switch (shot.variant) {
-      case 'wall': {
-        cam.position.set(Math.sin(k * 2.2) * 1.2 * sign, 0.4 + Math.sin(k * 1.7) * 0.5, lerp(25, 18, inOutCubic(k)));
-        break;
-      }
-      case 'wall-close': {
-        // Close on one part of the artwork, drifting across it.
-        const cx = (random() - 0.5) * 9, cy = (random() - 0.5) * 9;
-        target.set(cx + lerp(-1, 1, k) * sign, cy, 0);
-        cam.position.set(target.x, target.y + 0.4, lerp(8.5, 6.5, inOutCubic(k)));
-        fov = 38;
-        const vh = 2 * 7.5 * Math.tan(THREE.MathUtils.degToRad(fov / 2));
-        rect.set(cx, cy, vh * ctx.aspect, vh);
-        break;
-      }
-      case 'wall-dutch': {
-        cam.position.set(lerp(-7, 5, inOutCubic(k)) * sign, 2.5, 17);
-        roll = 0.24 * sign;
-        break;
-      }
-      case 'wall-edge': {
-        // Grazing the wall: it recedes in steep perspective and the flip waves read as a surface.
-        cam.position.set(15 * sign, lerp(2, 5, k), 5);
-        target.set(-3 * sign, 0, 0);
-        fov = 48;
-        break;
-      }
-      case 'wall-orbit': {
-        const a = THREE.MathUtils.degToRad(lerp(-34, 18, inOutCubic(k)) * sign);
-        cam.position.set(Math.sin(a) * 22, 2.5, Math.cos(a) * 22);
-        break;
-      }
-      case 'swarm-a': {
-        const a = info.pos * 0.11 * sign + random() * 6;
-        cam.position.set(Math.sin(a) * 15, 3 + Math.sin(info.pos * 0.2) * 2, Math.cos(a) * 15);
-        fov = 55;
-        break;
-      }
-      case 'swarm-b': {
-        cam.position.set(Math.sin(k * 3) * 2 * sign, 1.5, lerp(34, 2, inOutCubic(k)));
-        target.set(0, 0, -20);
-        fov = 60;
-        roll = Math.sin(k * 2.4) * 0.12 * sign;
-        break;
-      }
-      case 'swarm-d': {
-        // Inside the cloud, shards rushing past the lens; far enough back from the wall to read the held line.
-        const a = random() * 6 + k * 1.2 * sign;
-        cam.position.set(Math.sin(a) * 3, 0.5, Math.cos(a) * 2.5 + 14);
-        target.set(Math.sin(a + 1.2) * 3, 0, 0);
-        fov = 72;
-        break;
-      }
-      default: {
-        const a = info.pos * 0.08 * sign;
-        // The words lying flat read the right way up from where the camera was as the shot began.
-        u.uHoldYaw.value = music.beatPos(shot.start) * 0.08 * sign;
-        cam.position.set(Math.sin(a) * 8, 26, Math.cos(a) * 8);
-        fov = 50;
-      }
+    rect.copy(rectB);
+
+    const blend = sameSceneBlend(t, shot, 1.25);
+    if (blend) {
+      const posA = new THREE.Vector3(), quatA = new THREE.Quaternion(), rectA = new THREE.Vector4();
+      const stA = this.evalShotCam(t, blend.prev, posA, quatA, rectA, ctx.aspect, info.pos, music);
+      const w = blend.w;
+      cam.position.lerpVectors(posA, posB, w);
+      if (quatA.dot(quatB) < 0) quatA.set(-quatA.x, -quatA.y, -quatA.z, -quatA.w);
+      cam.quaternion.slerpQuaternions(quatA, quatB, w);
+      fov = lerp(stA.fov, fov, w);
+      holdTilt = lerp(stA.holdTilt, holdTilt, w);
+      holdYaw = lerp(stA.holdYaw, holdYaw, w);
+      rect.lerpVectors(rectA, rectB, w);
+    } else {
+      cam.position.copy(posB);
+      cam.quaternion.copy(quatB);
     }
+    u.uHoldTilt.value = holdTilt;
+    u.uHoldYaw.value = holdYaw;
+
     // Downbeat punch & lead attack punch.
     fov -= info.inBar < 1 ? punch(info.inBar, 1 / 5, 0.12) * 3 * (0.5 + energy) : 0;
     fov += (drop ? 8 : 4) * lead.attack;
     cam.fov = fov;
     cam.updateProjectionMatrix();
-    cam.up.set(0, 1, 0);
-    cam.lookAt(target);
-    if (roll) cam.rotateZ(roll);
+    cam.updateMatrixWorld();
 
     this.dust.material.opacity = 0.2 + hat * 0.5 + e * 0.2;
     this.dust.rotation.y = t * 0.02;

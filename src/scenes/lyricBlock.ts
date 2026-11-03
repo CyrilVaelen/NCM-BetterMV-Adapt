@@ -630,6 +630,11 @@ export class Stand {
     return tmpP.distanceTo(this.camFrom) < this.o.reach * 0.05 && tmpF.set(0, 0, -1).applyQuaternion(tmpQ).dot(this.dirFrom) > 0.996;
   }
 
+  /** 刷新跨同场景切点后仍在复用的歌词台的平滑相机闭包，确保跟随歌词与距离推算同步衔接。 */
+  setPose(pose: PoseFn): void {
+    this.pose = pose;
+  }
+
   /** The block's middle at t. */
   place(t: number, out: THREE.Vector3): THREE.Vector3 {
     if (this.follow) {
@@ -675,6 +680,7 @@ export class Stands {
     // is the one it was set for. (Kept for the whole run, the line stood in the first camera's view and the city's
     // last seconds before a chorus went without words — the user: “有时歌词会消失”.)
     if (s && !s.sameCamera(pose)) s = undefined;
+    if (s) s.setPose(pose);
     if (!s) {
       if (this.map.size > 64) this.map.clear();
       const from = Math.max(shotStart, st.line.start - 0.15);

@@ -14,6 +14,7 @@ import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { lastIndex, type Music } from '../director/music.ts';
 import type { LyricLine, SectionLabel } from '../types.ts';
 import { COLS, Spectrogram, foregroundBand } from './viz.ts';
+import { blendCameraPose, evalChainPose, poseLookAt, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 /** Pillars per side of the grid (the disc takes the circle inside it). */
 const N = 256;
@@ -437,32 +438,28 @@ export class Pillars implements MvScene {
 
   /** orbit: oblique, slowly circling; low: across the disc, the pillars large in front; top: from above, turning. */
   private pose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
-    const random = rng(shot.seed);
+    const start = shot.run?.start ?? shot.start;
+    const random = rng(stableShotSeed(shot));
     const th0 = random() * Math.PI * 2, dir = random() < 0.5 ? -1 : 1;
-    const k = t - shot.start;
-    const target = new THREE.Vector3(0, DOME * 0.5, 0);
+    const k = Math.max(0, t - start);
     if (shot.variant === 'low') {
       const th = th0 + dir * k * 0.07;
-      pos.set(Math.sin(th) * R * 1.05, R * 0.26 + Math.sin(k * 0.3) * 0.8, Math.cos(th) * R * 1.05);
-      target.set(-Math.sin(th) * R * 0.2, 0, -Math.cos(th) * R * 0.2);
+      poseLookAt(pos, quat, Math.sin(th) * R * 1.05, R * 0.26 + Math.sin(t * 0.3) * 0.8, Math.cos(th) * R * 1.05, -Math.sin(th) * R * 0.2, 0, -Math.cos(th) * R * 0.2);
     } else if (shot.variant === 'top') {
       const th = th0 + dir * k * 0.05;
-      pos.set(Math.sin(th) * R * 0.35, R * 1.55, Math.cos(th) * R * 0.35);
-      target.set(-Math.sin(th) * R * 0.08, 0, -Math.cos(th) * R * 0.08);
+      poseLookAt(pos, quat, Math.sin(th) * R * 0.35, R * 1.55, Math.cos(th) * R * 0.35, -Math.sin(th) * R * 0.08, 0, -Math.cos(th) * R * 0.08);
     } else {
       const th = th0 + dir * k * 0.045;
       const d = R * (1.75 - Math.min(1, k / 20) * 0.12);
-      pos.set(Math.sin(th) * d, R * 0.72, Math.cos(th) * d);
+      poseLookAt(pos, quat, Math.sin(th) * d, R * 0.72, Math.cos(th) * d, 0, DOME * 0.5, 0);
     }
-    const m = new THREE.Matrix4().lookAt(pos, target, new THREE.Vector3(0, 1, 0));
-    quat.setFromRotationMatrix(m);
   }
 
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const cam = this.camera;
-    this.pose(t, shot, cam.position, cam.quaternion);
-    cam.updateMatrixWorld();
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(tau, s, pp, qq);
+    blendCameraPose(rawPose, t, shot, cam, 1.45);
     (this.u.uCam.value as THREE.Vector3).copy(cam.position);
     const sec = shot.section;
     const loud = LOUD.has(sec.label);
@@ -487,9 +484,10 @@ export class Pillars implements MvScene {
     // The words: each line one block standing over the disc, where the slowly circling camera keeps it in view while
     // it is sung (lyricBlock.ts); the camera turning past it shows it standing in the world.
     const view = { reach: 30, far: 42, fov: cam.fov, aspect: cam.aspect, em: this.soft ? 0.064 : 0.068 };
-    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(time, shot, pp, qq);
+    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.45);
     this.blocks.update(ctx.lyrics, t, sec.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, pose, 2.6, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const s = this.stands.get(anchorStart, st, leave, pose, 2.6, view, size);
       s.apply(time, root);
       return smooth((s.depth(time) - 8) / 6);
     });

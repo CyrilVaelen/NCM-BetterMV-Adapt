@@ -20,6 +20,7 @@ import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { INK_BLACK, ricePaper } from './ink.ts';
 import type { Music } from '../director/music.ts';
 import type { LyricLine, SectionLabel } from '../types.ts';
+import { blendCameraPose, evalChainPose, sameSceneBlend, standShotStart } from './cameraBlend.ts';
 
 /** Canvas side, world units (the cover, square). */
 const S = 480;
@@ -839,8 +840,8 @@ export class CanvasScene implements MvScene {
     // (The paint follows the song's time through keepUp, not this: a shot held on its first frame under a
     // transition is updated at a later time, and would set the maps forward and back every frame.)
     const cam = this.camera;
-    this.pose(t, music, shot, cam.position, cam.quaternion);
-    cam.updateMatrixWorld();
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(tau, music, s, pp, qq);
+    blendCameraPose(rawPose, t, shot, cam, 1.4);
     const sec = music.section(t);
     const loud = LOUD.has(sec.label);
 
@@ -853,7 +854,10 @@ export class CanvasScene implements MvScene {
     this.halo.quaternion.copy(cam.quaternion);
     this.halo.scale.setScalar(5 + kick * 3 + voice * 2.5 + b.w * 0.06);
     (this.halo.material as THREE.ShaderMaterial).uniforms.uI.value = 0.4 + kick * 0.7 + voice * 0.45;
-    const r = this.revealAt(t, shot);
+    const blend = sameSceneBlend(t, shot, 1.4);
+    const rCurr = shot.variant === 'map' ? 1 : this.revealAt(t, shot);
+    const rPrev = blend ? (blend.prev.variant === 'map' ? 1 : this.revealAt(t, blend.prev)) : rCurr;
+    const r = blend ? lerp(rPrev, rCurr, blend.w) : rCurr;
     // (On paper there is no point of light: the wet head of the stroke shows the brush.)
     this.brush.visible = this.halo.visible = r < 0.98 && !this.ink;
 
@@ -869,9 +873,10 @@ export class CanvasScene implements MvScene {
     // The words: each line one block standing over the canvas ahead, where the camera following the brush will have
     // it in view while it is sung (lyricBlock.ts); it comes up to it as the line ends.
     const view = { reach: 24, far: 34, fov: cam.fov, aspect: cam.aspect, em: this.soft ? 0.064 : 0.068 };
-    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => this.pose(time, music, shot, pp, qq);
+    const pose = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.4);
     this.blocks.update(ctx.lyrics, t, sec.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, pose, 2.3, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const s = this.stands.get(anchorStart, st, leave, pose, 2.3, view, size);
       s.apply(time, root);
       return smooth((s.depth(time) - 6) / 5);
     });

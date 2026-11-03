@@ -14,6 +14,7 @@ import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
 import { Flight, hue, u3 } from './fractal.ts';
 import { lastIndex } from '../director/music.ts';
+import { blendCameraPose, evalChainPose, poseLookAt, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 const NB = 64;
 const RING = 1024;
@@ -190,23 +191,23 @@ export class Channel implements MvScene {
   /** World z at song time t (flying towards −z). */
   private z(t: number): number { return -this.flight.at(t) * this.cruise; }
 
-  private pose(t: number, shot: Shot): void {
-    const random = rng(shot.seed);
+  private evalPose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
-    const cam = this.camera, z = this.z(t - LEAD);
+    const z = this.z(t - LEAD);
     let x = Math.sin(t * 0.37 + phase) * 0.25, y = Math.sin(t * 0.29 + phase * 2) * 0.2, roll = 0;
     if (shot.variant === 'wall') { x = side * R * 0.5; y = -R * 0.12; }
     else if (shot.variant === 'roll') roll = side * this.flight.at(t) * 0.05;
-    cam.position.set(x, y, z);
-    cam.up.set(0, 1, 0);
-    cam.lookAt(x * 0.3, y * 0.3, z - 20);
-    cam.rotateZ(roll + 0.08 * Math.sin(t * 0.21 + phase));
-    cam.updateMatrixWorld();
+    poseLookAt(pos, quat, x, y, z, x * 0.3, y * 0.3, z - 20);
+    const zRot = roll + 0.08 * Math.sin(t * 0.21 + phase);
+    const half = zRot * 0.5;
+    quat.multiply(new THREE.Quaternion(0, 0, Math.sin(half), Math.cos(half)));
   }
 
   update(ctx: FrameCtx): void {
     const { t, shot } = ctx;
-    this.pose(t, shot);
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => this.evalPose(tau, s, pp, qq);
+    blendCameraPose(rawPose, t, shot, this.camera, 1.2);
     const now = t * COLS, step = COLS / RATE;
     const c0 = Math.floor(now / step) * step - BACK * COLS;
     this.ring.sync(c0 - 2, c0 + ROWS * step + 2);
@@ -247,18 +248,14 @@ export class Channel implements MvScene {
 
     // The words: each line one block standing down the tube, where the flight has it in view while it is sung, turned
     // to the camera as it rolls so it reads level (lyricBlock.ts); the camera flies through it as the next comes up.
-    // (pose() moves the camera itself: it is borrowed for the times asked about, and put back.)
-    const keepP = this.camera.position.clone(), keepQ = this.camera.quaternion.clone();
-    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => { this.pose(time, shot); pp.copy(this.camera.position); qq.copy(this.camera.quaternion); };
+    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.2);
     const view = { reach: 9, far: 17, fov: this.camera.fov, aspect: this.camera.aspect, em: this.soft ? 0.064 : 0.068, level: true };
     this.blocks.update(ctx.lyrics, t, sec.energy, (st, time, root, leave, size) => {
-      const s = this.stands.get(shot.start, st, leave, at, 0.95, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const s = this.stands.get(anchorStart, st, leave, at, 0.95, view, size);
       s.apply(time, root);
       return smooth((s.depth(time) - 1.5) / 3);
     });
-    this.camera.position.copy(keepP);
-    this.camera.quaternion.copy(keepQ);
-    this.camera.updateMatrixWorld();
 
     ctx.fx.bloom = (this.soft ? 0.5 : loud ? 0.55 : 0.6) + (sec.label === 'drop' ? 0.22 : 0.08) * lead.attack;
     ctx.fx.ca = (sec.label === 'drop' ? 0.35 : 0.12) * lead.attack;

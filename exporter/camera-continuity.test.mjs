@@ -1,0 +1,724 @@
+// 同场景连续切镜（含单开「暗涌水廊」与全场景池）的相机连续性与纯函数进度条跳转（seek）回归测试。
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createServer } from 'vite';
+import * as THREE from 'three';
+
+const PROJECT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// 为无头 Node 环境提供最小 Canvas 2D 桩，使 3D 歌词纹理与印章生成在单元测试中可完整运行
+if (typeof globalThis.document === 'undefined') {
+  const makeCtx2d = (canvas) => ({
+    canvas,
+    font: '16px sans-serif',
+    fillStyle: '#fff',
+    strokeStyle: '#000',
+    lineWidth: 1,
+    textBaseline: 'alphabetic',
+    textAlign: 'left',
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
+    shadowColor: 'transparent',
+    shadowBlur: 0,
+    save() {},
+    restore() {},
+    clearRect() {},
+    fillRect() {},
+    strokeRect() {},
+    beginPath() {},
+    closePath() {},
+    moveTo() {},
+    lineTo() {},
+    arc() {},
+    fill() {},
+    stroke() {},
+    clip() {},
+    scale() {},
+    translate() {},
+    rotate() {},
+    setTransform() {},
+    drawImage() {},
+    fillText() {},
+    strokeText() {},
+    createLinearGradient() {
+      return { addColorStop() {} };
+    },
+    createRadialGradient() {
+      return { addColorStop() {} };
+    },
+    getImageData(_x, _y, w, h) {
+      return { data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h };
+    },
+    putImageData() {},
+    measureText(str) {
+      const len = Array.from(String(str ?? '')).length;
+      return {
+        width: Math.max(8, len * 24),
+        actualBoundingBoxAscent: 22,
+        actualBoundingBoxDescent: 6,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: Math.max(8, len * 24),
+      };
+    },
+  });
+  globalThis.document = {
+    createElement(tag) {
+      if (tag === 'canvas') {
+        const c = {
+          width: 64,
+          height: 64,
+          style: {},
+          getContext(kind) {
+            return kind === '2d' ? makeCtx2d(c) : null;
+          },
+        };
+        return c;
+      }
+      return { style: {}, appendChild() {}, removeChild() {}, setAttribute() {} };
+    },
+    fonts: { add() {}, load: async () => [] },
+  };
+}
+
+let vite;
+let mods;
+
+before(async () => {
+  vite = await createServer({
+    root: PROJECT,
+    logLevel: 'silent',
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: 'custom',
+  });
+  const load = (p) => vite.ssrLoadModule(p);
+  const [
+    musicMod,
+    lyricsMod,
+    directorMod,
+    styleMod,
+    engineMod,
+    armillaryMod,
+    catalogMod,
+    blendMod,
+    reliefMod,
+    shatterMod,
+    dioramaMod,
+    bokehMod,
+    tunnelMod,
+    driveMod,
+    kaleidoMod,
+    flipMod,
+    ringsMod,
+    posterMod,
+    ridgesMod,
+    halftoneMod,
+    particlesMod,
+    typewallMod,
+    inkMod,
+    armSceneMod,
+    cardsMod,
+    debugMod,
+    subdivideMod,
+    alignMod,
+    scopeMod,
+    vinylMod,
+    cloudsMod,
+    cityMod,
+    auroraMod,
+    canvasMod,
+    pillarsMod,
+    rippleMod,
+    channelMod,
+    orbMod,
+    mengerMod,
+    sierpinskiMod,
+    cantorMod,
+    papercutMod,
+    rainMod,
+    lanternsMod,
+    neonMod,
+    underwaterMod,
+    sunsetMod,
+    phoenixMod,
+    velvetMod,
+    fountainMod,
+    starryMod,
+    laserMod,
+    blackholeMod,
+  ] = await Promise.all([
+    load('/src/director/music.ts'),
+    load('/src/director/lyrics.ts'),
+    load('/src/director/director.ts'),
+    load('/src/style/style.ts'),
+    load('/src/render/engine.ts'),
+    load('/src/sigil/armillary.ts'),
+    load('/src/scenes/catalog.ts'),
+    load('/src/scenes/cameraBlend.ts'),
+    load('/src/scenes/relief.ts'),
+    load('/src/scenes/shatter.ts'),
+    load('/src/scenes/diorama.ts'),
+    load('/src/scenes/bokeh.ts'),
+    load('/src/scenes/tunnel.ts'),
+    load('/src/scenes/drive.ts'),
+    load('/src/scenes/kaleido.ts'),
+    load('/src/scenes/flip.ts'),
+    load('/src/scenes/rings.ts'),
+    load('/src/scenes/poster.ts'),
+    load('/src/scenes/ridges.ts'),
+    load('/src/scenes/halftone.ts'),
+    load('/src/scenes/particles.ts'),
+    load('/src/scenes/typewall.ts'),
+    load('/src/scenes/ink.ts'),
+    load('/src/scenes/armillary.ts'),
+    load('/src/scenes/cards.ts'),
+    load('/src/scenes/debug.ts'),
+    load('/src/scenes/subdivide.ts'),
+    load('/src/scenes/align.ts'),
+    load('/src/scenes/scope.ts'),
+    load('/src/scenes/vinyl.ts'),
+    load('/src/scenes/clouds.ts'),
+    load('/src/scenes/city.ts'),
+    load('/src/scenes/aurora.ts'),
+    load('/src/scenes/canvas.ts'),
+    load('/src/scenes/pillars.ts'),
+    load('/src/scenes/ripple.ts'),
+    load('/src/scenes/channel.ts'),
+    load('/src/scenes/orb.ts'),
+    load('/src/scenes/menger.ts'),
+    load('/src/scenes/sierpinski.ts'),
+    load('/src/scenes/cantor.ts'),
+    load('/src/scenes/papercut.ts'),
+    load('/src/scenes/rain.ts'),
+    load('/src/scenes/lanterns.ts'),
+    load('/src/scenes/neon.ts'),
+    load('/src/scenes/underwater.ts'),
+    load('/src/scenes/sunset.ts'),
+    load('/src/scenes/phoenix.ts'),
+    load('/src/scenes/velvet.ts'),
+    load('/src/scenes/fountain.ts'),
+    load('/src/scenes/starry.ts'),
+    load('/src/scenes/laser.ts'),
+    load('/src/scenes/blackhole.ts'),
+  ]);
+  mods = {
+    Music: musicMod.Music,
+    LyricTrack: lyricsMod.LyricTrack,
+    Director: directorMod.Director,
+    linkSameSceneShots: directorMod.linkSameSceneShots,
+    toTimedShot: directorMod.toTimedShot,
+    planShots: directorMod.planShots,
+    STYLES: styleMod.STYLES,
+    defaultFx: engineMod.defaultFx,
+    armillarySpec: armillaryMod.armillarySpec,
+    SCENES: catalogMod.SCENES,
+    blendCameraPose: blendMod.blendCameraPose,
+    poseLookAt: blendMod.poseLookAt,
+    sameSceneBlend: blendMod.sameSceneBlend,
+    Relief: reliefMod.Relief,
+    Shatter: shatterMod.Shatter,
+    Diorama: dioramaMod.Diorama,
+    Bokeh: bokehMod.Bokeh,
+    Tunnel: tunnelMod.Tunnel,
+    Drive: driveMod.Drive,
+    Kaleido: kaleidoMod.Kaleido,
+    Flip: flipMod.Flip,
+    Rings: ringsMod.Rings,
+    Poster: posterMod.Poster,
+    Ridges: ridgesMod.Ridges,
+    Halftone: halftoneMod.Halftone,
+    Particles: particlesMod.Particles,
+    TypeWall: typewallMod.TypeWall,
+    Ink: inkMod.Ink,
+    ArmillaryScene: armSceneMod.ArmillaryScene,
+    CardsScene: cardsMod.CardsScene,
+    DebugScene: debugMod.DebugScene,
+    SubdivideScene: subdivideMod.SubdivideScene,
+    AlignScene: alignMod.AlignScene,
+    ScopeScene: scopeMod.ScopeScene,
+    Vinyl: vinylMod.Vinyl,
+    Clouds: cloudsMod.Clouds,
+    City: cityMod.City,
+    Aurora: auroraMod.Aurora,
+    CanvasScene: canvasMod.CanvasScene,
+    Pillars: pillarsMod.Pillars,
+    Ripple: rippleMod.Ripple,
+    Channel: channelMod.Channel,
+    Orb: orbMod.Orb,
+    Menger: mengerMod.Menger,
+    Sierpinski: sierpinskiMod.Sierpinski,
+    Cantor: cantorMod.Cantor,
+    PaperCut: papercutMod.PaperCut,
+    RainScene: rainMod.RainScene,
+    LanternScene: lanternsMod.LanternScene,
+    NeonScene: neonMod.NeonScene,
+    UnderwaterScene: underwaterMod.UnderwaterScene,
+    SunsetScene: sunsetMod.SunsetScene,
+    PhoenixScene: phoenixMod.PhoenixScene,
+    VelvetScene: velvetMod.VelvetScene,
+    FountainScene: fountainMod.FountainScene,
+    StarryScene: starryMod.StarryScene,
+    LaserScene: laserMod.LaserScene,
+    BlackHoleScene: blackholeMod.BlackHoleScene,
+  };
+});
+
+after(async () => {
+  if (vite) await vite.close();
+});
+
+/** 构造具有代表性段落起伏（含非整数小节余拍与加速段）的测试歌曲分析数据。 */
+function buildMockFixture() {
+  const { Music, LyricTrack, armillarySpec } = mods;
+  const duration = 98;
+  const bpm = 120;
+  const beatLen = 60 / bpm;
+  const meter = 4;
+  const beats = [];
+  const beatInBar = [];
+  const tempo = [];
+  const downbeats = [];
+  for (let i = 0; i * beatLen <= duration; i++) {
+    const t = +(i * beatLen).toFixed(4);
+    beats.push(t);
+    beatInBar.push(i % meter);
+    tempo.push(bpm);
+    if (i % meter === 0) downbeats.push(t);
+  }
+  // 故意构造含“4.5 小节”（如 verse 8..17s，末尾剩半小节余拍）与“build 升入 drop”的段落，复现切点边界场景
+  const sections = [
+    { start: 0, end: 8, label: 'intro', energy: 0.28, group: 0, vocal: false },
+    { start: 8, end: 17, label: 'verse', energy: 0.46, group: 1, vocal: true },
+    { start: 17, end: 33, label: 'build', energy: 0.62, group: 2, vocal: true },
+    { start: 33, end: 57, label: 'drop', energy: 0.92, group: 3, vocal: false },
+    { start: 57, end: 74, label: 'chorus', energy: 0.78, group: 4, vocal: true },
+    { start: 74, end: 88, label: 'bridge', energy: 0.42, group: 5, vocal: true },
+    { start: 88, end: duration, label: 'outro', energy: 0.25, group: 6, vocal: false },
+  ];
+  const envFps = 30;
+  const envLen = Math.ceil(duration * envFps);
+  const makeCurve = (base, amp, freq) => {
+    const arr = new Float32Array(envLen);
+    for (let i = 0; i < envLen; i++) {
+      const t = i / envFps;
+      const sec = sections.find((s) => t >= s.start && t < s.end) ?? sections[sections.length - 1];
+      arr[i] = Math.max(0.02, Math.min(1, base * sec.energy + amp * (0.5 + 0.5 * Math.sin(t * freq))));
+    }
+    return arr;
+  };
+  const kicks = [];
+  const snares = [];
+  const hats = [];
+  const accents = [];
+  for (let i = 0; i < beats.length; i++) {
+    const b = beats[i];
+    kicks.push([b, 0.85]);
+    if (i % 2 === 1) snares.push([b, 0.75]);
+    if (i % meter === 0) accents.push([b, 0.9]);
+    hats.push([b + beatLen * 0.5, 0.55]);
+  }
+  const analysis = {
+    version: 1,
+    duration,
+    bpm,
+    namedBpm: bpm,
+    meter,
+    beats,
+    beatInBar,
+    tempo,
+    downbeats,
+    sections,
+    hits: { kick: kicks, snare: snares, hat: hats, accent: accents },
+    env: {
+      fps: envFps,
+      rms: makeCurve(0.85, 0.15, 2.3),
+      low: makeCurve(0.8, 0.2, 1.9),
+      mid: makeCurve(0.7, 0.2, 3.1),
+      high: makeCurve(0.55, 0.2, 4.7),
+      onset: makeCurve(0.4, 0.25, 6.2),
+    },
+  };
+  const music = new Music(analysis);
+
+  const lines = [];
+  for (let s = 4; s < duration - 6; s += 5.5) {
+    const w0 = { text: '暗涌', start: s, end: s + 1.2 };
+    const w1 = { text: '流光', start: s + 1.25, end: s + 2.6 };
+    const w2 = { text: '夜色', start: s + 2.65, end: s + 4.1 };
+    lines.push({
+      start: s,
+      end: s + 4.2,
+      text: '暗涌流光夜色',
+      timedWords: true,
+      translation: 'Velvet current in the night',
+      words: [w0, w1, w2],
+    });
+  }
+  const lyrics = new LyricTrack(lines);
+
+  const coverSize = 32;
+  const coverPixels = new Uint8ClampedArray(coverSize * coverSize * 4);
+  for (let y = 0; y < coverSize; y++) {
+    for (let x = 0; x < coverSize; x++) {
+      const o = (y * coverSize + x) * 4;
+      const cx = x / coverSize - 0.5;
+      const cy = y / coverSize - 0.5;
+      const r = Math.hypot(cx, cy);
+      coverPixels[o] = r < 0.28 ? 225 : 24;
+      coverPixels[o + 1] = r < 0.28 ? 145 : 32;
+      coverPixels[o + 2] = r < 0.28 ? 72 : 58;
+      coverPixels[o + 3] = 255;
+    }
+  }
+  const cover = new THREE.DataTexture(coverPixels, coverSize, coverSize, THREE.RGBAFormat);
+  cover.needsUpdate = true;
+
+  const palette = {
+    ink: new THREE.Color(0.03, 0.04, 0.06),
+    paper: new THREE.Color(0.94, 0.92, 0.88),
+    signal: new THREE.Color(0.92, 0.52, 0.22),
+    accent: new THREE.Color(0.24, 0.62, 0.88),
+    light: false,
+    backdrop: new THREE.Color(0.03, 0.04, 0.06),
+    graphic: true,
+    complexity: 0.12,
+    mono: false,
+    css: { ink: '#080a0f', paper: '#f0ebe0', signal: '#eb8538', accent: '#3d9ee0' },
+  };
+
+  const sampleRate = 8000;
+  const totalSamples = sampleRate * 12;
+  const left = new Int16Array(totalSamples);
+  const right = new Int16Array(totalSamples);
+  for (let i = 0; i < totalSamples; i++) {
+    left[i] = Math.round(Math.sin(i * 0.09) * 14000);
+    right[i] = Math.round(Math.cos(i * 0.09) * 14000);
+  }
+  const stereo = { left, right, rate: sampleRate };
+
+  const init = {
+    cover,
+    coverPixels,
+    coverSize,
+    palette,
+    music,
+    lyrics,
+    aspect: 16 / 9,
+    title: '暗涌水廊测试曲',
+    artists: ['BetterMV'],
+    stereo,
+    xyMusic: false,
+    armillary: armillarySpec(analysis, 1001),
+    seed: 0x9e3779b9,
+  };
+
+  return { analysis, music, lyrics, palette, cover, init };
+}
+
+/** 计算两个单位四元数之间的最小旋转夹角（弧度，0..π）。 */
+function quatAngle(a, b) {
+  const dot = Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w));
+  return 2 * Math.acos(dot);
+}
+
+/** 计算两个四元数（忽略 ±q 符号）的分量欧氏差。 */
+function quatComponentDiff(a, b) {
+  const sign = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0 ? -1 : 1;
+  return Math.hypot(a.x - sign * b.x, a.y - sign * b.y, a.z - sign * b.z, a.w - sign * b.w);
+}
+
+test('cameraBlend 基础算子：poseLookAt 与最短球面弧插值在切点严格连续', () => {
+  const { poseLookAt, blendCameraPose, sameSceneBlend, linkSameSceneShots } = mods;
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const refCam = new THREE.PerspectiveCamera(45, 16 / 9, 0.1, 500);
+  refCam.up.set(0, 0, 1);
+  refCam.position.set(4.2, -7.5, 3.1);
+  refCam.lookAt(0.5, 0.1, 0);
+  poseLookAt(pos, quat, 4.2, -7.5, 3.1, 0.5, 0.1, 0, 0, 0, 1);
+  assert.ok(pos.distanceTo(refCam.position) < 1e-9);
+  assert.ok(quatComponentDiff(quat, refCam.quaternion) < 1e-9);
+
+  // 构造两个反号四元数机位，验证跨越 cutStart 前后 0.1ms 无翻滚跳变
+  const sec = { start: 0, end: 16, label: 'chorus', energy: 0.8, group: 0, vocal: true };
+  const s1 = { index: 0, start: 0, end: 8, scene: 'velvet', variant: 'platter', section: sec, sectionIndex: 0, seed: 11, short: false };
+  const s2 = { index: 1, start: 8, end: 16, scene: 'velvet', variant: 'sanctuary', section: sec, sectionIndex: 0, seed: 22, short: false };
+  linkSameSceneShots([s1, s2]);
+
+  const evalTest = (t, s, outPos, outQuat) => {
+    if (s.variant === 'platter') {
+      poseLookAt(outPos, outQuat, 0.5, 3.8, -t * 2.3 + 2.4, 0, 0.5, -t * 2.3 - 3.5);
+      return 48;
+    }
+    poseLookAt(outPos, outQuat, -1.6, 0.72, -t * 2.3 + 4.8, 0.2, 2.6, -t * 2.3 - 10.5);
+    outQuat.set(-outQuat.x, -outQuat.y, -outQuat.z, -outQuat.w); // 故意反号测试双覆盖最短弧保护
+    return 54;
+  };
+
+  const cam = new THREE.PerspectiveCamera(48, 16 / 9, 0.1, 500);
+  blendCameraPose(evalTest, 8 - 1e-4, s1, cam, 1.5);
+  const beforePos = cam.position.clone();
+  const beforeQuat = cam.quaternion.clone();
+  const beforeFov = cam.fov;
+
+  blendCameraPose(evalTest, 8 + 1e-4, s2, cam, 1.5);
+  assert.ok(cam.position.distanceTo(beforePos) < 0.005, '切点前后位置必须平滑衔接');
+  assert.ok(quatAngle(cam.quaternion, beforeQuat) < 0.002, '切点前后朝向四元数必须走最短弧平滑衔接');
+  assert.ok(Math.abs(cam.fov - beforeFov) < 0.01, '切点前后 FOV 必须平滑衔接');
+  assert.equal(sameSceneBlend(9.8, s2, 1.5), null, '超出平滑窗口后应完全收敛至目标机位');
+});
+
+test('Director 镜头调度：消除段尾硬切碎镜、正确挂接同场景 prevSame 链并移除同场景甩镜干扰', () => {
+  const { Director, planShots, toTimedShot, STYLES, SCENES, VelvetScene } = mods;
+  const { music, lyrics, palette, cover, init } = buildMockFixture();
+  const allSceneIds = SCENES.map((s) => s.id);
+
+  // 1. 遍历全部 5 种母风格验证常规混排调度
+  for (const style of Object.values(STYLES)) {
+    const shots = planShots(music, style, 0x12345678, { graphic: true, lyrics: true });
+    assert.ok(shots.length >= 6);
+    for (let i = 0; i < shots.length; i++) {
+      const sh = shots[i];
+      if (!sh.run) {
+        assert.ok(sh.end - sh.start >= 0.84, `风格 ${style.id} 存在非加速串的亚秒级残片镜头: ${sh.scene} len=${sh.end - sh.start}`);
+      }
+      if (i > 0 && shots[i - 1].scene === sh.scene) {
+        assert.ok(sh.prevSame, `同场景连续镜头必须挂接 prevSame (${sh.scene})`);
+        const expectedPrev = toTimedShot(shots[i - 1]);
+        assert.equal(sh.prevSame.scene, expectedPrev.scene);
+        assert.equal(sh.prevSame.variant, expectedPrev.variant);
+        assert.equal(sh.prevSame.start, expectedPrev.start);
+        assert.equal(sh.prevSame.end, expectedPrev.end);
+      } else {
+        assert.equal(sh.prevSame, undefined, `跨场景镜头不应挂接 prevSame`);
+      }
+    }
+  }
+
+  // 2. 验证用户单开「暗涌水廊」(velvet) 时的全曲同场景连续调度
+  const offAllExceptVelvet = new Set(allSceneIds.filter((id) => id !== 'velvet'));
+  const velvetShots = planShots(music, STYLES.velvet, 0xabcdef01, { graphic: false, lyrics: true }, offAllExceptVelvet);
+  const velvetScene = new VelvetScene(init, 'velvet');
+  const director = new Director(
+    STYLES.velvet,
+    velvetShots,
+    { velvet: velvetScene },
+    music,
+    lyrics,
+    palette,
+    init.armillary,
+    cover,
+    false,
+    [],
+  );
+
+  // 检查 build 段末尾（17..33s）暗涌水廊不会产生每拍碎切，且所有相邻 velvet 镜头无 whip 甩镜或故障跳变
+  let velvetPairs = 0;
+  for (let i = 1; i < director.shots.length; i++) {
+    const prev = director.shots[i - 1];
+    const curr = director.shots[i];
+    if (prev.scene === 'velvet' && curr.scene === 'velvet') {
+      velvetPairs++;
+      assert.ok(curr.prevSame, '相邻暗涌水廊镜头必须挂接 prevSame');
+      assert.equal(curr.run, undefined, '暗涌水廊在加速段应合并保持连续运镜，不产生每拍碎切');
+      assert.ok(curr.end - curr.start >= 0.84, '暗涌水廊镜头时长不应存在亚秒碎切');
+      const f = director.frame((curr.cutStart ?? curr.start) + 0.01, 1 / 60, 16 / 9);
+      assert.equal(f.fx.smearX, 0, '同场景平滑切点不应叠加横向 whip 甩镜');
+      assert.equal(f.fx.smearY, 0, '同场景平滑切点不应叠加纵向 whip 甩镜');
+      assert.equal(f.fx.glitch, 0, '同场景平滑切点不应叠加 glitch 故障跳变');
+    }
+  }
+  assert.ok(velvetPairs >= 3, '单开暗涌水廊时应形成多段同场景连续切镜链');
+
+  // 3. 验证城市天际（City）跨城区远距同场景切镜由导演层施加柔和暗场呼吸衔接，避免飞穿摩天楼硬闪
+  const citySec = music.a.sections[1];
+  const cityShots = [
+    { scene: 'city', start: 8, end: 12, section: citySec, sectionIndex: 1, variant: 'high', seed: 101 },
+    { scene: 'city', start: 12, end: 17, section: citySec, sectionIndex: 1, variant: 'horizon', seed: 202 },
+  ];
+  const cityDirector = new Director(
+    STYLES.pulse,
+    cityShots,
+    { city: new mods.City(init, 'pulse') },
+    music,
+    lyrics,
+    palette,
+    init.armillary,
+    cover,
+    false,
+    [],
+  );
+  const cityCutFrame = cityDirector.frame(12.01, 1 / 60, 16 / 9);
+  assert.ok(cityCutFrame.fx.fade > 0.85, 'City 跨城区远距同场景切镜切点应有柔和暗场呼吸遮蔽');
+});
+
+test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随机进度条 Seek 纯函数一致性', () => {
+  const m = mods;
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const sceneSpecs = [
+    ['velvet', () => new m.VelvetScene(init, 'velvet'), ['lounge', 'skim', 'platter', 'gallery', 'skim', 'lounge']],
+    ['sunset', () => new m.SunsetScene(init, 'pulse'), ['horizon', 'beam', 'drift', 'halo', 'horizon']],
+    ['phoenix', () => new m.PhoenixScene(init, 'pulse'), ['stage', 'soar', 'sonic', 'altar', 'stage']],
+    ['underwater', () => new m.UnderwaterScene(init, 'pulse'), ['canyon', 'dive', 'orbit', 'abyss', 'canyon']],
+    ['blackhole', () => new m.BlackHoleScene(init, 'pulse'), ['observatory', 'glide', 'horizon', 'astrolabe', 'observatory']],
+    ['aurora', () => new m.Aurora(init, 'pulse'), ['wide', 'lake', 'up', 'wide']],
+    ['fountain', () => new m.FountainScene(init, 'pulse'), ['courtyard', 'orbit', 'skim', 'crown', 'courtyard']],
+    ['starry', () => new m.StarryScene(init, 'pulse'), ['mirror', 'glide', 'zenith', 'astrolabe', 'mirror']],
+    ['laser', () => new m.LaserScene(init, 'pulse'), ['arena', 'rig', 'booth', 'tunnel', 'arena']],
+    ['clouds', () => new m.Clouds(init, 'pulse'), ['over', 'rise', 'skim', 'over']],
+    ['clouds-ink', () => new m.Clouds(init, 'ink'), ['over', 'rise', 'skim', 'over']],
+    ['pillars', () => new m.Pillars(init, 'pulse', init.seed), ['orbit', 'top', 'low', 'orbit']],
+    ['lanterns', () => new m.LanternScene(init), ['shore', 'rise', 'wide', 'shore']],
+    ['ridges', () => new m.Ridges(init, 'pulse'), ['front', 'low', 'drift', 'front']],
+    ['ridges-ink', () => new m.Ridges(init, 'ink'), ['front', 'low', 'drift', 'front']],
+    ['neon', () => new m.NeonScene(init), ['walk', 'low', 'up', 'walk']],
+    ['channel', () => new m.Channel(init, 'pulse'), ['axis', 'roll', 'wall', 'axis']],
+    ['menger', () => new m.Menger(init, 'pulse'), ['glide', 'look', 'glide', 'look']],
+    ['sierpinski', () => new m.Sierpinski(init, 'pulse'), ['glide', 'look', 'glide', 'look']],
+    ['cantor', () => new m.Cantor(init, 'pulse'), ['glide', 'look', 'glide', 'look']],
+    ['canvas', () => new m.CanvasScene(init, 'pulse', init.seed), ['high', 'chase', 'side', 'front', 'high']],
+    ['canvas-ink', () => new m.CanvasScene(init, 'ink', init.seed), ['high', 'chase', 'side', 'high']],
+    ['drive', () => new m.Drive(init), ['push', 'roll', 'push', 'roll']],
+    ['tunnel', () => new m.Tunnel(init, 'pulse'), ['rush', 'roll', 'wall', 'rush']],
+    ['orb', () => new m.Orb(init, 'pulse'), ['wide', 'orbit', 'close', 'wide']],
+    ['ripple', () => new m.Ripple(init, 'pulse'), ['face', 'tilt', 'low', 'face']],
+    ['subdivide', () => new m.SubdivideScene(init, 'pulse'), ['ball', 'ball', 'ball']],
+    ['rings', () => new m.Rings(init, 'pulse'), ['front', 'tilt', 'front', 'tilt']],
+    ['diorama', () => new m.Diorama(init), ['drift', 'push', 'truck', 'tilt', 'pullback', 'drift']],
+    ['vinyl', () => new m.Vinyl(init, 'pulse'), ['tilt', 'groove', 'top', 'tilt']],
+    ['bokeh', () => new m.Bokeh(init), ['haze', 'focus', 'orbit', 'rise', 'haze']],
+    ['particles', () => new m.Particles(init, 'pulse'), ['hold', 'burst', 'vortex', 'rain', 'hold']],
+    ['relief', () => new m.Relief(init), ['fly', 'crane', 'side', 'dive', 'low', 'rise', 'fly']],
+    ['shatter', () => new m.Shatter(init), ['wall', 'wall-close', 'wall-dutch', 'wall-edge', 'swarm-a', 'swarm-d', 'swarm-b', 'swarm-c', 'wall']],
+    ['halftone', () => new m.Halftone(init, 'pulse'), ['in', 'pan', 'out', 'fine', 'in']],
+    ['rain', () => new m.RainScene(init), ['pane', 'close', 'clear', 'pane']],
+    ['papercut', () => new m.PaperCut(init), ['turn', 'bloom', 'turn', 'bloom']],
+    ['scope', () => new m.ScopeScene(init), ['wave', 'xy', 'wave', 'xy']],
+    ['flip', () => new m.Flip(init, 'pulse'), ['wave', 'burst', 'wave', 'burst']],
+    ['align', () => new m.AlignScene(init), ['swing', 'swing', 'swing']],
+    ['kaleido', () => new m.Kaleido(init, 'pulse'), ['petal', 'spiral', 'petal', 'spiral']],
+    ['ink', () => new m.Ink(init, init.title), ['scroll', 'bloom', 'mist', 'scroll']],
+    ['crystal', () => new m.ArmillaryScene(init), ['orbit', 'gather', 'orbit']],
+    ['debug', () => new m.DebugScene(init), ['low', 'orbit', 'top', 'low']],
+    ['typewall', () => new m.TypeWall(init), ['stack', 'split', 'solo', 'stack']],
+    ['poster', () => new m.Poster(init, 'pulse'), ['stack', 'slab', 'split', 'stack']],
+    ['cards', () => new m.CardsScene(init), ['stack', 'stack']],
+    // City 近距同走廊机位验证平滑，跨城区远距切镜由导演层施加暗场呼吸保护防穿楼
+    ['city-canyon', () => new m.City(init, 'pulse'), ['canyon', 'canyon', 'canyon']],
+  ];
+
+  // 精心挑选一组奇偶与高位交替翻转的种子，确保 side = random() < 0.5 ? -1 : 1 在相邻镜头间发生正负切换
+  const seeds = [0x00000001, 0xfffffffe, 0x13579bdf, 0xea864202, 0x31415926, 0xcafe0001, 0x77777777, 0x88888888, 0x12348765];
+  const shotDur = 5.0;
+  const dt = 1 / 60;
+  const sec = music.a.sections[3];
+
+  for (const [label, createScene, variants] of sceneSpecs) {
+    const sceneId = label.split('-')[0];
+    const scene = createScene();
+    const shots = variants.map((variant, i) => ({
+      index: i,
+      start: 12 + i * shotDur,
+      end: 12 + (i + 1) * shotDur,
+      scene: sceneId,
+      variant,
+      section: sec,
+      sectionIndex: 3,
+      seed: seeds[i % seeds.length],
+      short: false,
+    }));
+    m.linkSameSceneShots(shots);
+
+    // 1. 切点前后 ±2 帧（60fps）逐步推进，断言切点帧不发生视角瞬移
+    for (let i = 1; i < shots.length; i++) {
+      const prevShot = shots[i - 1];
+      const currShot = shots[i];
+      const cut = currShot.start;
+
+      const evalAt = (time, sh) => {
+        const fx = m.defaultFx();
+        scene.update({
+          t: time,
+          dt,
+          shotT: time - sh.start,
+          shot: sh,
+          music,
+          lyrics,
+          palette,
+          fx,
+          aspect: 16 / 9,
+        });
+        return {
+          pos: scene.camera.position.clone(),
+          quat: scene.camera.quaternion.clone(),
+          fov: scene.camera.fov,
+        };
+      };
+
+      const pPre2 = evalAt(cut - 2 * dt, prevShot);
+      const pPre1 = evalAt(cut - dt, prevShot);
+      const pCut = evalAt(cut, currShot);
+      const pPost1 = evalAt(cut + dt, currShot);
+
+      const baseStepPos = pPre1.pos.distanceTo(pPre2.pos);
+      const cutStepPos = pCut.pos.distanceTo(pPre1.pos);
+      const postStepPos = pPost1.pos.distanceTo(pCut.pos);
+
+      const cutStepAng = quatAngle(pCut.quat, pPre1.quat);
+      const postStepAng = quatAngle(pPost1.quat, pCut.quat);
+      const cutStepFov = Math.abs(pCut.fov - pPre1.fov);
+
+      // Cards 是全曲唯一片头单镜（不参与连切），Poster 为平面网格排版（静态正交般机位），其余全部严格校验连续性
+      if (label !== 'cards') {
+        const posLimit = Math.max(1.2, baseStepPos * 3.5);
+        assert.ok(
+          cutStepPos <= posLimit && postStepPos <= posLimit,
+          `[${label}] ${prevShot.variant} -> ${currShot.variant} 切点发生相机位置瞬移: cutStep=${cutStepPos.toFixed(4)} postStep=${postStepPos.toFixed(4)} (limit=${posLimit.toFixed(4)})`,
+        );
+        assert.ok(
+          cutStepAng <= 0.14 && postStepAng <= 0.14,
+          `[${label}] ${prevShot.variant} -> ${currShot.variant} 切点发生相机朝向瞬移: cutAng=${cutStepAng.toFixed(4)}rad postAng=${postStepAng.toFixed(4)}rad`,
+        );
+        assert.ok(
+          cutStepFov <= 4.5,
+          `[${label}] ${prevShot.variant} -> ${currShot.variant} 切点发生 FOV 突变: dFov=${cutStepFov.toFixed(4)}`,
+        );
+      }
+    }
+
+    // 2. 验证纯函数进度条任意 Seek 一致性（顺序求值 vs 逆序乱序求值误差 < 1e-9）
+    const probeTimes = [
+      { t: shots[0].start + 1.2, shot: shots[0] },
+      { t: shots[1].start + 0.02, shot: shots[1] },
+      { t: shots[1].start + 0.55, shot: shots[1] },
+      { t: shots[shots.length - 1].start + 0.35, shot: shots[shots.length - 1] },
+      { t: shots[shots.length - 1].start + 2.4, shot: shots[shots.length - 1] },
+    ];
+    const forwardPoses = probeTimes.map(({ t, shot }) => {
+      scene.update({ t, dt, shotT: t - shot.start, shot, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+      return {
+        pos: scene.camera.position.clone(),
+        quat: scene.camera.quaternion.clone(),
+        fov: scene.camera.fov,
+      };
+    });
+    for (let idx = probeTimes.length - 1; idx >= 0; idx--) {
+      const { t, shot } = probeTimes[idx];
+      scene.update({ t, dt, shotT: t - shot.start, shot, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+      const ref = forwardPoses[idx];
+      assert.ok(
+        scene.camera.position.distanceTo(ref.pos) < 1e-9,
+        `[${label}] 随机跳转 seek 后相机位置不一致 (t=${t})`,
+      );
+      assert.ok(
+        quatComponentDiff(scene.camera.quaternion, ref.quat) < 1e-9,
+        `[${label}] 随机跳转 seek 后相机朝向不一致 (t=${t})`,
+      );
+      assert.ok(
+        Math.abs(scene.camera.fov - ref.fov) < 1e-9,
+        `[${label}] 随机跳转 seek 后相机 FOV 不一致 (t=${t})`,
+      );
+    }
+  }
+});

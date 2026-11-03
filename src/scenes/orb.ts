@@ -14,6 +14,7 @@ import { COLS, Spectrogram, foregroundBand } from './viz.ts';
 import { hue, u3 } from './fractal.ts';
 import { LineBatch } from '../render/lines.ts';
 import { lastIndex } from '../director/music.ts';
+import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 const NB = 64;
 const NEEDLES = 2600;
@@ -152,20 +153,23 @@ export class Orb implements MvScene {
     this.spec.prefetch(t, 0.6);
   }
 
-  private pose(t: number, shot: Shot): void {
-    const random = rng(shot.seed);
+  private evalPose(t: number, shot: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const start = shot.run?.start ?? shot.start;
+    const end = shot.run?.end ?? shot.end;
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
+    const k = clamp01((t - start) / Math.max(0.5, end - start));
     let r: number, el: number;
     const az = phase + side * t * 0.07;
     if (shot.variant === 'close') { r = 4.0 - 0.4 * k; el = 0.1 + 0.05 * Math.sin(t * 0.3); }
     else if (shot.variant === 'wide') { r = 11 - 0.8 * k; el = 0.32; }
     else { r = 7.2 - 0.6 * k; el = 0.18; }
-    const cam = this.camera;
-    cam.position.set(Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r);
-    cam.lookAt(0, 0, 0);
-    cam.updateMatrixWorld();
-    this.az = az;
+    poseLookAt(pos, quat, Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r, 0, 0, 0);
+  }
+
+  private pose(t: number, shot: Shot): void {
+    blendCameraPose((tau, s, pos, quat) => this.evalPose(tau, s, pos, quat), t, shot, this.camera, 1.35);
+    this.az = Math.atan2(this.camera.position.x, this.camera.position.z);
   }
 
   update(ctx: FrameCtx): void {

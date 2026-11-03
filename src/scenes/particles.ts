@@ -9,8 +9,9 @@
 // at the top (left and right mirrored); where its band was loud the point is lifted towards the camera and lights up.
 // So every kick is a swell running out through the picture, a held chord a raised ring, a quiet passage a flat print.
 import * as THREE from 'three';
-import type { FrameCtx, MvScene, SceneInit } from './types.ts';
+import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import { clamp01, inOutCubic, lerp, outExpo, rng } from './types.ts';
+import { blendCameraPose, poseLookAt, sameSceneBlend, stableShotSeed } from './cameraBlend.ts';
 import { LyricRig } from './lyricRig.ts';
 import { voiceFaces } from './lyricBlock.ts';
 import { COLS, SpecRing, Spectrogram } from './viz.ts';
@@ -187,21 +188,53 @@ export class Particles implements MvScene {
     this.ring.spec.prefetch(t, 0.8);
   }
 
+  /** 沿同场景链回溯连续相同 variant 镜头的起始时刻，避免同变体连切时旋涡或粒子雨归零跳变。 */
+  private sameVariantStart(s: Shot): number {
+    let cur: Shot = s;
+    while (cur.prevSame && cur.prevSame.variant === s.variant) cur = cur.prevSame;
+    return cur.run?.start ?? cur.start;
+  }
+
+  /** 纯函数求值指定镜头在时刻 t 的粒子形态偏移（burst / vortex / rain）。 */
+  private evalVariantFX(t: number, s: Shot, inBar: number, beat: number, meter: number, kick: number, keys: number) {
+    const soft = this.look === 'ballad';
+    const since = Math.max(0, t - this.sameVariantStart(s));
+    let burst = 0, vortex = 0, rain = 0;
+    switch (s.variant) {
+      case 'burst': {
+        // Out on the downbeat, back into the picture across the bar.
+        const x = (inBar * beat) / (beat * meter);
+        burst = Math.sin(Math.PI * Math.min(1, x * 1.15)) * (0.35 + s.section.energy * 0.65) * Math.pow(1 - x, 0.6);
+        break;
+      }
+      case 'vortex': vortex = since * (soft ? 0.25 : 0.6) + kick * 0.15 + keys * 0.08; break;
+      case 'rain': rain = since * 0.35; break;
+    }
+    return { burst, vortex, rain };
+  }
+
+  /** 纯函数求值指定镜头在时刻 t 的相机姿态，供跨切点平滑插值使用。 */
+  private evalPose(t: number, s: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const sStart = s.run?.start ?? s.start;
+    const sEnd = s.run?.end ?? s.end;
+    const k = clamp01((t - sStart) / Math.max(0.5, sEnd - sStart));
+    const side = rng(stableShotSeed(s))() < 0.5 ? -1 : 1;
+    const a = side * lerp(0.35, -0.2, inOutCubic(k)), dist = lerp(9.5, 8.2, inOutCubic(k));
+    poseLookAt(pos, quat, Math.sin(a) * dist, lerp(0.6, -0.3, k), Math.cos(a) * dist, 0, 0, 0);
+  }
+
   update(ctx: FrameCtx): void {
     const { t, music, shot } = ctx;
     const u = this.material.uniforms;
     const info = music.at(t);
     const soft = this.look === 'ballad';
     const beat = 60 / Math.max(40, info.bpm);
-    const random = rng(shot.seed);
-    const k = clamp01((t - shot.start) / Math.max(0.5, shot.end - shot.start));
     const kick = soft ? 0 : music.pulse('kick', t, 0.12);
     const keys = music.pulse('keys', t, 0.15);
     const lead = music.foregroundAt(t), melodicGain = soft ? 0.55 : 1;
     const selective=music.selectiveAt(t);u.uSelective.value=+selective;
     u.uLeadDrop.value = music.dropIntensity(t) * lead.attack * melodicGain * (selective?.24:1);
     (u.uLead.value as THREE.Vector3).set(lead.level * melodicGain, lead.attack * melodicGain, lead.brightness);
-    const since = t - shot.start;
     u.uTime.value = t;
     u.uKick.value = kick;
     const now = t * COLS;
@@ -211,26 +244,23 @@ export class Particles implements MvScene {
     u.uLift.value = !this.init.stereo || this.onPaper ? 0 : (soft ? 0.7 : 1.4) * (shot.section.label === 'chorus' || shot.section.label === 'drop' ? 1.2 : 1);
     // Points about as wide as the gap between them, so the picture reads as a picture.
     u.uPx.value = this.height * 0.032 * (this.onPaper ? 1.6 : soft ? 1.1 : 1);
-    u.uBurst.value = 0;
-    u.uVortex.value = 0;
-    u.uRain.value = 0;
     u.uDrift.value = soft ? 1.4 : 1;
-    switch (shot.variant) {
-      case 'burst': {
-        // Out on the downbeat, back into the picture across the bar.
-        const x = (info.inBar * beat) / (beat * music.meter);
-        u.uBurst.value = Math.sin(Math.PI * Math.min(1, x * 1.15)) * (0.35 + shot.section.energy * 0.65) * Math.pow(1 - x, 0.6);
-        break;
-      }
-      case 'vortex': u.uVortex.value = since * (soft ? 0.25 : 0.6) + kick * 0.15 + keys * 0.08; break;
-      case 'rain': u.uRain.value = since * 0.35; break;
+
+    const fxB = this.evalVariantFX(t, shot, info.inBar, beat, music.meter, kick, keys);
+    let { burst, vortex, rain } = fxB;
+    const blend = sameSceneBlend(t, shot, 1.25);
+    if (blend) {
+      const fxA = this.evalVariantFX(t, blend.prev, info.inBar, beat, music.meter, kick, keys);
+      burst = lerp(fxA.burst, burst, blend.w);
+      vortex = lerp(fxA.vortex, vortex, blend.w);
+      rain = lerp(fxA.rain, rain, blend.w);
     }
-    const cam = this.camera, side = random() < 0.5 ? -1 : 1;
-    const a = side * lerp(0.35, -0.2, inOutCubic(k)), dist = lerp(9.5, 8.2, inOutCubic(k));
-    cam.position.set(Math.sin(a) * dist, lerp(0.6, -0.3, k), Math.cos(a) * dist);
-    cam.up.set(0, 1, 0);
-    cam.lookAt(0, 0, 0);
-    cam.updateMatrixWorld();
+    u.uBurst.value = burst;
+    u.uVortex.value = vortex;
+    u.uRain.value = rain;
+
+    const cam = this.camera;
+    blendCameraPose((tt, s, pos, quat) => this.evalPose(tt, s, pos, quat), t, shot, cam, 1.25);
     // (Bloom on a light ground only washes the points out.)
     ctx.fx.bloom = this.onPaper ? 0.03 : soft ? 0.45 : selective ? .42+.5*lead.attack+.08*lead.level : 0.55 + kick * 0.3 + keys * 0.15;
     if (this.onPaper) ctx.fx.vignette = 0.2;

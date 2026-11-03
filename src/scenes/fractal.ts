@@ -16,6 +16,7 @@ import { LyricBlocks, Stands, voiceFor } from './lyricBlock.ts';
 import { passMesh } from '../render/engine.ts';
 import type { Music } from '../director/music.ts';
 import type { Section } from '../types.ts';
+import { blendCameraPose, evalChainPose, stableShotSeed, standShotStart } from './cameraBlend.ts';
 
 /** GLSL for a colour (a constant). */
 export const v3 = (c: THREE.Color, k = 1) => `vec3(${(c.r * k).toFixed(5)},${(c.g * k).toFixed(5)},${(c.b * k).toFixed(5)})`;
@@ -385,7 +386,7 @@ export abstract class FractalPlate implements MvScene {
    * round the line, faster with the speed), high (lifted off the line and looking down it — wider, more of the hall).
    */
   protected pose(t: number, shot: Shot, out: Pose): Pose {
-    const random = rng(shot.seed);
+    const random = rng(stableShotSeed(shot));
     const side = random() < 0.5 ? -1 : 1, phase = random() * 6.28;
     const z = this.zAt(t);
     const c = this.path(z), ahead = this.path(z - this.o.sign.ahead * 1.5);
@@ -416,9 +417,13 @@ export abstract class FractalPlate implements MvScene {
 
   update(ctx: FrameCtx): void {
     const { t, shot } = ctx;
-    const pose = this.pose(t, shot, { pos: this.camera.position, quat: this.camera.quaternion });
-    void pose;
-    this.camera.updateMatrixWorld();
+    const posed: Pose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
+    const rawPose = (tau: number, s: Shot, pp: THREE.Vector3, qq: THREE.Quaternion) => {
+      this.pose(tau, s, posed);
+      pp.copy(posed.pos);
+      qq.copy(posed.quat);
+    };
+    blendCameraPose(rawPose, t, shot, this.camera, 1.3);
     const sp = this.flight.speedAt(t);
     // Speed widens the lens (up to ~20° at full tilt).
     // (The lens stays as it is: widened with the speed it breathes, which in the turns of a drilling route sickens.)
@@ -446,10 +451,10 @@ export abstract class FractalPlate implements MvScene {
     // or, on a plate that rides them, carried with the camera.
     const s = this.o.sign;
     const view = { reach: s.ahead, far: s.ahead * 1.9, fov: this.baseFov, aspect: this.camera.aspect, em: this.soft ? 0.064 : 0.068, follow: !!this.o.ride };
-    const posed: Pose = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
-    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => { this.pose(time, shot, posed); pp.copy(posed.pos); qq.copy(posed.quat); };
+    const at = (time: number, pp: THREE.Vector3, qq: THREE.Quaternion) => evalChainPose(rawPose, time, shot, pp, qq, 1.3);
     this.blocks.update(ctx.lyrics, t, shot.section.energy, (st, time, root, leave, size) => {
-      const stand = this.stands.get(shot.start, st, leave, at, s.em, view, size);
+      const anchorStart = standShotStart(rawPose, shot, st.line.start - 0.15);
+      const stand = this.stands.get(anchorStart, st, leave, at, s.em, view, size);
       stand.apply(time, root);
       return smooth((stand.depth(time) - s.ahead * 0.15) / (s.ahead * 0.35));
     });
