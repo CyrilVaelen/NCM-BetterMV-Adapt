@@ -1497,13 +1497,13 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
     `在低频与 RMS 完全为 0 且无底鼓冲击时，dropPower 应下潜至理论硬保底 0.35 (实测 ${deadDropPower})`,
   );
 
-  // 验证全部 104 束高密快切激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
+  // 验证全部 64 束对称激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
   const beamCount = robustLaser.beamStyleAttr.count / 2;
-  assert.equal(beamCount, 104, '炸场级扩容后单束激光本体数量应为 104 束');
-  assert.equal(robustLaser.sheetStyleAttr.count / 2, 20, '扩容后扫描光幕本体数量应为 20 座');
-  assert.equal(robustLaser.coneSpecAttr.count / 2, 3, '扩容后旋转锥笼本体应为 3 层');
+  assert.equal(beamCount, 64, '精炼编组后单束激光本体数量应为 64 束');
+  assert.equal(robustLaser.sheetStyleAttr.count / 2, 12, '精炼编组后扫描光幕本体数量应为 12 座');
+  assert.equal(robustLaser.coneSpecAttr.count / 2, 2, '精炼编组后旋转锥笼本体应为 2 层');
 
-  // 验证全部 104 束发射口坐标均不落在中央专辑封面可视盘面内部 (|x| < 7.5 && y ∈ [2.6, 17.6] && z <= -51.5)
+  // 验证全部 64 束发射口坐标均不落在中央专辑封面可视盘面内部 (|x| < 7.5 && y ∈ [2.6, 17.6] && z <= -51.5)
   const beamStarts = robustLaser.beamStartAttr.array;
   for (let bIdx = 0; bIdx < beamCount; bIdx++) {
     const bx = beamStarts[bIdx * 4];
