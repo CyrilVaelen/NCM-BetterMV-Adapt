@@ -1497,13 +1497,13 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
     `在低频与 RMS 完全为 0 且无底鼓冲击时，dropPower 应下潜至理论硬保底 0.35 (实测 ${deadDropPower})`,
   );
 
-  // 验证全部 64 束对称激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
+  // 验证全部 88 束对称激光（含左右各 18 束加密下射水面反射长廊）中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
   const beamCount = robustLaser.beamStyleAttr.count / 2;
-  assert.equal(beamCount, 64, '精炼编组后单束激光本体数量应为 64 束');
-  assert.equal(robustLaser.sheetStyleAttr.count / 2, 12, '精炼编组后扫描光幕本体数量应为 12 座');
-  assert.equal(robustLaser.coneSpecAttr.count / 2, 2, '精炼编组后旋转锥笼本体应为 2 层');
+  assert.equal(beamCount, 88, '侧廊下射加密后单束激光本体数量应为 88 束');
+  assert.equal(robustLaser.sheetStyleAttr.count / 2, 12, '扫描光幕本体数量应为 12 座');
+  assert.equal(robustLaser.coneSpecAttr.count / 2, 2, '旋转锥笼本体应为 2 层');
 
-  // 验证全部 64 束发射口坐标均不落在中央专辑封面可视盘面内部 (|x| < 7.5 && y ∈ [2.6, 17.6] && z <= -51.5)
+  // 验证全部 88 束发射口坐标均不落在中央专辑封面可视盘面内部 (|x| < 7.5 && y ∈ [2.6, 17.6] && z <= -51.5)
   const beamStarts = robustLaser.beamStartAttr.array;
   for (let bIdx = 0; bIdx < beamCount; bIdx++) {
     const bx = beamStarts[bIdx * 4];
@@ -1551,6 +1551,29 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
     maxBeamP > 1.0 && minBeamP < 0.12 && maxBeamP / Math.max(1e-4, minBeamP) > 8.0,
     `高能 Drop 应呈现鲜明的追光亮灭反差 (max=${maxBeamP.toFixed(3)}, min=${minBeamP.toFixed(3)})`,
   );
+
+  // 验证 cueMode=1（t=4.0s 圆锥隧道段）左右两侧高空向下射的激光已加密至 18+18=36 束，且全部精准穿过 y=0 水面以激发 V 形镜面折返反射束
+  pureDropLaser.update({
+    t: 4.0,
+    dt: frameDt,
+    shotT: 4.0,
+    shot: pureDropShot,
+    music: pureDropMusic,
+    lyrics: emptyLyrics,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  let corridorBounceCount = 0;
+  for (let bIdx = 40; bIdx < 76; bIdx++) {
+    const startY = pureDropLaser.beamStartAttr.array[bIdx * 4 + 1];
+    const endY = pureDropLaser.beamEndAttr.array[bIdx * 4 + 1];
+    const p = pureDropLaser.beamStyleAttr.array[bIdx * 4];
+    if (startY > 10.0 && endY < -5.0 && p > 0.20) {
+      corridorBounceCount++;
+    }
+  }
+  assert.equal(corridorBounceCount, 36, `圆锥隧道段左右两侧应有全部 36 束 (18+18) 下射激光激活并触发水面镜面反射，实测 ${corridorBounceCount} 束`);
 });
 
 

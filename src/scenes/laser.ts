@@ -29,9 +29,9 @@ const SCREEN_CENTER_Y = 10.1;
 const STAGE_DECK_H = 1.82;
 const STAGE_LIP_Z = -46.8;
 
-/** 四大灯光系统实例容量（均含天空本体 + 湿润地面 1:1 镜像对偶） */
+/** 四大灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
 const SHEET_EMITTER_COUNT = 12;
-const BEAM_EMITTER_COUNT = 64;
+const BEAM_EMITTER_COUNT = 88;
 const CONE_LAYER_COUNT = 2;
 const CRYO_JET_COUNT = 8;
 const BLINDER_COUNT = 28;
@@ -742,7 +742,7 @@ function buildSheetEmitters(): SheetEmitterSpec[] {
   return list;
 }
 
-/** 构建 64 座严整对称单束激光发射头坐标（4 大纯净几何编组，彻底避开封面中心与斜向乱穿） */
+/** 构建 88 座严整对称单束激光发射头坐标（左右高空下射走廊各加密至 18 束，共 36 束斜劈水面反射光廊） */
 function buildBeamEmitters(): BeamEmitterSpec[] {
   const list: BeamEmitterSpec[] = [];
   // Group 0 (24 束): 舞台巨幕顶冠等距高密梳状激光排
@@ -755,14 +755,15 @@ function buildBeamEmitters(): BeamEmitterSpec[] {
     const u = (i / 15) * 2 - 1;
     list.push({ x: u * 14.2, y: STAGE_DECK_H + 0.18, z: STAGE_LIP_Z + 0.25, group: 1, slot: i, normX: u });
   }
-  // Group 2 (6 束): 走廊左侧单层等高纵深导引排
-  const sideZs = [-45.0, -37.0, -29.0, -21.0, -13.0, -5.0];
-  for (let i = 0; i < 6; i++) {
-    list.push({ x: -16.6, y: 14.8, z: sideZs[i], group: 2, slot: i, normX: -1 });
+  // Group 2 (18 束): 走廊左侧高空等距密集下射激光排（间距约 2.47m，斜向下切入水面并激起镜面反射）
+  for (let i = 0; i < 18; i++) {
+    const z = -46.5 + (i / 17) * 42.0;
+    list.push({ x: -16.2, y: 14.6, z, group: 2, slot: i, normX: -1 });
   }
-  // Group 3 (6 束): 走廊右侧单层等高纵深导引排
-  for (let i = 0; i < 6; i++) {
-    list.push({ x: 16.6, y: 14.8, z: sideZs[i], group: 3, slot: i, normX: 1 });
+  // Group 3 (18 束): 走廊右侧高空等距密集下射激光排（与左侧严格对称，共 36 束高密斜射光廊）
+  for (let i = 0; i < 18; i++) {
+    const z = -46.5 + (i / 17) * 42.0;
+    list.push({ x: 16.2, y: 14.6, z, group: 3, slot: i, normX: 1 });
   }
   // Group 4 (12 束): DJ 控台后沿对称孔雀皇冠仰射扇排（由 DJ 身后底座向前上方对称盛开）
   for (let i = 0; i < 12; i++) {
@@ -1221,7 +1222,7 @@ void main() {
 `;
 
 // ============================================================================
-// 4. 湿润黑金反光舞台与场馆地面着色器 (WET_OBSIDIAN_FLOOR)
+// 4. 无界深黑镜面浅水池舞台着色器 (MIRROR_WATER_STAGE — 动态声压水波纹 + 封面/激光流光倒影)
 // ============================================================================
 const FLOOR_VERT = /* glsl */ `
 varying vec3 vWorldPos;
@@ -1252,81 +1253,83 @@ ${GLSL_PALETTE_COMMON}
 void main() {
   vec3 P = vWorldPos;
   vec3 V = normalize(cameraPosition - P);
-  float cosTheta = max(0.02, V.y);
+  float camDist = length(cameraPosition - P);
+  float rippleFade = 1.0 - smoothstep(18.0, 68.0, camDist);
 
-  // 工业黑金混凝土地坪铺装接缝（宽 4.3m × 长 5.25m 矩形地砖）+ 微细粗糙颗粒 + 低频底鼓声压波纹
-  vec2 tile = abs(fract(vec2(P.x / 4.3 + 0.5, P.z / 5.25)) - 0.5);
-  float seam = 1.0 - smoothstep(0.478, 0.496, max(tile.x, tile.y));
-  float microGrain = noise2D(P.xz * 3.8);
-  float puddles = smoothstep(0.32, 0.72, hazeFbm(P.xz * 0.14 + vec2(0.0, 2.3)));
+  // 1. 多层真实流体水波纹 + 主舞台超低音炮向外扩散的同心声压水涟漪（彻底移除混凝土地砖接缝）
+  float w1 = sin(P.z * 2.35 - uTime * 3.8 + sin(P.x * 1.15 + uTime * 1.4) * 1.3);
+  float w2 = cos(P.x * 2.85 + P.z * 1.45 - uTime * 3.1);
+  float w3 = sin((P.x - P.z) * 5.2 + uTime * 5.6) * 0.45;
+  float distStage = length(vec2(P.x * 0.72, P.z - (${STAGE_LIP_Z.toFixed(1)})));
+  float bassRipple = sin(distStage * 3.2 - uTime * 11.5) * exp(-distStage * 0.038) * (0.35 + 0.85 * uKickPunch);
 
-  // 底鼓声压从舞台前缘向外扩散的微细水面涟漪
-  float distStage = length(vec2(P.x * 0.75, P.z - (${STAGE_LIP_Z.toFixed(1)})));
-  float bassWave = sin(distStage * 2.6 - uTime * 11.0) * exp(-distStage * 0.045) * (0.25 + 0.75 * uKickPunch);
+  float nx = (w2 * 0.020 + w3 * 0.010 + bassRipple * 0.022 * sign(P.x)) * rippleFade;
+  float nz = (w1 * 0.024 + w3 * 0.010 + bassRipple * 0.026) * rippleFade;
+  vec3 N = normalize(vec3(nx, 1.0, nz));
 
-  vec3 N = normalize(vec3(
-    (microGrain - 0.5) * 0.032 + bassWave * 0.015 * sign(P.x),
-    1.0,
-    (noise2D(P.xz * 3.8 + 19.1) - 0.5) * 0.032 + bassWave * 0.018
-  ));
+  // 2. 清澈深黑镜面浅水池菲涅尔反射率：全域连续镜面水膜，掠射视角如黑曜水镜般清亮
+  float fresnel = 0.16 + 0.84 * pow(1.0 - max(0.0, dot(N, V)), 3.5);
+  float reflectivity = 0.88 * fresnel;
 
-  // 菲涅尔反射率：水膜积水区（puddles）如黑镜般高反，干燥混凝土区柔和漫反
-  float fresnel = 0.06 + 0.94 * pow(1.0 - max(0.0, dot(N, V)), 4.2);
-  float reflectivity = mix(0.28, 0.86, puddles) * fresnel * seam;
-
-  // 解析计算远景巨幅 LED 封面主屏在湿润地面上的 1:1 垂直拉丝镜面反射
+  // 3. 远景巨幅 LED 封面主屏与两侧频谱灯塔在动态水面上的波光倒影
   vec3 R = reflect(-V, N);
   vec3 screenRefl = vec3(0.0);
   if (R.z < -0.02) {
     float tPlane = (${STAGE_Z.toFixed(1)} - P.z) / R.z;
     if (tPlane > 0.0) {
       vec3 hit = P + R * tPlane;
-      // 湿润粗糙表面的各向异性纵向拉丝模糊（3 抽头近似）
       float halfS = ${(SCREEN_SIZE * 0.5).toFixed(2)};
-      // 平面镜像中等效虚拟屏幕中心在 y = -SCREEN_CENTER_Y，反射射线 hit.y > 0 对应屏幕高度 hit.y
-      vec2 mirrorUv = vec2((hit.x + halfS) / ${SCREEN_SIZE.toFixed(2)}, (hit.y - ${(SCREEN_CENTER_Y - SCREEN_SIZE * 0.5).toFixed(2)}) / ${SCREEN_SIZE.toFixed(2)});
+      vec2 mirrorUv = vec2(
+        (hit.x + halfS) / ${SCREEN_SIZE.toFixed(2)} + nx * 0.45,
+        (hit.y - ${(SCREEN_CENTER_Y - SCREEN_SIZE * 0.5).toFixed(2)}) / ${SCREEN_SIZE.toFixed(2)} + nz * 0.85
+      );
       float inX = smoothstep(-0.08, 0.04, mirrorUv.x) * (1.0 - smoothstep(0.96, 1.08, mirrorUv.x));
       float inY = smoothstep(-0.18, 0.05, mirrorUv.y) * (1.0 - smoothstep(0.95, 1.18, mirrorUv.y));
       if (inX * inY > 0.002) {
         vec2 cUv0 = clamp(mirrorUv, 0.01, 0.99);
-        vec2 cUv1 = clamp(mirrorUv + vec2(0.0, 0.045), 0.01, 0.99);
-        vec2 cUv2 = clamp(mirrorUv - vec2(0.0, 0.045), 0.01, 0.99);
+        vec2 cUv1 = clamp(mirrorUv + vec2(0.0, 0.032), 0.01, 0.99);
+        vec2 cUv2 = clamp(mirrorUv - vec2(0.0, 0.032), 0.01, 0.99);
         vec3 s0 = max(texture2D(uCover, cUv0).rgb, vec3(0.0));
         vec3 s1 = max(texture2D(uCover, cUv1).rgb, vec3(0.0));
         vec3 s2 = max(texture2D(uCover, cUv2).rgb, vec3(0.0));
-        screenRefl = (s0 * 0.5 + (s1 + s2) * 0.25) * inX * inY * (0.48 + 0.28 * uSectionEnergy);
+        screenRefl = (s0 * 0.54 + (s1 + s2) * 0.23) * inX * inY * (0.56 + 0.30 * uSectionEnergy);
       }
 
-      // 两侧全彩频谱灯塔柔和倒影光带（与上方灯塔严格同步空间渐变或全屏纯色）
-      float towerMask = (exp(-pow((abs(hit.x) - 10.6) * 0.55, 2.0))) * smoothstep(0.0, 4.0, hit.y) * (1.0 - smoothstep(14.0, 19.0, hit.y));
+      // 两侧全彩频谱灯塔水波倒影光带
+      float towerMask = exp(-pow((abs(hit.x) - 10.6) * 0.55, 2.0)) * smoothstep(0.0, 4.0, hit.y) * (1.0 - smoothstep(14.0, 19.0, hit.y));
       vec3 towerReflCol, towerCoreDummy;
       sampleStageGradient(hit.y / 16.0, towerReflCol, towerCoreDummy);
-      screenRefl += towerReflCol * towerMask * (0.18 + 0.32 * uDropPower);
+      screenRefl += towerReflCol * towerMask * (0.24 + 0.38 * uDropPower);
     }
   }
 
-  vec3 floorBase = (uEnvDark * 0.85 + vec3(0.0008)) * (0.65 + 0.55 * microGrain) * seam;
+  // 4. 水波波脊对漫天激光与盲眼灯的细碎波光粼粼高光（Water Specular Shimmer）
+  vec3 waterTint, waterCore;
+  sampleStageGradient(clamp(P.x / 32.0 + 0.5, 0.0, 1.0), waterTint, waterCore);
+  vec3 overheadLight = normalize(vec3(-P.x * 0.06, 0.42, -0.90));
+  vec3 H = normalize(V + overheadLight);
+  float crestSpec = pow(max(0.0, dot(N, H)), 42.0) * rippleFade;
+  float rippleCrest = smoothstep(0.55, 0.98, 0.5 + 0.32 * w1 + 0.22 * w2 + 0.35 * bassRipple) * rippleFade;
+  vec3 laserWaterGlint = mix(waterTint, waterCore, 0.45) * (crestSpec * 0.28 + rippleCrest * 0.032 * fresnel) * (0.20 + 0.95 * uDropPower);
 
-  // 盲眼灯与顶棚环境光在湿润地面的克制漫射高光带
-  float centerGlint = exp(-pow(P.x * 0.085, 2.0)) * smoothstep(22.0, -50.0, P.z);
-  vec3 blinderFloor = uBlinderWarm * uBlinderGlow * (0.025 + 0.065 * puddles) * centerGlint;
+  vec3 waterDepthBase = (uEnvDark * 0.55 + vec3(0.0006)) * (0.85 + 0.15 * w1);
 
-  // 地面低空流淌的薄纱干冰贴地冷雾（Dry Ice Low-Lying Fog），浸润封面激光散射
+  // 盲眼灯在水面中轴拉出的波光倒影长带
+  float centerGlint = exp(-pow(P.x * 0.085, 2.0)) * smoothstep(24.0, -50.0, P.z);
+  vec3 blinderFloor = uBlinderWarm * uBlinderGlow * (0.045 + 0.065 * rippleCrest) * centerGlint;
+
+  // 水面贴面流淌的极薄干冰冷雾（浸润封面激光色彩）
   float lowFog = hazeFbm(P.xz * 0.09 + vec2(uTime * 0.08, -uTime * 0.14));
-  float stageNear = smoothstep(8.0, -48.0, P.z);
-  vec3 fogPalCol, fogCoreDummy;
-  sampleStageGradient(P.x / 33.2 + 0.5, fogPalCol, fogCoreDummy);
-  vec3 groundMist = fogPalCol * pow(lowFog, 1.6) * (0.012 + 0.036 * uDropPower) * stageNear;
+  float stageNear = smoothstep(12.0, -48.0, P.z);
+  vec3 groundMist = waterTint * pow(lowFog, 1.65) * (0.010 + 0.028 * uDropPower) * stageNear;
 
   // 远距离边界柔和渐隐融入深邃暗场
   float edgeFade = (1.0 - smoothstep(28.0, 35.5, abs(P.x))) * (1.0 - smoothstep(20.0, 31.0, P.z)) * (1.0 - smoothstep(-66.0, -75.0, P.z));
 
-  // 半透明混合：alpha 控制地面遮挡度，使 y < 0 的 1:1 激光/光幕/气柱镜像自然透出并叠加菲涅尔质感！
-  vec3 col = (floorBase + screenRefl * reflectivity + blinderFloor + groundMist) * edgeFade;
+  vec3 col = (waterDepthBase + screenRefl * reflectivity + laserWaterGlint + blinderFloor + groundMist) * edgeFade;
   col *= (1.0 - 0.85 * uBlackout);
 
-  float floorOpacity = mix(0.84, 0.56, reflectivity * (0.55 + 0.45 * puddles));
-  gl_FragColor = vec4(col, floorOpacity);
+  gl_FragColor = vec4(col, 1.0);
 }
 `;
 
@@ -1846,17 +1849,20 @@ ${GLSL_PALETTE_COMMON}
 
 void main() {
   if (vPower < 0.008) discard;
-  // 严格裁剪地面穿透：天空本体只渲染在 y >= 0，地面镜像只渲染在 y <= 0
-  if (vMirror < 0.5 && vWorldPos.y < -0.02) discard;
-  if (vMirror > 0.5 && vWorldPos.y > 0.02) discard;
+  bool underStageBox = (vWorldPos.z < -46.75 && abs(vWorldPos.x) < 15.6);
+  if (vMirror > 0.5 && vWorldPos.y > 0.02 && underStageBox) discard;
 
-  float u = vSheetUv.x; // [-1..1]
+  // 水下倒影（y < 0）叠加真实动态水波横向微扰与波光闪烁
+  float sheetRipple = sin(vWorldPos.z * 2.8 - uTime * 5.8 + sin(vWorldPos.x * 1.6 + uTime * 2.0) * 1.3);
+  float subDepth = clamp(-vWorldPos.y * 0.16, 0.0, 1.0);
+  float u = vSheetUv.x + (vWorldPos.y < 0.0 ? sheetRipple * 0.016 * subDepth : 0.0); // [-1..1]
   float r = vSheetUv.y; // [0..1]
 
   // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端刀锋般锐利明亮，内部保留通透低底膜
   float absU = abs(u);
-  float edgeOuter = exp(-pow((1.0 - absU) * 38.0, 2.0)) * 1.24;
-  float interiorFill = (1.0 - smoothstep(0.97, 1.0, absU)) * (0.026 + 0.036 * pow(absU, 2.0));
+  if (absU > 1.03) discard;
+  float edgeOuter = exp(-pow((1.0 - min(1.0, absU)) * 38.0, 2.0)) * 1.24;
+  float interiorFill = (1.0 - smoothstep(0.97, 1.0, absU)) * (0.026 + 0.036 * pow(min(1.0, absU), 2.0));
 
   // 2. 单层纯净等距振镜分束丝（18 根对称锐利光丝，消除双频摩尔干涉杂纹与高频噪点）
   float ionize = smoothstep(0.58, 1.35, vPower);
@@ -1885,8 +1891,12 @@ void main() {
   vec3 col = mix(baseLaser, baseCore, hotCoreMix)
            + vec3(0.14 * ionize) * clamp(edgeOuter * 0.5 + fingers * 0.35 + originBoost * 0.35, 0.0, 0.28);
 
-  float alpha = density * vPower * 0.185;
-  if (vMirror > 0.5) alpha *= 0.38;
+  float rippleGain = 0.50 + 0.14 * sheetRipple;
+  float mediumWeight = vMirror < 0.5
+    ? mix(0.26 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
+    : mix(rippleGain, 0.60 * exp(-max(0.0, vWorldPos.y) * 0.20), smoothstep(-0.04, 0.06, vWorldPos.y));
+
+  float alpha = density * vPower * 0.185 * mediumWeight;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.002) discard;
@@ -1898,8 +1908,8 @@ void main() {
 // 8. 军鼓 / 重音 X 型交叉铡刀单束快切着色器 (LASER_BEAM — 6 槽全彩分束独立波长)
 // ============================================================================
 const BEAM_VERT = /* glsl */ `
-attribute vec4 aBeamStart; // xyz: 发射口世界坐标, w: 0=天空本体, 1=地面镜像
-attribute vec4 aBeamEnd;   // xyz: 终点世界坐标, w: 光束半宽(米)
+attribute vec4 aBeamStart; // xyz: 发射口世界坐标, w: 0=入射与水下余晖, 1=水下倒影与空中水面折返反射束
+attribute vec4 aBeamEnd;   // xyz: 终点世界坐标(下射触水束穿透至 y<0 以生成精确 V 形镜面反射), w: 光束半宽(米)
 attribute vec4 aBeamStyle; // x: 脉冲亮度 [0..1.6], y: 色板槽位 [0..6), z: 脉冲行进相位, w: 独立光束种子
 varying vec2 vBeamUv;      // x ∈ [0..1] 沿光束轴向, y ∈ [-1..1] 横向截面
 varying vec3 vWorldPos;
@@ -1908,6 +1918,7 @@ varying float vColorMix;
 varying float vPulsePhase;
 varying float vBeamSeed;
 varying float vMirror;
+varying float vTouchesWater;
 
 void main() {
   vBeamUv = vec2(uv.x, (uv.y - 0.5) * 2.0);
@@ -1916,6 +1927,7 @@ void main() {
   vPulsePhase = aBeamStyle.z;
   vBeamSeed = aBeamStyle.w;
   vMirror = aBeamStart.w;
+  vTouchesWater = (aBeamStart.y * aBeamEnd.y < 0.0) ? 1.0 : 0.0;
 
   if (vPower < 0.01) {
     vWorldPos = vec3(0.0);
@@ -1937,8 +1949,8 @@ void main() {
   float sideLen = length(side);
   side = sideLen > 1e-4 ? side / sideLen : vec3(1.0, 0.0, 0.0);
 
-  // 高密 104 束刀锋激光：收紧基础束宽防止百束齐发糊屏，重拍峰值爆发时张开丁达尔晕圈
-  float halfW = aBeamEnd.w * (1.0 + 0.48 * uv.x) * (0.76 + 0.52 * min(1.35, vPower));
+  // 锐利刀锋激光截面：经水面折返后束宽略微舒展，重拍峰值张开丁达尔晕圈
+  float halfW = aBeamEnd.w * (1.0 + 0.44 * uv.x) * (0.76 + 0.50 * min(1.35, vPower));
   vec3 wp = spine + side * (vBeamUv.y * halfW);
   vWorldPos = wp;
 
@@ -1956,40 +1968,64 @@ varying float vColorMix;
 varying float vPulsePhase;
 varying float vBeamSeed;
 varying float vMirror;
+varying float vTouchesWater;
 ${GLSL_HAZE_COMMON}
 ${GLSL_PALETTE_COMMON}
 
 void main() {
   if (vPower < 0.01) discard;
-  if (vMirror < 0.5 && vWorldPos.y < -0.02) discard;
-  if (vMirror > 0.5 && vWorldPos.y > 0.02) discard;
+  bool underStageBox = (vWorldPos.z < -46.75 && abs(vWorldPos.x) < 15.6);
+  // 防止主舞台基座后方的仰射镜像穿过舞台台面，开阔水面区域则完整放行以呈现真实的空中 V 形反射激光束！
+  if (vMirror > 0.5 && vWorldPos.y > 0.02 && underStageBox) discard;
 
-  float s = vBeamUv.x;        // [0..1] 射程进度
-  float d = abs(vBeamUv.y);   // [0..1] 离中心轴距离
+  float s = vBeamUv.x; // [0..1] 射程进度
 
-  // 重拍电离跃迁：低功率时呈幽暗柔彩细丝，重拍高功率 (vPower > 0.75) 时中心爆发出刀锋般锐利的电离炽白亮芯
+  // 水面以下（y < 0）倒影随真实水波涟漪轻微横向摇曳荡漾，水面上方（入射束与反射束）保持刀锋笔直！
+  float wave1 = sin(vWorldPos.z * 3.1 - uTime * 6.4 + sin(vWorldPos.x * 1.8 + uTime * 2.2) * 1.4);
+  float wave2 = cos(vWorldPos.x * 4.2 - vWorldPos.z * 2.0 + uTime * 4.8);
+  float rippleVal = wave1 * 0.65 + wave2 * 0.35;
+  float subDepth = clamp(-vWorldPos.y * 0.22, 0.0, 1.0);
+  float d = vWorldPos.y < 0.0
+    ? abs(vBeamUv.y + rippleVal * 0.13 * subDepth)
+    : abs(vBeamUv.y);
+
+  // 重拍电离跃迁：低功率时呈柔彩细丝，重拍高功率时中心爆发出锐利的电离炽白亮芯
   float ionBoost = smoothstep(0.55, 1.40, vPower);
-  float core = exp(-d * d * mix(72.0, 118.0, ionBoost));
+  float core = exp(-d * d * mix(74.0, 120.0, ionBoost));
   float corona = exp(-d * 4.0) * (0.48 + 0.28 * ionBoost);
 
-  // 发射口起点高强星芒能量点
-  float emitterHotspot = exp(-s * 36.0) * exp(-d * d * 20.0) * (0.95 + 0.55 * ionBoost);
+  // 发射口起点高强星芒 + 触水点（y ≈ 0）激光击中水面激起的璀璨散射亮斑与水波光环！
+  float emitterHotspot = exp(-s * 36.0) * exp(-d * d * 20.0) * (0.95 + 0.55 * ionBoost) * (1.0 - vMirror * 0.55);
+  float waterImpact = vTouchesWater * (underStageBox ? 0.0 : 1.0)
+                    * exp(-abs(vWorldPos.y) * 11.5) * exp(-d * d * 11.0)
+                    * (0.88 + 0.36 * wave1) * (0.80 + 0.55 * ionBoost);
 
-  // 单一同步重拍能量波前（消除每束独立随机速率飞点造成的杂乱感）
+  // 单一同步重拍能量波前（沿入射束冲向水面，触水后继续沿反射束向斜上方弹起！）
   float packet = exp(-pow((s - vPulsePhase) * 5.8, 2.0)) * 0.62;
 
-  // 高反差空间干冰烟雾丁达尔明暗切分（暗区低至 0.18，浓雾区飙至 1.42）
+  // 高反差空间干冰烟雾丁达尔明暗切分
   float rawMist = hazeFbm(vWorldPos.xz * 0.11 + vec2(vWorldPos.y * 0.09, -uTime * 0.24));
-  float mist = 0.18 + 1.24 * pow(rawMist, 1.38);
-  float endFade = (1.0 - smoothstep(0.76, 1.0, s)) * smoothstep(0.0, 0.008, s);
+  float mist = 0.20 + 1.22 * pow(rawMist, 1.35);
+  float endFade = (1.0 - smoothstep(0.80, 1.0, s)) * smoothstep(0.0, 0.008, s);
+
+  // 四区段物理光学能量：
+  // 1) vMirror=0, y>=0: 空中直射主激光束 (1.0)
+  // 2) vMirror=1, y>0 : 触水后按镜面反射角弹回空中的真实反射激光束 (0.72，清晰醒目！)
+  // 3) vMirror=1, y<=0: 入射激光在水面下的动态水波倒影 (0.54 + 0.16 * rippleVal)
+  // 4) vMirror=0, y<0 : 反射激光在水面下的二次水波倒影 (0.28 + 0.10 * rippleVal)
+  float subRefl = 0.54 + 0.16 * rippleVal;
+  float mediumWeight = vMirror < 0.5
+    ? mix(0.28 + 0.10 * rippleVal, 1.0, smoothstep(-0.05, 0.04, vWorldPos.y))
+    : mix(subRefl, 0.72, smoothstep(-0.04, 0.05, vWorldPos.y));
 
   vec3 tint, tintCore;
   sampleLaserPalette(vColorMix, tint, tintCore);
-  vec3 col = mix(tint, tintCore, clamp(core * (0.55 + 0.40 * ionBoost) + emitterHotspot * 0.48, 0.0, 0.94))
-           + vec3(0.20 * ionBoost) * pow(core, 3.2);
+  float coreMixFactor = clamp(core * (0.55 + 0.40 * ionBoost) + (emitterHotspot + waterImpact) * 0.52, 0.0, 0.95);
+  vec3 col = mix(tint, tintCore, coreMixFactor)
+           + vec3(0.20 * ionBoost) * pow(core, 3.2)
+           + vec3(0.16) * waterImpact;
 
-  float alpha = ((core * (1.05 + 0.45 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.46) * vPower * 0.78;
-  if (vMirror > 0.5) alpha *= 0.42;
+  float alpha = (((core * (1.05 + 0.45 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.46) * mediumWeight + waterImpact * 0.52) * vPower * 0.78;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.003) discard;
@@ -2054,10 +2090,13 @@ ${GLSL_PALETTE_COMMON}
 
 void main() {
   if (vConePower < 0.01) discard;
-  if (vMirror < 0.5 && vWorldPos.y < -0.02) discard;
-  if (vMirror > 0.5 && vWorldPos.y > 0.02) discard;
+  bool underStageBox = (vWorldPos.z < -46.75 && abs(vWorldPos.x) < 15.6);
+  if (vMirror > 0.5 && vWorldPos.y > 0.02 && underStageBox) discard;
 
-  float theta = vConeUv.x * 6.2831853 + uConeSpin * vSpinDir;
+  // 水面以下（y < 0）叠加动态水波涟漪扭曲，水面上方触水后激起清晰的向上镜面反射射线！
+  float coneRipple = sin(vWorldPos.z * 2.9 - uTime * 6.0 + sin(vWorldPos.x * 1.7 + uTime * 2.1) * 1.3);
+  float coneSubDepth = clamp(-vWorldPos.y * 0.20, 0.0, 1.0);
+  float theta = vConeUv.x * 6.2831853 + uConeSpin * vSpinDir + (vWorldPos.y < 0.0 ? coneRipple * 0.010 * coneSubDepth : 0.0);
   float s = vConeUv.y;
 
   // Pangolin BEYOND 标志性纯净断线圆锥花式：24 束等距锐利射线 + 舒展丝滑的圆周明暗流转
@@ -2070,17 +2109,25 @@ void main() {
   float axialPulse = 0.24 + 0.92 * smoothstep(-0.15, 0.45, sin(s * 22.0 - uTime * 10.5 + vSpinDir * 1.2));
   float mist = 0.24 + 1.04 * pow(hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.22)), 1.35);
 
-  float ringOrigin = 0.042 * exp(-s * 16.0);
-  float distFade = (1.0 - smoothstep(0.68, 1.0, s)) * smoothstep(0.008, 0.055, s);
+  float ringOrigin = 0.042 * exp(-s * 16.0) * (1.0 - vMirror * 0.6);
+  float distFade = (1.0 - smoothstep(0.72, 1.0, s)) * smoothstep(0.008, 0.055, s);
+
+  // 圆锥底部射线触水点星斑与向上镜面反射衰减（反射束在 0~7m 低空清晰弹出 V 形折线后柔和融入雾气，不遮挡上方专辑封面）
+  float coneWaterImpact = sharpRay * (underStageBox ? 0.0 : 1.0) * exp(-abs(vWorldPos.y) * 11.0) * (0.75 + 0.35 * coneRipple) * distFade;
+  float coneSubWeight = 0.54 + 0.16 * coneRipple;
+  float coneBounceWeight = 0.72 * exp(-max(0.0, vWorldPos.y) * 0.14);
+  float mediumWeight = vMirror < 0.5
+    ? mix(0.24 + 0.08 * coneRipple, 1.0, smoothstep(-0.05, 0.04, vWorldPos.y))
+    : mix(coneSubWeight, coneBounceWeight, smoothstep(-0.04, 0.05, vWorldPos.y));
 
   // 圆周连续对称空间渐变：0.5 + 0.5 * cos(theta) 在圆周上完全连续闭合，相邻射线颜色平滑过渡；模式 B 下全笼统一纯色！
   vec3 tint, tintCore;
   sampleStageGradient(0.5 + 0.5 * cos(theta), tint, tintCore);
   float coneIon = smoothstep(0.55, 1.25, vConePower);
-  vec3 col = mix(tint, tintCore, clamp(sharpRay * (0.72 + 0.22 * coneIon), 0.0, 0.92)) + vec3(0.14 * coneIon) * pow(sharpRay, 2.2);
+  vec3 col = mix(tint, tintCore, clamp(sharpRay * (0.72 + 0.22 * coneIon) + coneWaterImpact * 0.5, 0.0, 0.94))
+           + vec3(0.14 * coneIon) * pow(sharpRay, 2.2);
 
-  float alpha = ((sharpRay * 1.85 + softSheet) * azimChase * axialPulse * mist * distFade + ringOrigin) * vConePower * 0.28;
-  if (vMirror > 0.5) alpha *= 0.36;
+  float alpha = (((sharpRay * 1.85 + softSheet) * azimChase * axialPulse * mist * distFade + ringOrigin) * mediumWeight + coneWaterImpact * 0.85) * vConePower * 0.28;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.002) discard;
@@ -2955,9 +3002,9 @@ export class LaserScene implements MvScene {
     return { anglesAttr, styleAttr };
   }
 
-  /** 构建 36 束高锐度 X 型交叉铡刀单束激光（含地面镜像） */
+  /** 构建 88 束高锐度单束激光与水面镜面反射几何体（轴向 24 段细分确保触水折返处丝滑衔接） */
   private buildLaserBeams() {
-    const basePlane = new THREE.PlaneGeometry(1, 1, 8, 1);
+    const basePlane = new THREE.PlaneGeometry(1, 1, 24, 1);
     basePlane.translate(0.5, 0, 0);
 
     const total = BEAM_EMITTER_COUNT * 2;
@@ -3785,10 +3832,20 @@ export class LaserScene implements MvScene {
     this.sheetAnglesAttr.needsUpdate = true;
     this.sheetStyleAttr.needsUpdate = true;
 
-    // 7. 更新 64 束严整对称单束激光阵列（严格按 Cue 编组互斥：每段只呈现一种干净对称几何阵型，整组呼吸与丝滑波浪驱动明暗）
+    // 7. 更新 88 束严整对称单束激光阵列（左右高空下射各加密至 18 束，下射光束精准打穿水面 y=0 并激发 V 形镜面折返反射束）
     const bEnd = this.beamEndAttr.array as Float32Array;
     const bStyle = this.beamStyleAttr.array as Float32Array;
     const waveSweep01 = (beatInfo.pos * 0.95) % 1.0;
+
+    // 辅助映射：给定发射头 b、开阔水面触点 (hx, 0, hz) 与反射射程比 bounceK，生成穿透终点以驱动空中入射 + 触水光斑 + 空中反射束
+    const setWaterBounceTarget = (b: BeamEmitterSpec, hx: number, hz: number, bounceK: number) => {
+      const ext = 1.0 + bounceK;
+      return {
+        tx: b.x + ext * (hx - b.x),
+        ty: -bounceK * b.y,
+        tz: b.z + ext * (hz - b.z),
+      };
+    };
 
     for (let i = 0; i < BEAM_EMITTER_COUNT; i++) {
       const b = this.beamSpecs[i];
@@ -3796,68 +3853,101 @@ export class LaserScene implements MvScene {
       let beamPower = 0;
 
       if (isBreak) {
-        // 间奏空灵段：仅 DJ 皇冠保留 4 束对称柔光星芒静静仰望夜空
+        // 间奏空灵段：DJ 皇冠 4 束对称仰望星芒 + 左右侧廊每隔 3 束静谧柔光轻触水面反射
         if (b.group === 4 && (b.slot === 1 || b.slot === 4 || b.slot === 7 || b.slot === 10)) {
           const fanU = (b.slot / 11) * 2 - 1;
           tx = fanU * 14.0;
           ty = 16.5;
           tz = -14.0;
           beamPower = 0.16 + 0.20 * hatSparkle;
+        } else if ((b.group === 2 || b.group === 3) && (b.slot % 3 === 1)) {
+          const sideSign = b.group === 2 ? -1 : 1;
+          const tgt = setWaterBounceTarget(b, sideSign * 6.4, b.z + 9.0, 0.52);
+          tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+          beamPower = 0.14 + 0.16 * hatSparkle;
         }
       } else if (isBuild) {
-        // Build 蓄能爬升：告别杂乱散点闪烁，改用顶冠与皇冠对称向心收拢光浪
-        const distCenter = Math.abs(b.normX);
+        // Build 蓄能爬升：顶冠 24 束与左右高空 36 束对称向水面中心收拢聚光并激起反射光浪
         const buildFreq = buildProgress > 0.65 ? 4.0 : 2.0;
-        const buildWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + distCenter * 3.8), 2.4);
         if (b.group === 0) {
-          tx = lerp(b.normX * 20.0, b.normX * 5.0, buildProgress);
-          ty = lerp(0.8, 4.2, buildProgress);
-          tz = lerp(6.0, -24.0, buildProgress);
-          beamPower = (0.12 + 0.98 * buildProgress) * (0.08 + 1.08 * buildWave);
-        } else if (b.group === 4 && buildProgress > 0.45) {
+          const distCenter = Math.abs(b.normX);
+          const buildWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + distCenter * 3.8), 2.4);
+          const hx = lerp(b.normX * 14.5, b.normX * 4.2, buildProgress);
+          const hz = lerp(-12.0, -28.0, buildProgress);
+          const tgt = setWaterBounceTarget(b, hx, hz, 0.48);
+          tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+          beamPower = (0.14 + 0.96 * buildProgress) * (0.10 + 1.06 * buildWave);
+        } else if (b.group === 2 || b.group === 3) {
+          const sideSign = b.group === 2 ? -1 : 1;
+          const bayNorm = b.slot / 17.0;
+          const sideWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + (1.0 - bayNorm) * 4.2), 2.2);
+          const hx = sideSign * lerp(7.8, 3.6, buildProgress);
+          const tgt = setWaterBounceTarget(b, hx, b.z + 9.0, 0.54);
+          tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+          beamPower = (0.12 + 0.88 * buildProgress) * (0.14 + 0.96 * sideWave);
+        } else if (b.group === 4 && buildProgress > 0.50) {
           const fanU = (b.slot / 11) * 2 - 1;
-          const cGain = (buildProgress - 0.45) / 0.55;
+          const cGain = (buildProgress - 0.50) / 0.50;
+          const crownWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + Math.abs(fanU) * 3.2), 2.2);
           tx = lerp(fanU * 22.0, fanU * 6.5, cGain);
           ty = lerp(11.0, 17.5, cGain);
           tz = lerp(4.0, -20.0, cGain);
-          beamPower = cGain * 0.92 * (0.12 + 0.95 * buildWave);
+          beamPower = cGain * 0.90 * (0.12 + 0.95 * crownWave);
         }
       } else {
-        // Drop / Chorus / Verse 主秀：单一主角几何阵型 + 平滑对称落点曲线 + 饱满 4/4 正拍泵动明暗动态
+        // Drop / Chorus / Verse 主秀：对称几何秩序 + 饱满 36 束侧廊下射 + 清晰水面折返反射
         const beatImpact = Math.max(kickFast, beatPulse * 0.88);
         const burstCore = 0.74 * hitEnv + 0.94 * beatImpact + 0.48 * snareFast;
 
         if (cueMode === 0) {
-          // 【阵型 0：顶冠 24 束对称弧形光帘 · 左右双翼乒乓呼吸】—— 其余编组全部归零留白
+          // 【阵型 0：穹顶 24 束 + 左右侧廊 36 束环绕下射水镜画廊 · 双翼乒乓呼吸】—— 仰射组归零留白
           if (b.group === 0) {
             const isLeft = b.normX < 0;
-            const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : 0.06;
+            const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : 0.14;
             const wingRibbon = 0.74 + 0.36 * Math.cos((Math.abs(b.normX) - waveSweep01) * Math.PI * 1.5);
-            tx = b.normX * 22.0;
-            ty = 0.18;
-            tz = -6.0 + (1.0 - b.normX * b.normX) * 16.0;
-            beamPower = (0.18 + 1.28 * burstCore) * wingActive * Math.max(0.35, wingRibbon) * dropPower;
+            const hx = b.normX * 14.2;
+            const hz = -19.0 + (1.0 - b.normX * b.normX) * 14.0;
+            const tgt = setWaterBounceTarget(b, hx, hz, 0.52);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.18 + 1.28 * burstCore) * wingActive * Math.max(0.38, wingRibbon) * dropPower;
+          } else if (b.group === 2 || b.group === 3) {
+            const sideSign = b.group === 2 ? -1 : 1;
+            const isLeft = sideSign < 0;
+            const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 0.92 : 0.22;
+            const bayNorm = b.slot / 17.0;
+            const corridorRibbon = 0.68 + 0.38 * Math.cos((bayNorm - waveSweep01) * Math.PI * 2.0);
+            const tgt = setWaterBounceTarget(b, sideSign * 6.8, b.z + 9.2, 0.54);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.20 + 1.12 * burstCore) * wingActive * Math.max(0.42, corridorRibbon) * dropPower;
           }
         } else if (cueMode === 1) {
-          // 【阵型 1：双环激光锥笼主场 + 左右侧廊 12 束等高纵深流光导引】—— 中央单束全部归零防穿插
+          // 【阵型 1：双环激光锥笼主场 + 左右各 18 束（共 36 束）高密斜射长廊扎入水面并 V 形反射弹起】
           if (b.group === 2 || b.group === 3) {
             const sideSign = b.group === 2 ? -1 : 1;
-            const bayNorm = b.slot / 5.0; // 0..1 由舞台向观众席
-            const depthWave = Math.pow(clamp01(1.0 - Math.abs(bayNorm - waveSweep01) * 2.2), 1.8);
-            tx = sideSign * 5.6;
-            ty = 0.25;
-            tz = b.z + 18.0;
-            beamPower = (0.10 + 1.28 * Math.max(depthWave, 0.65 * burstCore * (bayNorm < 0.5 ? 1.0 : 0.35))) * dropPower;
+            const bayNorm = b.slot / 17.0; // 0..1 由舞台向观众席等距排开 18 束
+            // 双波峰连绵宽光浪 + 清晰基础骨架（保证两侧整排 18+18 束绵密可见且富有流动明暗层次）
+            const flowWave = 0.5 + 0.5 * Math.cos((bayNorm - waveSweep01) * Math.PI * 4.0);
+            const depthSurge = 0.34 + 0.72 * Math.pow(flowWave, 1.6);
+            const hx = sideSign * (5.6 + 0.65 * Math.sin(sweepClock * 0.8));
+            const tgt = setWaterBounceTarget(b, hx, b.z + 9.5, 0.58);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.24 + 1.16 * burstCore) * depthSurge * dropPower;
           }
         } else if (cueMode === 2) {
-          // 【阵型 2：天地一问一答 · 正拍顶冠铡刀齐劈 vs 反拍皇冠与台唇向天盛开】—— 正反拍严格分时，绝不同帧交叉
+          // 【阵型 2：天地一问一答 · 正拍 60 束高空齐劈水面激起满池折光 vs 反拍 28 束皇冠向天盛开】
           const downWeight = Math.max(kickFast, beatPulse);
           const upWeight = clamp01(Math.max(snareFast * 1.15, (1.0 - beatPulse) * (0.48 + 0.75 * hitEnv)) * (1.0 - 0.65 * kickFast));
           if (b.group === 0) {
-            tx = b.x * 1.08;
-            ty = 0.12;
-            tz = -8.0 + (1.0 - b.normX * b.normX) * 8.0;
-            beamPower = (0.03 + 1.42 * downWeight) * dropPower;
+            const hx = b.x * 0.92;
+            const hz = -17.5 + (1.0 - b.normX * b.normX) * 9.5;
+            const tgt = setWaterBounceTarget(b, hx, hz, 0.48);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.04 + 1.40 * downWeight) * dropPower;
+          } else if (b.group === 2 || b.group === 3) {
+            const sideSign = b.group === 2 ? -1 : 1;
+            const tgt = setWaterBounceTarget(b, sideSign * 6.2, b.z + 9.0, 0.54);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.04 + 1.26 * downWeight) * dropPower;
           } else if (b.group === 4) {
             const fanU = (b.slot / 11) * 2 - 1;
             const crownSpread = 1.0 + 0.18 * snareFast;
@@ -3872,31 +3962,39 @@ export class LaserScene implements MvScene {
             beamPower = (0.02 + 1.24 * upWeight) * dropPower;
           }
         } else if (cueMode === 3) {
-          // 【阵型 3：平行双层对称天际线 · 中心向外丝滑海啸波】—— 上下平行不交叉，波峰璀璨波谷深邃
+          // 【阵型 3：中心向外丝滑海啸波 · 顶冠 24 束向左右 36 束水镜侧廊接力推进】
           const distCenter = Math.abs(b.normX);
-          const waveCrest = Math.pow(clamp01(1.0 - Math.abs(distCenter - waveSweep01) * 2.3), 2.0);
-          const surge = 0.52 + 0.72 * burstCore;
+          const surge = 0.54 + 0.72 * burstCore;
           if (b.group === 0) {
-            tx = b.normX * 24.0;
-            ty = 4.2 + (1.0 - distCenter * distCenter) * 1.8;
-            tz = 14.0;
-            beamPower = (0.04 + 1.40 * Math.max(waveCrest * surge, burstCore * (distCenter < 0.28 ? 0.95 : 0.0))) * dropPower;
-          } else if (b.group === 1) {
-            const outerCrest = Math.pow(clamp01(1.0 - Math.abs((1.0 - distCenter) - waveSweep01) * 2.3), 2.0);
-            tx = b.normX * 24.0;
-            ty = 12.8 + (1.0 - distCenter * distCenter) * 2.0;
-            tz = 12.0;
-            beamPower = (0.03 + 1.28 * outerCrest * surge) * dropPower;
+            const waveCrest = Math.pow(clamp01(1.0 - Math.abs(distCenter - waveSweep01) * 2.2), 1.9);
+            const hx = b.normX * 15.2;
+            const hz = -15.5 + (1.0 - distCenter * distCenter) * 10.0;
+            const tgt = setWaterBounceTarget(b, hx, hz, 0.50);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.08 + 1.36 * Math.max(waveCrest * surge, burstCore * (distCenter < 0.28 ? 0.95 : 0.0))) * dropPower;
+          } else if (b.group === 2 || b.group === 3) {
+            const sideSign = b.group === 2 ? -1 : 1;
+            const bayNorm = b.slot / 17.0;
+            const sideWave = 0.30 + 0.75 * Math.pow(0.5 + 0.5 * Math.cos((bayNorm - waveSweep01) * Math.PI * 3.0), 1.8);
+            const tgt = setWaterBounceTarget(b, sideSign * 6.0, b.z + 9.5, 0.56);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.14 + 1.08 * sideWave * surge) * dropPower;
           }
         } else {
-          // 【主歌 / 常规过渡段 (cueMode === -1)】：仅保留顶冠 24 束舒缓对称柔光涟漪，留足克制呼吸感
+          // 【主歌 / 常规过渡段 (cueMode === -1)】：顶冠柔光涟漪 + 左右侧廊舒缓触水反射导引
           if (b.group === 0) {
             const distCenter = Math.abs(b.normX);
             const gentleWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - distCenter * 3.0), 2.2);
-            tx = b.normX * 19.5;
-            ty = 2.2 + (1.0 - distCenter * distCenter) * 1.6;
-            tz = 10.0;
-            beamPower = (0.06 + 0.72 * gentleWave * (0.45 + 0.55 * burstCore)) * dropPower;
+            const tgt = setWaterBounceTarget(b, b.normX * 13.5, -16.0, 0.46);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.08 + 0.72 * gentleWave * (0.45 + 0.55 * burstCore)) * dropPower;
+          } else if (b.group === 2 || b.group === 3) {
+            const sideSign = b.group === 2 ? -1 : 1;
+            const bayNorm = b.slot / 17.0;
+            const corridorGentle = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - bayNorm * 3.2), 2.0);
+            const tgt = setWaterBounceTarget(b, sideSign * 6.5, b.z + 9.0, 0.52);
+            tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
+            beamPower = (0.14 + 0.56 * corridorGentle * (0.45 + 0.55 * burstCore)) * dropPower;
           }
         }
       }
