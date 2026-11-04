@@ -147,6 +147,10 @@ before(async () => {
     starryMod,
     laserMod,
     blackholeMod,
+    cathedralMod,
+    highwayMod,
+    pavilionMod,
+    eclipseMod,
   ] = await Promise.all([
     load('/src/director/music.ts'),
     load('/src/director/lyrics.ts'),
@@ -201,6 +205,10 @@ before(async () => {
     load('/src/scenes/starry.ts'),
     load('/src/scenes/laser.ts'),
     load('/src/scenes/blackhole.ts'),
+    load('/src/scenes/cathedral.ts'),
+    load('/src/scenes/highway.ts'),
+    load('/src/scenes/pavilion.ts'),
+    load('/src/scenes/eclipse.ts'),
   ]);
   mods = {
     Music: musicMod.Music,
@@ -265,6 +273,10 @@ before(async () => {
     evalLeadExponentialBreath: laserMod.evalLeadExponentialBreath,
     LEAD_EXP_SLOPE: laserMod.LEAD_EXP_SLOPE,
     BlackHoleScene: blackholeMod.BlackHoleScene,
+    CathedralScene: cathedralMod.CathedralScene,
+    HighwayScene: highwayMod.HighwayScene,
+    PavilionScene: pavilionMod.PavilionScene,
+    EclipseScene: eclipseMod.EclipseScene,
   };
 });
 
@@ -557,7 +569,7 @@ test('Director 镜头调度：消除段尾硬切碎镜、正确挂接同场景 p
   assert.ok(cityCutFrame.fx.fade > 0.85, 'City 跨城区远距同场景切镜切点应有柔和暗场呼吸遮蔽');
 });
 
-test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随机进度条 Seek 纯函数一致性', () => {
+test('全场景（40 场景）同场景连续切镜 60fps 相机连续性与随机进度条 Seek 纯函数一致性', () => {
   const m = mods;
   const { music, lyrics, palette, init } = buildMockFixture();
   const sceneSpecs = [
@@ -566,6 +578,10 @@ test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随�
     ['phoenix', () => new m.PhoenixScene(init, 'pulse'), ['stage', 'soar', 'sonic', 'altar', 'stage']],
     ['underwater', () => new m.UnderwaterScene(init, 'pulse'), ['canyon', 'dive', 'orbit', 'abyss', 'canyon']],
     ['blackhole', () => new m.BlackHoleScene(init, 'pulse'), ['observatory', 'glide', 'horizon', 'astrolabe', 'observatory']],
+    ['cathedral', () => new m.CathedralScene(init, 'pulse'), ['sanctuary', 'aisle', 'organ', 'soar', 'sanctuary']],
+    ['highway', () => new m.HighwayScene(init, 'pulse'), ['cockpit', 'chase', 'bridge', 'warp', 'cockpit']],
+    ['pavilion', () => new m.PavilionScene(init, 'pulse'), ['pavilion', 'water', 'eaves', 'zenith', 'pavilion']],
+    ['eclipse', () => new m.EclipseScene(init, 'pulse'), ['canyon', 'corona', 'ridge', 'abyss', 'canyon']],
     ['aurora', () => new m.Aurora(init, 'pulse'), ['wide', 'lake', 'up', 'wide']],
     ['fountain', () => new m.FountainScene(init, 'pulse'), ['courtyard', 'orbit', 'skim', 'crown', 'courtyard']],
     ['starry', () => new m.StarryScene(init, 'pulse'), ['mirror', 'glide', 'zenith', 'astrolabe', 'mirror']],
@@ -611,6 +627,7 @@ test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随�
     // City 近距同走廊机位验证平滑，跨城区远距切镜由导演层施加暗场呼吸保护防穿楼
     ['city-canyon', () => new m.City(init, 'pulse'), ['canyon', 'canyon', 'canyon']],
   ];
+  const KNOWN_SCENES = sceneSpecs;
 
   // 精心挑选一组奇偶与高位交替翻转的种子，确保 side = random() < 0.5 ? -1 : 1 在相邻镜头间发生正负切换
   const seeds = [0x00000001, 0xfffffffe, 0x13579bdf, 0xea864202, 0x31415926, 0xcafe0001, 0x77777777, 0x88888888, 0x12348765];
@@ -618,7 +635,7 @@ test('全场景（36 场景）同场景连续切镜 60fps 相机连续性与随�
   const dt = 1 / 60;
   const sec = music.a.sections[3];
 
-  for (const [label, createScene, variants] of sceneSpecs) {
+  for (const [label, createScene, variants] of KNOWN_SCENES) {
     const sceneId = label.split('-')[0];
     const scene = createScene();
     const shots = variants.map((variant, i) => ({
