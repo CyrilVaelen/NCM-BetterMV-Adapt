@@ -31,7 +31,7 @@ const STAGE_LIP_Z = -46.8;
 
 /** 六大舞台灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
 const SHEET_EMITTER_COUNT = 12;
-const SCAN_LASER_COUNT = 10;
+const SCAN_LASER_COUNT = 12;
 const WASH_FIXTURE_COUNT = 24;
 const BEAM_EMITTER_COUNT = 152;
 const CONE_LAYER_COUNT = 2;
@@ -113,21 +113,26 @@ interface WashFixtureSpec {
   groupIdx: number;
 }
 
-/** 图二风格：连续半透明玻璃感几何交叉扫描激光平面静态布局 */
+/** 图二风格：连续半透明玻璃感几何交叉扇形扫描激光静态布局（三维视锥靶点直指架构） */
 interface ScanLaserEmitterSpec {
   x: number;
   y: number;
   z: number;
-  /** 0=舞台左右下角斜向上交叉扫描扇, 1=巨幕顶冠内侧高空交叉扫描扇, 2=灯塔外翼斜切扫描扇, 3=前场走廊头顶交叉扫描扇 */
+  /** 0=舞台左右底角对角仰射大扇, 1=巨幕顶冠高空交叉下切扇, 2=灯塔外翼横切扇, 3=台唇内侧迎面开合扇 */
   group: number;
   /** 组内序号 */
   idx: number;
   /** 左右符号 (-1 或 +1) */
   side: number;
-  baseYaw: number;
-  basePitch: number;
+  /** 扇面中轴基准瞄准点世界坐标（确保 100% 穿过相机取景框核心区） */
+  baseTx: number;
+  baseTy: number;
+  baseTz: number;
+  /** 扇面基准滚转倾角（弧度） */
   baseRoll: number;
+  /** 扇面半张角正切 tan(halfAngle) */
   spread: number;
+  /** 扇面射程长度（米） */
   length: number;
 }
 
@@ -1190,84 +1195,91 @@ function buildWashFixtures(): WashFixtureSpec[] {
 }
 
 /**
- * 构建 10 座图二风格连续半透明几何交叉扫描激光平面发射器（严格避开中央专辑封面可视盘面）：
- * - 0..1 (group=0): 舞台左右下角外侧斜向上大张角交叉扫描扇（还原图二左下/右下璀璨顶点向高空对角切穿的标志性几何扇面）；
- * - 2..3 (group=1): 巨幕顶冠上方左右内侧倾斜扫描扇（与下角仰射扇在半空交汇形成菱形/多边形透光叠影）；
- * - 4..5 (group=2): 两侧频谱灯塔外翼中腰大倾角滚转扫描扇；
- * - 6..9 (group=3): 观众席中前场高空走廊对称内切扫描扇（营造头顶近场玻璃感扫描天幕与水面折光）。
+ * 构建 12 座图二风格连续半透明几何交叉扇形扫描激光发射器（严格避开中央专辑封面可视盘面，100% 射向镜头中心视野交叉）：
+ * - 0..1  (group=0): 舞台左右底角外翼对角仰射巨型扇（还原图二左下/右下璀璨顶点向高空对角 X 切穿的标志性大三角形扇面）；
+ * - 2..5  (group=1): 巨幕顶冠上方 4 台交叉下切扫描扇（与底角仰射扇在主屏前上方半空交汇，切出多层透亮菱形/多边形）；
+ * - 6..9  (group=2): 两侧频谱灯塔外翼中腰与高腰对切扫描扇（横向对扫并掠过湿润水面激起扇形折光）；
+ * - 10..11(group=3): 舞台台唇内侧对称迎面仰射开合扇（向观众头顶张开宽幅玻璃感扫描天幕）。
  */
 function buildScanLaserEmitters(): ScanLaserEmitterSpec[] {
   const list: ScanLaserEmitterSpec[] = [];
-  // Group 0: 舞台左右下角外翼斜向上交叉扫描平面
+  // Group 0 (2 座): 舞台左右底角向对侧高空 X 型斜射巨扇
   for (let i = 0; i < 2; i++) {
     const side = i === 0 ? -1 : 1;
     list.push({
-      x: side * 11.9,
-      y: STAGE_DECK_H + 0.42,
-      z: -48.5,
+      x: side * 11.8,
+      y: STAGE_DECK_H + 0.36,
+      z: -48.2,
       group: 0,
       idx: i,
       side,
-      baseYaw: -side * 0.24,
-      basePitch: 0.23,
-      baseRoll: side * 0.64,
-      spread: 0.50,
-      length: 78.0,
+      baseTx: -side * 8.4,
+      baseTy: 13.6,
+      baseTz: -14.0,
+      baseRoll: side * 0.62,
+      spread: 0.46,
+      length: 68.0,
     });
   }
-  // Group 1: 巨幕顶冠上方交叉俯仰扫描平面
-  for (let i = 0; i < 2; i++) {
-    const side = i === 0 ? -1 : 1;
+  // Group 1 (4 座): 巨幕顶冠上方 4 台向镜头前上方交叉下切扫描扇
+  const crownXs = [-8.6, -3.2, 3.2, 8.6];
+  for (let i = 0; i < 4; i++) {
+    const x = crownXs[i];
+    const side = x < 0 ? -1 : 1;
+    const isOuter = Math.abs(x) > 6.0;
     list.push({
-      x: side * 4.9,
-      y: 18.18,
-      z: -51.4,
+      x,
+      y: 18.22,
+      z: -51.5,
       group: 1,
       idx: i,
       side,
-      baseYaw: -side * 0.13,
-      basePitch: 0.04,
-      baseRoll: -side * 0.52,
-      spread: 0.54,
-      length: 78.0,
+      baseTx: isOuter ? -side * 5.8 : side * 4.6,
+      baseTy: isOuter ? 8.2 : 9.4,
+      baseTz: -10.0,
+      baseRoll: -side * (isOuter ? 0.52 : 0.36),
+      spread: 0.48,
+      length: 70.0,
     });
   }
-  // Group 2: 灯塔外翼中腰大倾角对切扫描平面
-  for (let i = 0; i < 2; i++) {
-    const side = i === 0 ? -1 : 1;
-    list.push({
-      x: side * 13.4,
-      y: 9.6,
-      z: -49.8,
-      group: 2,
-      idx: i,
-      side,
-      baseYaw: -side * 0.28,
-      basePitch: 0.06,
-      baseRoll: side * 0.44,
-      spread: 0.46,
-      length: 72.0,
-    });
-  }
-  // Group 3: 中前场高空走廊头顶交叉扫描平面
-  const foreZs = [-34.0, -19.5];
-  for (let k = 0; k < 2; k++) {
+  // Group 2 (4 座): 两侧频谱灯塔外翼中腰与高腰横向对切扫描扇
+  const towerYs = [6.8, 13.2];
+  for (let row = 0; row < 2; row++) {
     for (let s = 0; s < 2; s++) {
       const side = s === 0 ? -1 : 1;
       list.push({
-        x: side * 16.2,
-        y: k === 0 ? 14.2 : 13.6,
-        z: foreZs[k],
-        group: 3,
-        idx: k * 2 + s,
+        x: side * 12.6,
+        y: towerYs[row],
+        z: -49.8,
+        group: 2,
+        idx: row * 2 + s,
         side,
-        baseYaw: -side * 0.52,
-        basePitch: -0.14,
-        baseRoll: -side * 0.36,
-        spread: 0.44,
-        length: 56.0,
+        baseTx: -side * 5.4,
+        baseTy: row === 0 ? 10.2 : 4.2,
+        baseTz: -12.0,
+        baseRoll: side * (row === 0 ? 0.46 : -0.50),
+        spread: 0.42,
+        length: 66.0,
       });
     }
+  }
+  // Group 3 (2 座): 台唇内侧对称迎面仰射扫描扇
+  for (let i = 0; i < 2; i++) {
+    const side = i === 0 ? -1 : 1;
+    list.push({
+      x: side * 5.6,
+      y: STAGE_DECK_H + 0.28,
+      z: -47.0,
+      group: 3,
+      idx: i,
+      side,
+      baseTx: -side * 3.8,
+      baseTy: 11.4,
+      baseTz: -8.0,
+      baseRoll: side * 0.38,
+      spread: 0.44,
+      length: 62.0,
+    });
   }
   return list;
 }
@@ -2967,53 +2979,52 @@ void main() {
 `;
 
 // ============================================================================
-// 12. 交叉几何平面扫描激光着色器 (SCAN_LASER — 图二风格锐利振镜驻留边界 + 无条纹丝滑半透明琉璃激光面)
+// 12. 交叉几何扇形扫描激光着色器 (SCAN_LASER — 图二风格锐利振镜驻留边界 + 物理掠射增亮丝滑琉璃扇面)
 // ============================================================================
 const SCAN_LASER_VERT = /* glsl */ `
 attribute vec4 aScanOrigin; // xyz: 发射顶点世界坐标, w: 0=空中本体, 1=水面镜像
-attribute vec4 aScanAngles; // x: yaw(偏航), y: pitch(俯仰), z: roll(滚转), w: spread(半张角 tan)
-attribute vec4 aScanStyle;  // x: 射程长度(米), y: 功率强度, z: 色板槽位 [0..5], w: 内部折面棱线位置
+attribute vec4 aScanAxis;   // xyz: 扇面中轴单位方向向量, w: 射程长度(米)
+attribute vec4 aScanWing;   // xyz: 扇面横向展开向量(正交于 Axis，模长=tan半张角), w: 功率强度
+attribute vec4 aScanStyle;  // x: 色板槽位 [0..5], y: 内部折面棱线位置, z: 振镜扫描流光相位, w: 左右极性
 varying vec2 vScanUv;       // x ∈ [-1..1] 横向归一化张角, y ∈ [0..1] 射程归一化距离
 varying vec3 vWorldPos;
 varying vec3 vOrigin;
+varying vec3 vPlaneNormal;
 varying vec4 vScanMeta;     // (power, colorMix, length, spread)
-varying vec2 vScanExtra;    // (creasePos, mirror)
+varying vec3 vScanExtra;    // (creasePos, sweepPhase, mirror)
 
 void main() {
   vScanUv = vec2(position.x, position.z);
-  vScanMeta = vec4(aScanStyle.y, aScanStyle.z, aScanStyle.x, aScanAngles.w);
-  vScanExtra = vec2(aScanStyle.w, aScanOrigin.w);
+  float power = aScanWing.w;
+  float spread = max(0.05, length(aScanWing.xyz));
+  vScanMeta = vec4(power, aScanStyle.x, aScanAxis.w, spread);
+  vScanExtra = vec3(aScanStyle.y, aScanStyle.z, aScanOrigin.w);
 
-  if (aScanStyle.y < 0.006) {
+  if (power < 0.005) {
     vWorldPos = vec3(0.0);
     vOrigin = vec3(0.0);
+    vPlaneNormal = vec3(0.0, 1.0, 0.0);
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
 
-  float dist = position.z * aScanStyle.x;
-  float lateral = position.x * dist * aScanAngles.w;
-  // 纯平紧绷几何激光平面（零正弦波浪弯曲），使多片扫描激光交汇时切割出凌厉笔直的多边形棱边
-  vec3 local = vec3(lateral, 0.0, dist);
-
-  float cr = cos(aScanAngles.z), sr = sin(aScanAngles.z);
-  local.xy = mat2(cr, -sr, sr, cr) * local.xy;
-
-  float cp = cos(aScanAngles.y), sp = sin(aScanAngles.y);
-  local.yz = mat2(cp, -sp, sp, cp) * local.yz;
-
-  float cy = cos(aScanAngles.x), sy = sin(aScanAngles.x);
-  local.xz = mat2(cy, sy, -sy, cy) * local.xz;
-
+  float dist = position.z * aScanAxis.w;
   vec3 orig = aScanOrigin.xyz;
-  vec3 wp = orig + local;
+  // 纯平紧绷三角形扇面：position.z=0 严格收束于发射星点 orig，随距离沿 Axis ± Wing 笔直张开
+  vec3 wp = orig + (aScanAxis.xyz + aScanWing.xyz * position.x) * dist;
+  vec3 nrm = cross(aScanAxis.xyz, aScanWing.xyz);
+  float nLen = length(nrm);
+  nrm = nLen > 1e-5 ? nrm / nLen : vec3(0.0, 1.0, 0.0);
+
   if (aScanOrigin.w > 0.5) {
     orig.y = -orig.y;
     wp.y = -wp.y;
+    nrm.y = -nrm.y;
   }
 
   vOrigin = orig;
   vWorldPos = wp;
+  vPlaneNormal = nrm;
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -3025,8 +3036,9 @@ uniform float uSheetSpread;
 varying vec2 vScanUv;
 varying vec3 vWorldPos;
 varying vec3 vOrigin;
+varying vec3 vPlaneNormal;
 varying vec4 vScanMeta;
-varying vec2 vScanExtra;
+varying vec3 vScanExtra;
 ${GLSL_HAZE_COMMON}
 ${GLSL_PALETTE_COMMON}
 
@@ -3036,9 +3048,10 @@ void main() {
   float vLength = vScanMeta.z;
   float vSpread = vScanMeta.w;
   float vCrease = vScanExtra.x;
-  float vMirror = vScanExtra.y;
+  float vSweepPhase = vScanExtra.y;
+  float vMirror = vScanExtra.z;
 
-  if (vPower < 0.006) discard;
+  if (vPower < 0.005) discard;
   bool underStageBox = (vWorldPos.z < -46.75 && abs(vWorldPos.x) < 15.6);
   if (vMirror > 0.5 && vWorldPos.y > 0.02 && underStageBox) discard;
 
@@ -3049,49 +3062,56 @@ void main() {
   float absU = abs(u);
   if (absU > 1.03) discard;
 
-  // 1. 世界米制恒定锐度外边界振镜驻留光束（从顶点星芒一路笔直延伸至远端，绝不随扇面张开变糊）
-  float spanHalfMeters = max(0.16, r * vLength * vSpread);
+  // 1. 世界米制恒定锐度双外边界振镜驻留光束（从扇尖顶点星芒一路笔直延伸至远端，高亮度勾勒大三角形轮廓）
+  float spanHalfMeters = max(0.18, r * vLength * vSpread);
   float edgeMeters = (1.0 - min(1.0, absU)) * spanHalfMeters;
-  float ionize = smoothstep(0.40, 2.20, vPower);
-  float boundaryCore = exp(-(edgeMeters * edgeMeters) / mix(0.0072, 0.0042, ionize)) * (1.42 + 0.52 * ionize);
-  float boundaryGlow = exp(-edgeMeters * 4.5) * (0.48 + 0.28 * ionize);
+  float ionize = smoothstep(0.35, 2.10, vPower);
+  float boundaryCore = exp(-(edgeMeters * edgeMeters) / mix(0.019, 0.011, ionize)) * (2.25 + 0.72 * ionize);
+  float boundaryGlow = exp(-edgeMeters * 2.75) * (0.84 + 0.38 * ionize);
 
-  // 2. 扇面内部单道几何折面棱线射线（还原图二高速多边形振镜折点射线，无密集梳齿条纹）
-  float creaseMeters = abs(u - vCrease) * spanHalfMeters;
-  float creaseRay = (exp(-(creaseMeters * creaseMeters) / 0.0080) * 0.64 + exp(-creaseMeters * 5.4) * 0.18)
-                  * smoothstep(0.015, 0.10, r);
+  // 2. 扇面内部 2 道几何折面棱线射线（还原图二高速多边形振镜折点射线，绝无密集梳齿条纹）
+  float cDist1 = abs(u - vCrease) * spanHalfMeters;
+  float cDist2 = abs(u + vCrease * 0.58) * spanHalfMeters;
+  float creaseRay = (exp(-(cDist1 * cDist1) / 0.016) * 0.96 + exp(-cDist1 * 3.6) * 0.32
+                   + exp(-(cDist2 * cDist2) / 0.022) * 0.52 + exp(-cDist2 * 4.2) * 0.18)
+                  * smoothstep(0.012, 0.085, r);
 
-  // 3. 连续丝滑半透明琉璃激光内腔（正弦扫描边缘自然微凝，多扇交叠时切出通透发光菱形/多边形）
-  float galvoDwell = 1.0 / sqrt(max(0.15, 1.03 - u * u));
-  float glassVeil = (1.0 - smoothstep(0.985, 1.008, absU)) * (0.062 + 0.048 * galvoDwell);
+  // 3. 连续丝滑半透明琉璃激光扇面内腔（边缘振镜驻留自然聚光 + 扫描流光呼吸，多扇交叠切出晶莹几何菱形）
+  float galvoDwell = 1.0 / sqrt(max(0.14, 1.03 - u * u));
+  float fanShimmer = 0.84 + 0.28 * cos((u - vSweepPhase) * 3.1415926);
+  float glassVeil = (1.0 - smoothstep(0.988, 1.008, absU)) * (0.148 + 0.112 * galvoDwell) * fanShimmer;
 
-  // 4. 细腻三维空气烟雾散射与发射顶点璀璨星芒核 (✦)
-  vec2 hazeCoord = vWorldPos.xz * 0.072 + vec2(vWorldPos.y * 0.056, -uTime * 0.18);
+  // 4. 物理掠射角光程增亮（视线与扇面夹角越小，穿过的激光雾膜光程越长、扇面越透亮）+ 三维空气烟雾质感
+  vec3 viewDir = normalize(cameraPosition - vWorldPos);
+  float cosInc = abs(dot(normalize(vPlaneNormal), viewDir));
+  float slabBoost = 1.0 + 1.15 * pow(1.0 - clamp(cosInc, 0.0, 1.0), 2.0) * (1.0 - vMirror * 0.5);
+
+  vec2 hazeCoord = vWorldPos.xz * 0.068 + vec2(vWorldPos.y * 0.052, -uTime * 0.18);
   float h1 = hazeFbm(hazeCoord);
   float h2 = hazeFbm(hazeCoord * 2.1 + vec2(uTime * 0.12, 3.1));
-  float smokeMedium = 0.48 + 0.86 * pow(h1 * 0.65 + h2 * 0.35, 1.22);
+  float smokeMedium = 0.58 + 0.82 * pow(h1 * 0.65 + h2 * 0.35, 1.18);
 
+  // 5. 扇尖发射源璀璨星芒核 (✦)
   float dOrigin = length(vWorldPos - vOrigin);
-  float apexStar = exp(-dOrigin * 1.35) * exp(-absU * 2.8) * (1.65 + 0.55 * ionize) * (1.0 - vMirror * 0.55);
-  float distAtten = (1.0 - smoothstep(0.68, 1.0, r)) * smoothstep(0.0, 0.008, r);
-  float eyeProx = exp(-abs(vWorldPos.y - cameraPosition.y) * 0.40) * (1.0 - vMirror);
-  float mieBoost = 1.0 + 0.36 * eyeProx;
+  float apexStar = (exp(-dOrigin * 0.92) * exp(-absU * 2.0) * 2.55 + exp(-dOrigin * 2.5) * 1.75)
+                 * (1.0 + 0.45 * ionize) * (1.0 - vMirror * 0.52);
+  float distAtten = (1.0 - smoothstep(0.72, 1.0, r)) * smoothstep(0.0, 0.005, r);
 
   vec3 baseLaser, baseCore;
-  sampleLaserPalette(vColorMix + u * uSheetSpread * 0.52, baseLaser, baseCore);
+  sampleLaserPalette(vColorMix + u * uSheetSpread * 0.50, baseLaser, baseCore);
 
   float beamHighlight = boundaryCore + boundaryGlow + creaseRay;
-  float density = (glassVeil * smokeMedium + beamHighlight * (0.65 + 0.35 * smokeMedium)) * distAtten * mieBoost + apexStar * 0.34;
-  float coreMixFactor = clamp(boundaryCore * 0.68 + creaseRay * 0.45 + apexStar * 0.58 + ionize * 0.14, 0.0, 0.94);
+  float density = (glassVeil * smokeMedium * slabBoost + beamHighlight * (0.72 + 0.28 * smokeMedium)) * distAtten + apexStar * 0.42;
+  float coreMixFactor = clamp(boundaryCore * 0.72 + creaseRay * 0.48 + apexStar * 0.65 + ionize * 0.16, 0.0, 0.96);
   vec3 col = mix(baseLaser, baseCore, coreMixFactor)
-           + vec3(0.18 * ionize) * clamp(boundaryCore * 0.55 + apexStar * 0.40, 0.0, 0.34);
+           + vec3(0.22 * ionize) * clamp(boundaryCore * 0.58 + apexStar * 0.45, 0.0, 0.42);
 
-  float rippleGain = 0.50 + 0.14 * waterRipple;
+  float rippleGain = 0.52 + 0.15 * waterRipple;
   float mediumWeight = vMirror < 0.5
-    ? mix(0.26 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
-    : mix(rippleGain, 0.62 * exp(-max(0.0, vWorldPos.y) * 0.18), smoothstep(-0.04, 0.06, vWorldPos.y));
+    ? mix(0.28 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
+    : mix(rippleGain, 0.64 * exp(-max(0.0, vWorldPos.y) * 0.16), smoothstep(-0.04, 0.06, vWorldPos.y));
 
-  float alpha = density * vPower * 0.215 * mediumWeight;
+  float alpha = density * vPower * 0.38 * mediumWeight;
   alpha *= (1.0 - uBlackout);
 
   if (alpha < 0.002) discard;
@@ -3295,7 +3315,8 @@ export class LaserScene implements MvScene {
   private readonly sheetStyleAttr: THREE.InstancedBufferAttribute;
 
   private readonly scanOriginAttr: THREE.InstancedBufferAttribute;
-  private readonly scanAnglesAttr: THREE.InstancedBufferAttribute;
+  private readonly scanAxisAttr: THREE.InstancedBufferAttribute;
+  private readonly scanWingAttr: THREE.InstancedBufferAttribute;
   private readonly scanStyleAttr: THREE.InstancedBufferAttribute;
 
   private readonly beamStartAttr: THREE.InstancedBufferAttribute;
@@ -3434,10 +3455,11 @@ export class LaserScene implements MvScene {
     this.sheetAnglesAttr = sheets.anglesAttr;
     this.sheetStyleAttr = sheets.styleAttr;
 
-    // 7b. 构建 10 座图二风格交叉几何平面扫描激光（锐利振镜驻留边 + 连续半透明琉璃内腔，×2 本体+镜像 = 20 实例）
+    // 7b. 构建 12 座图二风格交叉几何扇形扫描激光（三维视锥靶点直指 + 锐利振镜驻留边 + 丝滑琉璃内腔，×2 本体+镜像 = 24 实例）
     const scans = this.buildScanLasers();
     this.scanOriginAttr = scans.originAttr;
-    this.scanAnglesAttr = scans.anglesAttr;
+    this.scanAxisAttr = scans.axisAttr;
+    this.scanWingAttr = scans.wingAttr;
     this.scanStyleAttr = scans.styleAttr;
 
     // 8. 构建 152 束军鼓/重音高密单束激光（×2 本体+镜像 = 304 实例）
@@ -4139,10 +4161,10 @@ export class LaserScene implements MvScene {
     return { originAttr, specAttr, stateAttr };
   }
 
-  /** 构建 10 座图二风格交叉几何平面扫描激光网格（纯平紧绷三角形扇面，无波浪折皱与梳齿条纹，含水面镜像） */
+  /** 构建 12 座图二风格交叉几何扇形扫描激光网格（Origin + Axis + Wing 正交参数化，100% 锁定镜头视野中心交叉） */
   private buildScanLasers() {
-    const segX = 32;
-    const segZ = 16;
+    const segX = 36;
+    const segZ = 18;
     const positions: number[] = [];
     const indices: number[] = [];
 
@@ -4171,7 +4193,8 @@ export class LaserScene implements MvScene {
     instGeo.instanceCount = total;
 
     const originArr = new Float32Array(total * 4);
-    const anglesArr = new Float32Array(total * 4);
+    const axisArr = new Float32Array(total * 4);
+    const wingArr = new Float32Array(total * 4);
     const styleArr = new Float32Array(total * 4);
 
     for (let mirror = 0; mirror < 2; mirror++) {
@@ -4183,26 +4206,34 @@ export class LaserScene implements MvScene {
         originArr[slot + 2] = sc.z;
         originArr[slot + 3] = mirror;
 
-        anglesArr[slot] = sc.baseYaw;
-        anglesArr[slot + 1] = sc.basePitch;
-        anglesArr[slot + 2] = sc.baseRoll;
-        anglesArr[slot + 3] = sc.spread;
+        axisArr[slot] = 0;
+        axisArr[slot + 1] = 0;
+        axisArr[slot + 2] = 1;
+        axisArr[slot + 3] = sc.length;
 
-        styleArr[slot] = sc.length;
-        styleArr[slot + 1] = 0;
-        styleArr[slot + 2] = (i % 6);
-        styleArr[slot + 3] = sc.side * 0.28;
+        wingArr[slot] = sc.spread;
+        wingArr[slot + 1] = 0;
+        wingArr[slot + 2] = 0;
+        wingArr[slot + 3] = 0;
+
+        styleArr[slot] = (i % 6);
+        styleArr[slot + 1] = sc.side * 0.28;
+        styleArr[slot + 2] = 0;
+        styleArr[slot + 3] = sc.side;
       }
     }
 
     const originAttr = new THREE.InstancedBufferAttribute(originArr, 4);
-    const anglesAttr = new THREE.InstancedBufferAttribute(anglesArr, 4);
+    const axisAttr = new THREE.InstancedBufferAttribute(axisArr, 4);
+    const wingAttr = new THREE.InstancedBufferAttribute(wingArr, 4);
     const styleAttr = new THREE.InstancedBufferAttribute(styleArr, 4);
-    anglesAttr.setUsage(THREE.DynamicDrawUsage);
+    axisAttr.setUsage(THREE.DynamicDrawUsage);
+    wingAttr.setUsage(THREE.DynamicDrawUsage);
     styleAttr.setUsage(THREE.DynamicDrawUsage);
 
     instGeo.setAttribute('aScanOrigin', originAttr);
-    instGeo.setAttribute('aScanAngles', anglesAttr);
+    instGeo.setAttribute('aScanAxis', axisAttr);
+    instGeo.setAttribute('aScanWing', wingAttr);
     instGeo.setAttribute('aScanStyle', styleAttr);
 
     const mat = new THREE.ShaderMaterial({
@@ -4220,7 +4251,7 @@ export class LaserScene implements MvScene {
     mesh.renderOrder = 2;
     this.scene.add(mesh);
 
-    return { originAttr, anglesAttr, styleAttr };
+    return { originAttr, axisAttr, wingAttr, styleAttr };
   }
 
   resize(aspect: number): void {
@@ -4894,22 +4925,22 @@ export class LaserScene implements MvScene {
       let washPower: number;
       let washStrobe: number;
       if (isBreak) {
-        washPower = (w.kind === 0 ? 0.64 : 0.44) * (0.82 + 0.18 * Math.sin(t * 0.65 + w.groupIdx));
-        washStrobe = (w.kind === 1 ? 0.16 : 0.22) + 0.20 * hatSparkle;
+        washPower = (w.kind === 0 ? 0.78 : 0.56) * (0.82 + 0.18 * Math.sin(t * 0.65 + w.groupIdx));
+        washStrobe = (w.kind === 1 ? 0.24 : 0.28) + 0.24 * hatSparkle;
       } else if (isBuild) {
         const buildSwirl = 0.45 + 0.55 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - w.groupIdx * 0.7), 2.0);
-        washPower = (0.46 + 0.50 * buildProgress) * buildSwirl;
+        washPower = (0.56 + 0.58 * buildProgress) * buildSwirl;
         washStrobe = w.kind === 1
-          ? (0.24 + 0.92 * buildProgress * buildSwirl)
-          : (0.26 + 0.56 * buildProgress * washWave);
+          ? (0.30 + 1.05 * buildProgress * buildSwirl)
+          : (0.32 + 0.68 * buildProgress * washWave);
       } else if (isDrop || isChorus) {
-        washPower = (w.kind === 0 ? 0.68 : 0.56) * (0.52 + 0.58 * dropPower) * (0.62 + 0.38 * washWave) * washBreathEnv;
+        washPower = (w.kind === 0 ? 0.84 : 0.68) * (0.55 + 0.58 * dropPower) * (0.62 + 0.38 * washWave) * washBreathEnv;
         washStrobe = w.kind === 1
-          ? (0.26 + 0.82 * Math.max(kickFast, downbeatFlash * 0.85) * washWave + 0.30 * snareFast) * dropPower
-          : (0.28 + 0.58 * Math.max(kickPunch * 0.75, beatPulse * 0.65) * washWave) * (0.45 + 0.55 * dropPower);
+          ? (0.34 + 0.92 * Math.max(kickFast, downbeatFlash * 0.85) * washWave + 0.34 * snareFast) * dropPower
+          : (0.36 + 0.66 * Math.max(kickPunch * 0.75, beatPulse * 0.65) * washWave) * (0.45 + 0.55 * dropPower);
       } else {
-        washPower = (w.kind === 0 ? 0.58 : 0.46) * (0.76 + 0.24 * washWave);
-        washStrobe = (0.20 + 0.36 * kickPunch * washWave);
+        washPower = (w.kind === 0 ? 0.72 : 0.56) * (0.76 + 0.24 * washWave);
+        washStrobe = (0.26 + 0.44 * kickPunch * washWave);
       }
 
       for (let mirror = 0; mirror < 2; mirror++) {
@@ -4927,12 +4958,12 @@ export class LaserScene implements MvScene {
     this.washSpecAttr.needsUpdate = true;
     this.washStateAttr.needsUpdate = true;
 
-    // 6. 更新 12 座振镜扫描体积光膜（按 Cue 阵型秩序退让，同步挂载 Lead 指数呼吸与纯激光切零门控）
+    // 6. 更新 12 座振镜扫描体积光膜（主动退让以突出图二锐边几何扇形扫描面，同步挂载 Lead 指数呼吸与激光切零门控）
     const sAngles = this.sheetAnglesAttr.array as Float32Array;
     const sStyle = this.sheetStyleAttr.array as Float32Array;
     const sweepClock = t * 0.85 + leadMotion * 0.22;
     const sidechainSheet = 0.28 + 0.78 * kickFast + 0.34 * beatPulse + 0.30 * hitEnv;
-    const sheetModeScale = (isDrop || isChorus) ? 0.64 : 0.80;
+    const sheetModeScale = (isDrop || isChorus) ? 0.28 : 0.36;
 
     for (let i = 0; i < SHEET_EMITTER_COUNT; i++) {
       const sp = this.sheetSpecs[i];
@@ -5039,11 +5070,12 @@ export class LaserScene implements MvScene {
     this.sheetAnglesAttr.needsUpdate = true;
     this.sheetStyleAttr.needsUpdate = true;
 
-    // 6b. 更新 10 座图二风格交叉几何平面扫描激光（左下/右下对角仰射 + 顶冠交叉下切 + 侧翼滚转，动态三轴扫描 + Lead 指数呼吸 + 激光切零）
-    const scAngles = this.scanAnglesAttr.array as Float32Array;
+    // 6b. 更新 12 座图二风格交叉几何扇形扫描激光（三维视锥靶点直指 + 全曲高可见度横扫/俯仰/滚转 + Lead 指数呼吸 + 激光切零）
+    const scAxis = this.scanAxisAttr.array as Float32Array;
+    const scWing = this.scanWingAttr.array as Float32Array;
     const scStyle = this.scanStyleAttr.array as Float32Array;
-    const scanClock = t * (isDrop || isChorus ? 0.94 : isBuild ? (0.62 + 0.56 * buildProgress) : 0.46) + leadMotion * 0.26;
-    const sidechainScan = 0.34 + 0.74 * kickFast + 0.34 * snareFast + 0.30 * beatPulse + 0.28 * hitEnv;
+    const scanClock = t * (isDrop || isChorus ? 1.05 : isBuild ? (0.70 + 0.65 * buildProgress) : 0.58) + leadMotion * 0.28;
+    const sidechainScan = 0.46 + 0.76 * kickFast + 0.36 * snareFast + 0.30 * beatPulse + 0.28 * hitEnv;
 
     const evalScanColorSlot = (x: number, group: number): number => {
       if (isUnisonMode) return activeUnisonSlot;
@@ -5054,58 +5086,95 @@ export class LaserScene implements MvScene {
 
     for (let i = 0; i < SCAN_LASER_COUNT; i++) {
       const sc = this.scanSpecs[i];
-      let yaw = sc.baseYaw;
-      let pitch = sc.basePitch;
+      let targetX = sc.baseTx;
+      let targetY = sc.baseTy;
+      const targetZ = sc.baseTz;
       let roll = sc.baseRoll;
       let spread = sc.spread;
       let scanPower = 0;
-      const scanChase = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - sc.group * 0.85 - sc.idx * 0.65), 1.8);
-      const creasePos = sc.side * (0.22 + 0.26 * Math.sin(scanClock * 0.82 + i * 1.1));
+
+      const scanChase = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - sc.group * 0.75 - sc.idx * 0.60), 1.6);
+      const creasePos = sc.side * (0.24 + 0.28 * Math.sin(scanClock * 0.86 + i * 1.15));
+      const sweepPhase = Math.sin(scanClock * 1.35 + i * 0.7);
 
       if (sc.group === 0) {
-        // 舞台左下角与右下角向上斜切天空的标志性交叉几何扫描扇（还原图二双下角发射顶点 X 型切空平面）
-        yaw = sc.baseYaw + sc.side * Math.sin(scanClock * 1.12) * 0.16;
-        pitch = sc.basePitch + 0.075 * Math.cos(scanClock * 0.90 + sc.idx * 1.1) + 0.032 * kickFast;
-        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.78) * 0.24;
-        spread = sc.spread + 0.07 * Math.sin(scanClock * 1.30);
+        // 舞台左右底角对角仰射大扇：在主屏前上方高空形成醒目的 X 型大张角横扫与翻折（1:1 还原图二底角双星芒交叉大扇面）
+        targetX = sc.baseTx - sc.side * Math.sin(scanClock * 0.96 + sc.idx * 0.45) * 6.4;
+        targetY = sc.baseTy + Math.cos(scanClock * 0.82 + sc.idx * 0.70) * 3.2 + 1.2 * kickFast;
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.74) * 0.34;
+        spread = sc.spread + 0.07 * Math.sin(scanClock * 1.18);
       } else if (sc.group === 1) {
-        // 巨幕顶冠上方左右内切扫描扇（与下角仰射扇在半空交叠形成清脆发光菱形与几何多边形）
-        yaw = sc.baseYaw - sc.side * Math.cos(scanClock * 1.04) * 0.15;
-        pitch = sc.basePitch - 0.09 + 0.070 * Math.sin(scanClock * 0.86 + sc.idx * 0.9);
-        roll = sc.baseRoll + sc.side * Math.cos(scanClock * 0.72) * 0.24;
-        spread = sc.spread + 0.06 * Math.cos(scanClock * 1.15);
+        // 巨幕顶冠上方 4 台交叉下切扇：迎面向镜头头顶横扫，与底角仰射扇在半空中交织出透亮几何菱形与多边形
+        targetX = sc.baseTx + sc.side * Math.cos(scanClock * 0.90 + sc.idx * 0.85) * 5.8;
+        targetY = sc.baseTy + Math.sin(scanClock * 0.78 + sc.idx * 0.65) * 2.8;
+        roll = sc.baseRoll + sc.side * Math.cos(scanClock * 0.70 + sc.idx * 0.5) * 0.32;
+        spread = sc.spread + 0.06 * Math.cos(scanClock * 1.08 + sc.idx);
       } else if (sc.group === 2) {
-        // 两侧频谱灯塔外翼中腰大倾角滚转扫描扇
-        yaw = sc.baseYaw + sc.side * Math.sin(scanClock * 0.96 + 0.8) * 0.18;
-        pitch = sc.basePitch + 0.075 * Math.sin(scanClock * 1.18);
-        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.84 + 1.3) * 0.28;
+        // 两侧频谱灯塔外翼中腰与高腰对切扫描扇：大幅度滚转横扫，高腰组斜向下掠过湿润水面激起扇形波光反射
+        targetX = sc.baseTx - sc.side * Math.sin(scanClock * 0.92 + sc.idx * 0.7) * 5.2;
+        targetY = sc.baseTy + Math.cos(scanClock * 0.88 + sc.idx * 0.9) * 3.0;
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.80 + sc.idx * 0.6) * 0.38;
         spread = sc.spread + 0.05 * fg.level;
       } else {
-        // 观众席中前场高空走廊头顶近场玻璃扫描扇
-        yaw = sc.baseYaw + sc.side * Math.cos(scanClock * 0.88 + sc.idx * 0.6) * 0.16;
-        pitch = sc.basePitch + 0.062 * Math.sin(scanClock * 1.06 + sc.idx * 0.8);
-        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.74 + sc.idx * 0.5) * 0.20;
-        spread = sc.spread;
+        // 台唇内侧对称迎面仰射扫描扇：向观众头顶张开宽幅琉璃扫描天幕
+        targetX = sc.baseTx - sc.side * Math.cos(scanClock * 1.04 + sc.idx * 0.8) * 5.6;
+        targetY = sc.baseTy + Math.sin(scanClock * 0.86 + sc.idx * 0.6) * 3.2;
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.92) * 0.36;
+        spread = sc.spread + 0.06 * kickPunch;
       }
 
+      // 由 (Origin -> Target) 构造精确正交基 (Axis, Right, Up) 与滚转翼向量 Wing
+      const dx = targetX - sc.x;
+      const dy = targetY - sc.y;
+      const dz = targetZ - sc.z;
+      const dLen = Math.hypot(dx, dy, dz) || 1;
+      const ax = dx / dLen;
+      const ay = dy / dLen;
+      const az = dz / dLen;
+
+      // Right = normalize(cross((0, 1, 0), Axis)) = normalize((az, 0, -ax))
+      let rx = az;
+      let ry = 0;
+      let rz = -ax;
+      const rLen = Math.hypot(rx, rz);
+      if (rLen > 1e-4) {
+        rx /= rLen;
+        rz /= rLen;
+      } else {
+        rx = 1;
+        rz = 0;
+      }
+      // UpOrtho = cross(Axis, Right)
+      const ux = ay * rz - az * ry;
+      const uy = az * rx - ax * rz;
+      const uz = ax * ry - ay * rx;
+
+      const cr = Math.cos(roll);
+      const sr = Math.sin(roll);
+      const wx = (rx * cr + ux * sr) * spread;
+      const wy = (ry * cr + uy * sr) * spread;
+      const wz = (rz * cr + uz * sr) * spread;
+
+      // 全段落清晰醒目功率编排：前奏/间奏/主歌/爬升/高潮全程展现凌厉几何扫描扇面
       if (isBreak) {
-        scanPower = sc.group <= 1 ? (0.28 + 0.10 * hatSparkle) : 0.0;
+        scanPower = sc.group <= 1 ? (0.72 + 0.22 * hatSparkle) : (sc.group === 2 && sc.idx < 2 ? 0.45 : 0.0);
       } else if (isBuild) {
-        const groupGate = sc.group <= 1 ? 1.0 : smooth(clamp01((buildProgress - 0.30) / 0.45));
-        scanPower = (0.22 + 0.78 * buildProgress) * (0.42 + 0.58 * scanChase) * groupGate;
+        const groupGate = sc.group <= 1 ? 1.0 : smooth(clamp01((buildProgress - 0.20) / 0.45));
+        scanPower = (0.58 + 0.88 * buildProgress) * (0.48 + 0.52 * scanChase) * groupGate;
       } else if (isDrop || isChorus) {
         const cueScale = cueMode === 1
-          ? (sc.group === 0 || sc.group === 3 ? 0.46 : 0.18)
-          : cueMode === 2
-            ? (sc.group <= 2 ? 0.96 : 0.62)
-            : (sc.group <= 1 ? 1.02 : 0.76);
-        scanPower = cueScale * sidechainScan * (0.46 + 0.54 * scanChase) * dropPower;
+          ? (sc.group === 0 || sc.group === 2 ? 0.68 : 0.28)
+          : cueMode === 0
+            ? (sc.group <= 1 ? 1.24 : 0.96)
+            : (sc.group <= 2 ? 1.12 : 0.84);
+        scanPower = cueScale * sidechainScan * (0.52 + 0.48 * scanChase) * dropPower;
         if (isDrop && dropPower < 0.55) {
           const scanFade = smooth(clamp01((dropPower - 0.35) / 0.20));
-          scanPower *= (sc.group === 0 ? (0.30 + 0.70 * scanFade) : scanFade);
+          scanPower *= (sc.group === 0 ? (0.35 + 0.65 * scanFade) : scanFade);
         }
       } else {
-        scanPower = (sc.group <= 1 ? 0.64 : sc.group === 2 ? 0.36 : 0.0) * sidechainScan * dropPower;
+        // 主歌 / 常规段落：底角交叉扇 + 顶冠扇 + 灯塔中腰扇从容横扫呼吸
+        scanPower = (sc.group <= 1 ? 0.92 : sc.group === 2 ? 0.62 : 0.38) * (0.55 + 0.45 * sidechainScan) * Math.max(0.58, dropPower);
       }
 
       const scanColorSlot = evalScanColorSlot(sc.x, sc.group);
@@ -5113,18 +5182,24 @@ export class LaserScene implements MvScene {
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * SCAN_LASER_COUNT + i) * 4;
-        scAngles[slot] = yaw;
-        scAngles[slot + 1] = pitch;
-        scAngles[slot + 2] = roll;
-        scAngles[slot + 3] = spread;
+        scAxis[slot] = ax;
+        scAxis[slot + 1] = ay;
+        scAxis[slot + 2] = az;
+        scAxis[slot + 3] = sc.length;
 
-        scStyle[slot] = sc.length;
-        scStyle[slot + 1] = scanPower;
-        scStyle[slot + 2] = scanColorSlot;
-        scStyle[slot + 3] = creasePos;
+        scWing[slot] = wx;
+        scWing[slot + 1] = wy;
+        scWing[slot + 2] = wz;
+        scWing[slot + 3] = scanPower;
+
+        scStyle[slot] = scanColorSlot;
+        scStyle[slot + 1] = creasePos;
+        scStyle[slot + 2] = sweepPhase;
+        scStyle[slot + 3] = sc.side;
       }
     }
-    this.scanAnglesAttr.needsUpdate = true;
+    this.scanAxisAttr.needsUpdate = true;
+    this.scanWingAttr.needsUpdate = true;
     this.scanStyleAttr.needsUpdate = true;
 
     // 7. 更新 88 束严整对称单束激光阵列（左右高空下射各加密至 18 束，下射光束精准打穿水面 y=0 并激发 V 形镜面折返反射束）
@@ -5195,8 +5270,8 @@ export class LaserScene implements MvScene {
         const burstCore = 0.74 * hitEnv + 0.94 * beatImpact + 0.48 * snareFast;
 
         if (cueMode === 0) {
-          // 【阵型 0：穹顶 42 束 + 左右侧廊 64 束环绕下射水镜画廊 · 双翼乒乓呼吸】—— 仰射组归零留白
-          if (b.group === 0) {
+          // 【阵型 0：图二交叉几何扇形扫描激光主场 + 外翼侧廊水镜护航】—— 中轴单束主动让位以凸显巨幅交叉琉璃扇面
+          if (b.group === 0 && Math.abs(b.normX) > 0.56) {
             const isLeft = b.normX < 0;
             const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : 0.14;
             const wingRibbon = 0.74 + 0.36 * Math.cos((Math.abs(b.normX) - waveSweep01) * Math.PI * 1.5);

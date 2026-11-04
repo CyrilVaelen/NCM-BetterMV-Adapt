@@ -2313,8 +2313,8 @@ test('LaserScene 激光舞台：激光强度 E 随 Lead 强度 I 的指数呼吸
       for (let s = 0; s < 12; s++) {
         maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.sheetStyleAttr.array[s * 4 + 1]);
       }
-      for (let sc = 0; sc < 10; sc++) {
-        maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.scanStyleAttr.array[sc * 4 + 1]);
+      for (let sc = 0; sc < 12; sc++) {
+        maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.scanWingAttr.array[sc * 4 + 3]);
       }
       maxLaserPowerInFullCut = Math.max(
         maxLaserPowerInFullCut,
@@ -2418,9 +2418,9 @@ test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫
 
   const ls = new m.LaserScene({ ...init, music, lyrics, seed: 20261104 }, 'pulse');
 
-  // 1. 验证实例总数与空间避让：24 组氛围灯与 10 座交叉扫描激光均严格位于中央专辑封面可视盘面外部
+  // 1. 验证实例总数与空间避让：24 组氛围灯与 12 座交叉扇形扫描激光均严格位于中央专辑封面可视盘面外部
   assert.equal(ls.washStateAttr.count / 2, 24, '舞台体积烟雾氛围灯本体应为 24 组 (12 横条灯 + 12 摇头染色灯)');
-  assert.equal(ls.scanStyleAttr.count / 2, 10, '交叉几何平面扫描激光本体应为 10 座');
+  assert.equal(ls.scanStyleAttr.count / 2, 12, '交叉几何扇形扫描激光本体应为 12 座');
 
   for (let i = 0; i < 24; i++) {
     const wx = ls.washOriginAttr.array[i * 4];
@@ -2429,7 +2429,7 @@ test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫
     const insideCover = Math.abs(wx) < 7.5 && wy > 2.6 && wy < 17.6 && wz <= -51.5;
     assert.ok(!insideCover, `氛围灯 #${i} (${wx}, ${wy}, ${wz}) 不得遮挡中央专辑封面内部`);
   }
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 12; i++) {
     const sx = ls.scanOriginAttr.array[i * 4];
     const sy = ls.scanOriginAttr.array[i * 4 + 1];
     const sz = ls.scanOriginAttr.array[i * 4 + 2];
@@ -2437,7 +2437,7 @@ test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫
     assert.ok(!insideCover, `扫描激光 #${i} (${sx}, ${sy}, ${sz}) 不得位于中央专辑封面内部`);
   }
 
-  // 2. 验证交叉扫描激光的三轴动态扫描运动、色彩同源性 ([0, 5] 色槽) 与随机 Seek 幂等性
+  // 2. 验证交叉扇形扫描激光精确命中镜头视锥中央交叉区、正交几何、三轴动态扫描运动与随机 Seek 幂等性
   const sec0 = music.a.sections[0];
   const shot0 = {
     index: 0,
@@ -2451,33 +2451,61 @@ test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫
     short: false,
   };
   ls.update({ t: 1.0, dt: 1 / 60, shotT: 1.0, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
-  const anglesT1 = Float32Array.from(ls.scanAnglesAttr.array.slice(0, 40));
+  const axisT1 = Float32Array.from(ls.scanAxisAttr.array.slice(0, 48));
+  const wingT1 = Float32Array.from(ls.scanWingAttr.array.slice(0, 48));
+
+  // 验证全部 12 座扇形扫描激光朝 +Z 观众席正前方投射，且在场地中段 z=-26m 平面处 100% 落在相机取景框核心区内交叉
+  for (let i = 0; i < 12; i++) {
+    const ox = ls.scanOriginAttr.array[i * 4];
+    const oy = ls.scanOriginAttr.array[i * 4 + 1];
+    const oz = ls.scanOriginAttr.array[i * 4 + 2];
+    const ax = ls.scanAxisAttr.array[i * 4];
+    const ay = ls.scanAxisAttr.array[i * 4 + 1];
+    const az = ls.scanAxisAttr.array[i * 4 + 2];
+    const wx = ls.scanWingAttr.array[i * 4];
+    const wy = ls.scanWingAttr.array[i * 4 + 1];
+    const wz = ls.scanWingAttr.array[i * 4 + 2];
+
+    assert.ok(az > 0.72, `扇形扫描激光 #${i} 必须朝向相机前景 (+Z)，实测 az=${az}`);
+    const orthoDot = Math.abs(ax * wx + ay * wy + az * wz);
+    assert.ok(orthoDot < 1e-4, `扇形扫描激光 #${i} 的 Axis 与 Wing 必须严格正交，实测 dot=${orthoDot}`);
+
+    const rayT = (-26.0 - oz) / az;
+    const hitX = ox + ax * rayT;
+    const hitY = oy + ay * rayT;
+    assert.ok(
+      Math.abs(hitX) < 13.5 && hitY > 2.2 && hitY < 16.8,
+      `扇形扫描激光 #${i} 在中场 z=-26m 截面应命中屏幕黄金可视区，实测 (${hitX.toFixed(2)}, ${hitY.toFixed(2)})`,
+    );
+  }
 
   ls.update({ t: 2.2, dt: 1 / 60, shotT: 2.2, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
-  const anglesT2 = Float32Array.from(ls.scanAnglesAttr.array.slice(0, 40));
+  const axisT2 = Float32Array.from(ls.scanAxisAttr.array.slice(0, 48));
+  const wingT2 = Float32Array.from(ls.scanWingAttr.array.slice(0, 48));
 
-  let angleDeltaSum = 0;
-  for (let i = 0; i < 10; i++) {
-    angleDeltaSum += Math.abs(anglesT2[i * 4] - anglesT1[i * 4])
-                   + Math.abs(anglesT2[i * 4 + 1] - anglesT1[i * 4 + 1])
-                   + Math.abs(anglesT2[i * 4 + 2] - anglesT1[i * 4 + 2]);
-    const colorSlot = ls.scanStyleAttr.array[i * 4 + 2];
+  let scanVecDelta = 0;
+  for (let i = 0; i < 12; i++) {
+    scanVecDelta += Math.abs(axisT2[i * 4] - axisT1[i * 4])
+                  + Math.abs(axisT2[i * 4 + 1] - axisT1[i * 4 + 1])
+                  + Math.abs(wingT2[i * 4 + 1] - wingT1[i * 4 + 1]);
+    const colorSlot = ls.scanStyleAttr.array[i * 4];
     assert.ok(colorSlot >= 0 && colorSlot <= 5.0, `扫描激光 #${i} 色槽必须严格落在封面同源 6 槽色板 [0,5] 内，实测 ${colorSlot}`);
   }
-  assert.ok(angleDeltaSum > 0.25, `交叉几何扫描激光必须具备明显的三轴动态振镜扫描轨迹，实测角度总位移=${angleDeltaSum.toFixed(4)}`);
+  assert.ok(scanVecDelta > 0.25, `交叉几何扇形扫描激光必须具备明显的动态横扫/俯仰/滚转轨迹，实测向量位移=${scanVecDelta.toFixed(4)}`);
 
   for (let i = 0; i < 24; i++) {
     const wPower = ls.washStateAttr.array[i * 4];
     const wSlot = ls.washStateAttr.array[i * 4 + 1];
-    assert.ok(wPower > 0.15, `氛围灯 #${i} 应持续提供饱满体积烟雾氛围光，实测 ${wPower}`);
+    assert.ok(wPower > 0.20, `氛围灯 #${i} 应持续提供饱满体积烟雾氛围光，实测 ${wPower}`);
     assert.ok(wSlot >= 0 && wSlot <= 5.0, `氛围灯 #${i} 色槽必须严格落在封面同源 6 槽色板 [0,5] 内，实测 ${wSlot}`);
   }
 
   // Seek 幂等性校验
   const lsFresh = new m.LaserScene({ ...init, music, lyrics, seed: 20261104 }, 'pulse');
   lsFresh.update({ t: 2.2, dt: 1 / 60, shotT: 2.2, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
-  for (let k = 0; k < 40; k++) {
-    assert.ok(Math.abs(ls.scanAnglesAttr.array[k] - lsFresh.scanAnglesAttr.array[k]) < 1e-6);
+  for (let k = 0; k < 48; k++) {
+    assert.ok(Math.abs(ls.scanAxisAttr.array[k] - lsFresh.scanAxisAttr.array[k]) < 1e-6);
+    assert.ok(Math.abs(ls.scanWingAttr.array[k] - lsFresh.scanWingAttr.array[k]) < 1e-6);
     assert.ok(Math.abs(ls.scanStyleAttr.array[k] - lsFresh.scanStyleAttr.array[k]) < 1e-6);
   }
   for (let k = 0; k < 96; k++) {
