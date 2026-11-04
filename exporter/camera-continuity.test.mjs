@@ -1497,11 +1497,26 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
     `在低频与 RMS 完全为 0 且无底鼓冲击时，dropPower 应下潜至理论硬保底 0.35 (实测 ${deadDropPower})`,
   );
 
-  // 验证 36 束快切激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
+  // 验证全部 104 束高密快切激光中，外围光束在 dropPower=0.35 时已完全衰减至 0 (触发 discard)
+  const beamCount = robustLaser.beamStyleAttr.count / 2;
+  assert.equal(beamCount, 104, '炸场级扩容后单束激光本体数量应为 104 束');
+  assert.equal(robustLaser.sheetStyleAttr.count / 2, 20, '扩容后扫描光幕本体数量应为 20 座');
+  assert.equal(robustLaser.coneSpecAttr.count / 2, 3, '扩容后旋转锥笼本体应为 3 层');
+
+  // 验证全部 104 束发射口坐标均不落在中央专辑封面可视盘面内部 (|x| < 7.5 && y ∈ [2.6, 17.6] && z <= -51.5)
+  const beamStarts = robustLaser.beamStartAttr.array;
+  for (let bIdx = 0; bIdx < beamCount; bIdx++) {
+    const bx = beamStarts[bIdx * 4];
+    const by = beamStarts[bIdx * 4 + 1];
+    const bz = beamStarts[bIdx * 4 + 2];
+    const insideCoverCenter = Math.abs(bx) < 7.5 && by > 2.6 && by < 17.6 && bz <= -51.5;
+    assert.ok(!insideCoverCenter, `光束 #${bIdx} 发射点 (${bx}, ${by}, ${bz}) 不得位于专辑封面内部`);
+  }
+
   const beamStyles = robustLaser.beamStyleAttr.array;
   let hasZeroedOuterBeam = false;
   let hasActiveCoreBeam = false;
-  for (let bIdx = 0; bIdx < 36; bIdx++) {
+  for (let bIdx = 0; bIdx < beamCount; bIdx++) {
     const power = beamStyles[bIdx * 4];
     assert.ok(Number.isFinite(power) && power >= 0, `光束 #${bIdx} 的功率必须为非负有限数，实测 ${power}`);
     if (power < 1e-4) {
@@ -1512,6 +1527,30 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
   }
   assert.ok(hasZeroedOuterBeam, '在 dropPower=0.35 极限衰减下，外围光束应平滑淡出至 0');
   assert.ok(hasActiveCoreBeam, '在 dropPower=0.35 极限衰减下，中央核心光束应保留柔和光感');
+
+  // 验证高能 Drop 炸场期间单束激光具备强烈明暗追光对比度（同帧亮束峰值与暗侧底噪比 > 8:1）
+  pureDropLaser.update({
+    t: 2.0, // 正拍重击时刻
+    dt: frameDt,
+    shotT: 2.0,
+    shot: pureDropShot,
+    music: pureDropMusic,
+    lyrics: emptyLyrics,
+    palette,
+    fx: m.defaultFx(),
+    aspect: 16 / 9,
+  });
+  let maxBeamP = 0;
+  let minBeamP = Infinity;
+  for (let bIdx = 0; bIdx < beamCount; bIdx++) {
+    const p = pureDropLaser.beamStyleAttr.array[bIdx * 4];
+    if (p > maxBeamP) maxBeamP = p;
+    if (p < minBeamP) minBeamP = p;
+  }
+  assert.ok(
+    maxBeamP > 1.0 && minBeamP < 0.12 && maxBeamP / Math.max(1e-4, minBeamP) > 8.0,
+    `高能 Drop 应呈现鲜明的追光亮灭反差 (max=${maxBeamP.toFixed(3)}, min=${minBeamP.toFixed(3)})`,
+  );
 });
 
 

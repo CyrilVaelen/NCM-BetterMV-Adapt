@@ -30,9 +30,9 @@ const STAGE_DECK_H = 1.82;
 const STAGE_LIP_Z = -46.8;
 
 /** 四大灯光系统实例容量（均含天空本体 + 湿润地面 1:1 镜像对偶） */
-const SHEET_EMITTER_COUNT = 14;
-const BEAM_EMITTER_COUNT = 36;
-const CONE_LAYER_COUNT = 2;
+const SHEET_EMITTER_COUNT = 20;
+const BEAM_EMITTER_COUNT = 104;
+const CONE_LAYER_COUNT = 3;
 const CRYO_JET_COUNT = 8;
 const BLINDER_COUNT = 28;
 const CAM_FOV = 52;
@@ -68,13 +68,13 @@ interface SheetEmitterSpec {
   x: number;
   y: number;
   z: number;
-  /** 0=舞台正前主排(Liquid Sky), 1=走廊左侧翼下倾, 2=走廊右侧翼下倾 */
+  /** 0=舞台顶梁主排, 1=走廊左翼, 2=走廊右翼, 3=舞台台唇仰射扇, 4=频谱灯塔中腰内切扇 */
   bank: number;
   /** 组内序号 */
   idx: number;
   /** 默认偏航角（弧度，0 表示朝 +Z 观众席正前方） */
   baseYaw: number;
-  /** 默认俯仰角（弧度，负值向下压） */
+  /** 默认俯仰角（弧度，负值向下压，正值向上仰） */
   basePitch: number;
   /** 光幕长度（米） */
   length: number;
@@ -84,7 +84,7 @@ interface BeamEmitterSpec {
   x: number;
   y: number;
   z: number;
-  /** 0=舞台顶排下劈, 1=舞台前缘上挑, 2=左翼龙门斜切, 3=右翼龙门斜切 */
+  /** 0=顶梁24束梳排, 1=台唇20束仰射, 2=左廊12束, 3=右廊12束, 4=灯塔外翼20束竖排, 5=DJ台后16束孔雀皇冠 */
   group: number;
   /** 组内序号 */
   slot: number;
@@ -693,10 +693,10 @@ function buildCoverLaserColors(init: SceneInit): CoverLaserPaletteResult {
   };
 }
 
-/** 构建 14 座高功率振镜扫描光幕发射台坐标 */
+/** 构建 20 座高功率振镜扫描光幕发射台坐标（全真实舞台机位，避开中央专辑封面） */
 function buildSheetEmitters(): SheetEmitterSpec[] {
   const list: SheetEmitterSpec[] = [];
-  // 0..5: 远景舞台巨幕顶梁与 DJ 台主炮（6 台正前宽幅 Liquid Sky 发射器）
+  // 0..5 (Bank 0): 远景舞台巨幕顶冠桁架（6 台正前宽幅 Liquid Sky 发射器）
   const stageXs = [-12.6, -7.2, -2.4, 2.4, 7.2, 12.6];
   for (let i = 0; i < 6; i++) {
     const x = stageXs[i];
@@ -709,10 +709,10 @@ function buildSheetEmitters(): SheetEmitterSpec[] {
       idx: i,
       baseYaw: -x * 0.016,
       basePitch: isInner ? -0.14 : -0.18,
-      length: 72.0,
+      length: 74.0,
     });
   }
-  // 6..9: 左侧纵深桁架立柱高处内倾激光台
+  // 6..9 (Bank 1): 左侧纵深高空内倾激光台
   const bayZs = [-41.5, -31.0, -20.5, -10.0];
   for (let i = 0; i < 4; i++) {
     list.push({
@@ -723,10 +723,10 @@ function buildSheetEmitters(): SheetEmitterSpec[] {
       idx: i,
       baseYaw: 0.62,
       basePitch: -0.28,
-      length: 48.0,
+      length: 50.0,
     });
   }
-  // 10..13: 右侧纵深桁架立柱高处内倾激光台
+  // 10..13 (Bank 2): 右侧纵深高空内倾激光台
   for (let i = 0; i < 4; i++) {
     list.push({
       x: 16.4,
@@ -736,33 +736,93 @@ function buildSheetEmitters(): SheetEmitterSpec[] {
       idx: i,
       baseYaw: -0.62,
       basePitch: -0.28,
-      length: 48.0,
+      length: 50.0,
+    });
+  }
+  // 14..17 (Bank 3): 舞台前缘台唇低位仰射宽幅光扇（自下而上切穿干冰气柱）
+  const lipXs = [-11.2, -5.0, 5.0, 11.2];
+  for (let i = 0; i < 4; i++) {
+    const x = lipXs[i];
+    list.push({
+      x,
+      y: STAGE_DECK_H + 0.22,
+      z: STAGE_LIP_Z + 0.30,
+      bank: 3,
+      idx: i,
+      baseYaw: -x * 0.018,
+      basePitch: 0.24,
+      length: 62.0,
+    });
+  }
+  // 18..19 (Bank 4): 左右频谱灯塔外翼中腰斜切光扇（填补中层立体交叉光网）
+  for (let i = 0; i < 2; i++) {
+    const sign = i === 0 ? -1 : 1;
+    list.push({
+      x: sign * 12.15,
+      y: 9.8,
+      z: STAGE_Z + 0.90,
+      bank: 4,
+      idx: i,
+      baseYaw: -sign * 0.36,
+      basePitch: -0.10,
+      length: 66.0,
     });
   }
   return list;
 }
 
-/** 构建 36 座高锐度单束铡刀激光发射头坐标 */
+/** 构建 104 座高锐度单束铡刀与皇冠矩阵激光发射头坐标（6 大真实舞台机位，彻底避开封面中心） */
 function buildBeamEmitters(): BeamEmitterSpec[] {
   const list: BeamEmitterSpec[] = [];
-  // Group 0 (12 束): 舞台顶梁高密矩阵排
+  // Group 0 (24 束): 舞台巨幕顶冠高密梳状激光排
+  for (let i = 0; i < 24; i++) {
+    const u = (i / 23) * 2 - 1;
+    list.push({ x: u * 15.8, y: 18.08, z: -51.8, group: 0, slot: i, normX: u });
+  }
+  // Group 1 (20 束): 舞台前缘低位冲天仰射激光排（紧贴 Stage Lip）
+  for (let i = 0; i < 20; i++) {
+    const u = (i / 19) * 2 - 1;
+    list.push({ x: u * 14.6, y: STAGE_DECK_H + 0.18, z: STAGE_LIP_Z + 0.25, group: 1, slot: i, normX: u });
+  }
+  // Group 2 (12 束): 走廊左侧双层高空斜切排
+  const sideZs = [-46.8, -39.0, -31.2, -23.4, -15.6, -7.8];
   for (let i = 0; i < 12; i++) {
-    const u = (i / 11) * 2 - 1;
-    list.push({ x: u * 15.2, y: 17.35, z: -51.8, group: 0, slot: i, normX: u });
+    const z = sideZs[i >> 1];
+    const y = (i % 2 === 0) ? 11.8 : 16.2;
+    list.push({ x: -16.8, y, z, group: 2, slot: i, normX: -1 });
   }
-  // Group 1 (12 束): 舞台前缘低位仰射激光排（紧贴 Stage Lip）
+  // Group 3 (12 束): 走廊右侧双层高空斜切排
   for (let i = 0; i < 12; i++) {
-    const u = (i / 11) * 2 - 1;
-    list.push({ x: u * 13.8, y: STAGE_DECK_H + 0.18, z: STAGE_LIP_Z + 0.25, group: 1, slot: i, normX: u });
+    const z = sideZs[i >> 1];
+    const y = (i % 2 === 0) ? 11.8 : 16.2;
+    list.push({ x: 16.8, y, z, group: 3, slot: i, normX: 1 });
   }
-  // Group 2 (6 束): 走廊左侧龙门架斜切排
-  const sideZs = [-41.5, -31.0, -20.5, -10.0, 0.5, -46.8];
-  for (let i = 0; i < 6; i++) {
-    list.push({ x: -16.6, y: 12.8 + (i % 2) * 3.4, z: sideZs[i], group: 2, slot: i, normX: -1 });
+  // Group 4 (20 束): 左右频谱灯塔外翼竖向激光矩阵（左 10 + 右 10，位于 x = ±12.05 完全避开中央巨幕）
+  for (let sideIdx = 0; sideIdx < 2; sideIdx++) {
+    const sign = sideIdx === 0 ? -1 : 1;
+    for (let k = 0; k < 10; k++) {
+      const y = 3.4 + (k / 9) * 13.2;
+      list.push({
+        x: sign * 12.05,
+        y,
+        z: STAGE_Z + 0.95,
+        group: 4,
+        slot: sideIdx * 10 + k,
+        normX: sign * 0.78,
+      });
+    }
   }
-  // Group 3 (6 束): 走廊右侧龙门架斜切排
-  for (let i = 0; i < 6; i++) {
-    list.push({ x: 16.6, y: 12.8 + (i % 2) * 3.4, z: sideZs[i], group: 3, slot: i, normX: 1 });
+  // Group 5 (16 束): DJ 控台后沿贴台孔雀皇冠仰射扇排（由 DJ 身后底座向前上方放射开屏）
+  for (let i = 0; i < 16; i++) {
+    const u = (i / 15) * 2 - 1;
+    list.push({
+      x: u * 3.6,
+      y: STAGE_DECK_H + 0.52,
+      z: -50.55,
+      group: 5,
+      slot: i,
+      normX: u * 0.45,
+    });
   }
   return list;
 }
@@ -1841,37 +1901,42 @@ void main() {
   float u = vSheetUv.x; // [-1..1]
   float r = vSheetUv.y; // [0..1]
 
-  // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端减速折返锐利明亮，内部底膜晶莹通透绝不糊死背景巨幕
+  // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端刀锋般锐利明亮，内部压低糊雾底膜以凸显根根分明的激光丝
   float absU = abs(u);
-  float edgeOuter = exp(-pow((1.0 - absU) * 34.0, 2.0)) * 1.08;
-  float interiorFill = (1.0 - smoothstep(0.96, 1.0, absU)) * (0.056 + 0.062 * pow(absU, 2.0));
+  float edgeOuter = exp(-pow((1.0 - absU) * 38.0, 2.0)) * 1.28;
+  float interiorFill = (1.0 - smoothstep(0.97, 1.0, absU)) * (0.022 + 0.032 * pow(absU, 2.0));
 
-  // 2. 振镜高速离散扫描丝与角度光束手指（Laser Fingers / Blanked Sub-rays）
-  float fingers = pow(0.5 + 0.5 * cos(u * 32.0 + sin(uTime * 3.0) * 1.5), 7.0) * 0.38;
-  float highFreqScan = 0.90 + 0.10 * sin(u * 110.0 - uTime * 38.0);
+  // 2. 双层高密振镜分束丝（34 根主锐利分束丝 + 17 根重拍闪烁跳切丝）：将原本平淡雾膜升级为密集梳状激光扇
+  float ionize = smoothstep(0.58, 1.35, vPower);
+  float fingerWave1 = 0.5 + 0.5 * cos(u * 106.0 + sin(uTime * 2.8 + vOrigin.x * 0.25) * 1.6);
+  float fingerWave2 = 0.5 + 0.5 * cos(u * 53.0 - uTime * 7.2 + vOrigin.z * 0.15);
+  float fingers = pow(fingerWave1, 16.0) * (0.86 + 0.52 * ionize)
+                + pow(fingerWave2, 11.0) * (0.32 + 0.36 * ionize);
+  float highFreqScan = 0.84 + 0.16 * sin(u * 140.0 - uTime * 44.0);
 
-  // 3. 3D 干冰烟雾湍流云纹（FBM Volumetric Haze）：烟雾浓处丁达尔散射如液态丝绸，淡处通透深邃
-  vec2 hazeCoord = vWorldPos.xz * 0.085 + vec2(vWorldPos.y * 0.06, -uTime * 0.22);
+  // 3. 高对比度 3D 干冰烟雾湍流云纹：浓烟处丁达尔散射爆亮，稀薄处深邃通透，拉大空间明暗层次
+  vec2 hazeCoord = vWorldPos.xz * 0.088 + vec2(vWorldPos.y * 0.065, -uTime * 0.24);
   float haze1 = hazeFbm(hazeCoord);
-  float haze2 = hazeFbm(hazeCoord * 2.1 + vec2(uTime * 0.15, 4.7));
-  float smokeDensity = 0.24 + 1.30 * pow(haze1 * 0.65 + haze2 * 0.35, 1.55);
+  float haze2 = hazeFbm(hazeCoord * 2.15 + vec2(uTime * 0.17, 4.7));
+  float smokeDensity = 0.14 + 1.56 * pow(haze1 * 0.65 + haze2 * 0.35, 1.65);
 
   // 4. 发射口近端能量亮星 + 远端柔和消散
-  float originBoost = 0.055 / (0.085 + r * r) * exp(-absU * 5.5);
-  float distAtten = (1.0 - smoothstep(0.62, 1.0, r)) * smoothstep(0.0, 0.015, r);
+  float originBoost = 0.068 / (0.075 + r * r) * exp(-absU * 5.2);
+  float distAtten = (1.0 - smoothstep(0.64, 1.0, r)) * smoothstep(0.0, 0.014, r);
 
-  // 5. 镜头迎面掠过前向散射微增亮（Liquid Sky 贴近视线高度时更具包裹感）
+  // 5. 镜头迎面掠过前向散射增亮
   float eyeProx = exp(-abs(vWorldPos.y - cameraPosition.y) * 0.45) * (1.0 - vMirror);
-  float mieBoost = 1.0 + 0.38 * eyeProx;
+  float mieBoost = 1.0 + 0.42 * eyeProx;
 
   // 模式 A 下 vColorMix 按发射器空间坐标平滑映射且扇面内部柔和过渡 (uSheetSpread)；模式 B 下 uSheetSpread = 0 全扇纯色统一！
   vec3 baseLaser, baseCore;
   sampleLaserPalette(vColorMix + u * uSheetSpread, baseLaser, baseCore);
-  float density = (interiorFill + fingers + edgeOuter) * highFreqScan * smokeDensity * distAtten * mieBoost + originBoost * 0.24;
-  vec3 col = mix(baseLaser, baseCore, clamp(edgeOuter * 0.58 + originBoost * 0.48, 0.0, 0.84))
-           + vec3(0.10) * clamp(originBoost * 0.35, 0.0, 0.16);
+  float density = (interiorFill + fingers + edgeOuter) * highFreqScan * smokeDensity * distAtten * mieBoost + originBoost * 0.28;
+  float hotCoreMix = clamp((edgeOuter * 0.62 + fingers * 0.44 * ionize + originBoost * 0.50), 0.0, 0.90);
+  vec3 col = mix(baseLaser, baseCore, hotCoreMix)
+           + vec3(0.14 * ionize) * clamp(edgeOuter * 0.5 + fingers * 0.35 + originBoost * 0.35, 0.0, 0.28);
 
-  float alpha = density * vPower * 0.165;
+  float alpha = density * vPower * 0.185;
   if (vMirror > 0.5) alpha *= 0.38;
   alpha *= (1.0 - 0.88 * uBlackout);
 
@@ -1886,12 +1951,13 @@ void main() {
 const BEAM_VERT = /* glsl */ `
 attribute vec4 aBeamStart; // xyz: 发射口世界坐标, w: 0=天空本体, 1=地面镜像
 attribute vec4 aBeamEnd;   // xyz: 终点世界坐标, w: 光束半宽(米)
-attribute vec4 aBeamStyle; // x: 脉冲亮度 [0..1.4], y: 色板槽位 [0..6), z: 脉冲行进相位, w: 种子
+attribute vec4 aBeamStyle; // x: 脉冲亮度 [0..1.6], y: 色板槽位 [0..6), z: 脉冲行进相位, w: 独立光束种子
 varying vec2 vBeamUv;      // x ∈ [0..1] 沿光束轴向, y ∈ [-1..1] 横向截面
 varying vec3 vWorldPos;
 varying float vPower;
 varying float vColorMix;
 varying float vPulsePhase;
+varying float vBeamSeed;
 varying float vMirror;
 
 void main() {
@@ -1899,6 +1965,7 @@ void main() {
   vPower = aBeamStyle.x;
   vColorMix = aBeamStyle.y;
   vPulsePhase = aBeamStyle.z;
+  vBeamSeed = aBeamStyle.w;
   vMirror = aBeamStart.w;
 
   if (vPower < 0.01) {
@@ -1921,8 +1988,8 @@ void main() {
   float sideLen = length(side);
   side = sideLen > 1e-4 ? side / sideLen : vec3(1.0, 0.0, 0.0);
 
-  // 起点发射口处稍微放宽以容纳水平变形眩光，远端微微扩散
-  float halfW = aBeamEnd.w * (1.0 + 0.55 * uv.x) * (0.85 + 0.45 * min(1.2, vPower));
+  // 高密 104 束刀锋激光：收紧基础束宽防止百束齐发糊屏，重拍峰值爆发时张开丁达尔晕圈
+  float halfW = aBeamEnd.w * (1.0 + 0.48 * uv.x) * (0.76 + 0.52 * min(1.35, vPower));
   vec3 wp = spine + side * (vBeamUv.y * halfW);
   vWorldPos = wp;
 
@@ -1938,6 +2005,7 @@ varying vec3 vWorldPos;
 varying float vPower;
 varying float vColorMix;
 varying float vPulsePhase;
+varying float vBeamSeed;
 varying float vMirror;
 ${GLSL_HAZE_COMMON}
 ${GLSL_PALETTE_COMMON}
@@ -1950,25 +2018,31 @@ void main() {
   float s = vBeamUv.x;        // [0..1] 射程进度
   float d = abs(vBeamUv.y);   // [0..1] 离中心轴距离
 
-  // 锐利同色系亮芯 + 宽阔浓郁的丁达尔窄带激光色晕，每束独立呈现高纯度封面色彩
-  float core = exp(-d * d * 86.0);
-  float corona = exp(-d * 3.5) * 0.66;
+  // 重拍电离跃迁：低功率时呈幽暗柔彩细丝，重拍高功率 (vPower > 0.75) 时中心爆发出刀锋般锐利的电离炽白亮芯
+  float ionBoost = smoothstep(0.55, 1.40, vPower);
+  float core = exp(-d * d * mix(72.0, 118.0, ionBoost));
+  float corona = exp(-d * 4.0) * (0.48 + 0.28 * ionBoost);
 
   // 发射口起点高强星芒能量点
-  float emitterHotspot = exp(-s * 34.0) * exp(-d * d * 18.0) * 1.15;
-  // 光速脉冲团沿射线疾驰而过
-  float packet = exp(-pow((s - vPulsePhase) * 5.5, 2.0)) * 0.48;
+  float emitterHotspot = exp(-s * 36.0) * exp(-d * d * 20.0) * (0.95 + 0.55 * ionBoost);
 
-  // 穿过空间干冰烟雾时的丁达尔明暗起伏
-  float mist = 0.50 + 0.72 * hazeFbm(vWorldPos.xz * 0.11 + vec2(vWorldPos.y * 0.09, -uTime * 0.25));
-  float endFade = (1.0 - smoothstep(0.75, 1.0, s)) * smoothstep(0.0, 0.008, s);
+  // 错相飞驰的双重光子脉冲团（重拍冲击波 + 每束独立速率流光团），告别全屏死板齐步走
+  float streamPos = fract(uTime * (2.2 + vBeamSeed * 1.9) + vBeamSeed * 7.13);
+  float packet1 = exp(-pow((s - vPulsePhase) * 6.2, 2.0)) * 0.68;
+  float packet2 = exp(-pow((s - streamPos) * 7.5, 2.0)) * 0.52;
+  float packet = packet1 + packet2;
+
+  // 高反差空间干冰烟雾丁达尔明暗切分（暗区低至 0.16，浓雾区飙至 1.44）
+  float rawMist = hazeFbm(vWorldPos.xz * 0.115 + vec2(vWorldPos.y * 0.095, -uTime * 0.28));
+  float mist = 0.16 + 1.28 * pow(rawMist, 1.42);
+  float endFade = (1.0 - smoothstep(0.76, 1.0, s)) * smoothstep(0.0, 0.008, s);
 
   vec3 tint, tintCore;
   sampleLaserPalette(vColorMix, tint, tintCore);
-  vec3 col = mix(tint, tintCore, clamp(core * 0.80 + emitterHotspot * 0.45, 0.0, 0.90))
-           + vec3(0.14) * pow(core, 3.6);
+  vec3 col = mix(tint, tintCore, clamp(core * (0.55 + 0.40 * ionBoost) + emitterHotspot * 0.48, 0.0, 0.94))
+           + vec3(0.20 * ionBoost) * pow(core, 3.2);
 
-  float alpha = ((core * 1.15 + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.42) * vPower * 0.76;
+  float alpha = ((core * (1.05 + 0.45 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.46) * vPower * 0.78;
   if (vMirror > 0.5) alpha *= 0.42;
   alpha *= (1.0 - 0.88 * uBlackout);
 
@@ -2040,24 +2114,26 @@ void main() {
   float theta = vConeUv.x * 6.2831853 + uConeSpin * vSpinDir;
   float s = vConeUv.y;
 
-  // Pangolin BEYOND 标志性多色断线圆锥花式（Polychrome Blanked Laser Cone）：24 束分色射线环绕镜头
-  float rayWave = cos(theta * 24.0);
-  float sharpRay = pow(max(0.0, rayWave), 28.0);
-  float softSheet = 0.018 + 0.036 * pow(max(0.0, rayWave), 3.0);
+  // Pangolin BEYOND 标志性高密断线圆锥花式：加密至 32 束锋利射线 + 圆周加特林旋转追光波
+  float rayWave = cos(theta * 32.0);
+  float sharpRay = pow(max(0.0, rayWave), 32.0);
+  float softSheet = 0.012 + 0.026 * pow(max(0.0, rayWave), 3.0);
 
-  // 断续脉冲门控（Blanking Gate）沿圆锥高速向前奔涌
-  float axialPulse = 0.35 + 0.85 * smoothstep(-0.2, 0.45, sin(s * 26.0 - uTime * 12.0 + vSpinDir * 1.5));
-  float mist = 0.44 + 0.82 * hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.24));
+  // 圆周明暗选通追光（Azimuthal Chaser）+ 轴向高速断续脉冲门控（Blanking Gate）
+  float azimChase = 0.14 + 1.32 * pow(0.5 + 0.5 * cos(theta * 2.0 - uTime * 5.4 * sign(vSpinDir)), 3.0);
+  float axialPulse = 0.18 + 1.05 * smoothstep(-0.12, 0.48, sin(s * 30.0 - uTime * 14.5 + vSpinDir * 1.5));
+  float mist = 0.24 + 1.08 * pow(hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.24)), 1.35);
 
-  float ringOrigin = 0.035 * exp(-s * 16.0);
+  float ringOrigin = 0.042 * exp(-s * 16.0);
   float distFade = (1.0 - smoothstep(0.68, 1.0, s)) * smoothstep(0.008, 0.055, s);
 
   // 圆周连续对称空间渐变：0.5 + 0.5 * cos(theta) 在圆周上完全连续闭合，相邻射线颜色平滑过渡；模式 B 下全笼统一纯色！
   vec3 tint, tintCore;
   sampleStageGradient(0.5 + 0.5 * cos(theta), tint, tintCore);
-  vec3 col = mix(tint, tintCore, clamp(sharpRay * 0.78, 0.0, 0.88)) + vec3(0.10) * pow(sharpRay, 2.4);
+  float coneIon = smoothstep(0.55, 1.25, vConePower);
+  vec3 col = mix(tint, tintCore, clamp(sharpRay * (0.72 + 0.22 * coneIon), 0.0, 0.92)) + vec3(0.14 * coneIon) * pow(sharpRay, 2.2);
 
-  float alpha = ((sharpRay * 1.65 + softSheet) * axialPulse * mist * distFade + ringOrigin) * vConePower * 0.27;
+  float alpha = ((sharpRay * 1.85 + softSheet) * azimChase * axialPulse * mist * distFade + ringOrigin) * vConePower * 0.28;
   if (vMirror > 0.5) alpha *= 0.36;
   alpha *= (1.0 - 0.88 * uBlackout);
 
@@ -2998,9 +3074,9 @@ export class LaserScene implements MvScene {
     return { startAttr, endAttr, styleAttr };
   }
 
-  /** 构建双层反向旋转空心断线激光锥笼（含地面镜像） */
+  /** 构建三层反向旋转高密断线激光锥笼（含地面镜像） */
   private buildLaserCones(): THREE.InstancedBufferAttribute {
-    const baseGrid = new THREE.PlaneGeometry(1, 1, 72, 20);
+    const baseGrid = new THREE.PlaneGeometry(1, 1, 96, 22);
     baseGrid.translate(0.5, 0.5, 0);
 
     const total = CONE_LAYER_COUNT * 2;
@@ -3012,9 +3088,10 @@ export class LaserScene implements MvScene {
 
     const specArr = new Float32Array(total * 4);
     for (let mirror = 0; mirror < 2; mirror++) {
-      // 外锥（主激光色，正向旋转）+ 内锥（副激光色，反向旋转）
-      specArr.set([1.05, 1.0, 0.0, mirror], (mirror * CONE_LAYER_COUNT + 0) * 4);
-      specArr.set([0.58, -1.35, 0.0, mirror], (mirror * CONE_LAYER_COUNT + 1) * 4);
+      // 外层巨锥（正向旋转）+ 中层锐锥（高速反向旋转）+ 内层核心锥（极速正向旋转）
+      specArr.set([1.08, 1.0, 0.0, mirror], (mirror * CONE_LAYER_COUNT + 0) * 4);
+      specArr.set([0.74, -1.45, 0.0, mirror], (mirror * CONE_LAYER_COUNT + 1) * 4);
+      specArr.set([0.44, 1.90, 0.0, mirror], (mirror * CONE_LAYER_COUNT + 2) * 4);
     }
 
     const specAttr = new THREE.InstancedBufferAttribute(specArr, 4);
@@ -3634,10 +3711,38 @@ export class LaserScene implements MvScene {
     this.blinderStateAttr.needsUpdate = true;
     const avgBlinderGlow = clamp01((totalBlinderEnergy / BLINDER_COUNT) * 0.95);
 
-    // 6. 更新 14 座振镜扫描体积光膜（Liquid Sky & Volumetric Fan Sheets — 模式 A 空间连续渐变 / 模式 B 全屏同色瞬切）
+    // 预提取炸场级快响应重拍侧链包络（Sidechain Pump）与重音脉冲（纯函数 f(t)）
+    const kickFast = clamp01(music.pulse('kick', t, 0.072) * 1.24);
+    const snareFast = clamp01(music.pulse('snare', t, 0.068) * 1.22);
+    const beatPulse = Math.pow(Math.max(0, Math.cos(beatInfo.pos * Math.PI)), 3.4);
+
+    let latestHit: ChopperHitEvent | null = null;
+    let hitAge = 99;
+    const hitIdx = lastIndex(this.chopperTimes, t);
+    if (hitIdx >= 0) {
+      latestHit = this.choppers[hitIdx];
+      hitAge = t - latestHit.t;
+    }
+    const hitEnv = latestHit && hitAge >= 0 && hitAge < 0.36
+      ? latestHit.amp * Math.exp(-hitAge / (isDrop ? 0.105 : 0.155))
+      : 0;
+    const activePattern = latestHit ? latestHit.pattern : (barsIntoSec % 4);
+    const activeParity = latestHit ? latestHit.parity : 1;
+    const pulseTravel = clamp01(hitAge / 0.19);
+
+    // 20Hz Pangolin 反相快门频闪门控（军鼓重击 / 合成器强刺 / Build 末段冲刺触发凌厉快切，奇偶交替防全白晃眼）
+    const strobeTrigger = Math.max(
+      snareFast > 0.42 ? (snareFast - 0.42) * 1.65 : 0,
+      latestHit && hitAge >= 0 && hitAge < 0.14 && latestHit.amp > 0.78 ? 0.90 : 0,
+      isBuild && buildProgress > 0.70 ? (buildProgress - 0.70) * 3.1 : 0,
+    );
+    const strobeGatePhase = Math.sin(t * 125.66); // ~20Hz
+
+    // 6. 更新 20 座振镜扫描体积光膜（高动态侧链呼吸 + 横向追光浪潮）
     const sAngles = this.sheetAnglesAttr.array as Float32Array;
     const sStyle = this.sheetStyleAttr.array as Float32Array;
-    const sweepClock = t * 0.85 + leadMotion * 0.24;
+    const sweepClock = t * 0.92 + leadMotion * 0.28;
+    const sidechainSheet = 0.28 + 0.76 * kickFast + 0.34 * beatPulse + 0.32 * hitEnv + 0.20 * fg.attack;
 
     for (let i = 0; i < SHEET_EMITTER_COUNT; i++) {
       const sp = this.sheetSpecs[i];
@@ -3647,61 +3752,58 @@ export class LaserScene implements MvScene {
       let spread = 0.44;
       let power = 0;
       const colorMix = evalSpatialColorSlot(sp.x, sp.z);
-      let waveAmp = 0.45 + 0.45 * fg.level;
+      let waveAmp = 0.45 + 0.48 * fg.level;
+      const sheetChase = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - sp.idx * 0.85), 2.2);
 
       if (sp.bank === 0) {
-        // 舞台正前 6 台主 Liquid Sky 发射台（由左至右按空间位置自然过渡封面色彩）
+        // 舞台巨幕顶冠 6 台主 Liquid Sky 发射台
         const symSign = sp.x < 0 ? -1 : 1;
         const pairIdx = Math.min(2, Math.floor(Math.abs(i - 2.5)));
 
         if (isBreak) {
-          // 间奏空灵段：仅开启内侧 4 台慢速丝绸液态天幕，安静呼吸
-          const activeBreak = pairIdx <= 1 ? 1.0 : 0.25;
+          const activeBreak = pairIdx <= 1 ? 1.0 : 0.22;
           yaw = sp.baseYaw + Math.sin(t * 0.35 + i) * 0.12;
           pitch = -0.15 + Math.sin(t * 0.48 + pairIdx * 0.8) * 0.055;
           roll = symSign * Math.sin(t * 0.32) * 0.10;
           spread = 0.52;
-          power = activeBreak * (0.48 + 0.25 * fg.level);
+          power = activeBreak * (0.28 + 0.32 * fg.level);
           waveAmp = 0.72;
         } else if (isBuild) {
-          // 铺垫蓄能段：扇面逐渐收窄并压低向舞台前缘聚拢，让出巨幕中心视野
+          const buildPulse = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - pairIdx * 0.9), 2.4);
           yaw = lerp(sp.baseYaw, -sp.x * 0.022, buildProgress);
           pitch = lerp(-0.24, -0.14, buildProgress) + Math.sin(t * (3.0 + 8.0 * buildProgress) + i) * 0.03;
           roll = symSign * (1.0 - buildProgress) * 0.22;
-          spread = lerp(0.44, 0.18, buildProgress);
-          power = 0.36 + 0.48 * buildProgress;
+          spread = lerp(0.46, 0.20, buildProgress);
+          power = (0.18 + 0.78 * buildProgress) * buildPulse;
           waveAmp = 0.35 * (1.0 - buildProgress);
         } else {
-          // Drop / Chorus / Verse 主秀：随控台 Cue 阵型切换几何角度，色彩严格服从空间渐变或全屏瞬切
           const leadSweep = Math.sin(sweepClock * 1.35 + pairIdx * 0.65);
+          const chaseMod = 0.42 + 0.78 * sheetChase;
           if (cueMode === 1) {
-            // CONE_VORTEX 期间：退让中央主视野给空心旋转激光锥笼，仅保留外侧贴地薄光幕烘托
             yaw = sp.baseYaw + symSign * 0.16;
             pitch = pairIdx === 0 ? -0.26 + 0.02 * leadSweep : -0.18 + 0.04 * leadSweep;
             roll = symSign * (0.42 + 0.16 * Math.sin(sweepClock));
-            spread = pairIdx === 0 ? 0.36 : 0.30;
-            power = (pairIdx === 0 ? 0.18 : 0.34) * dropPower + 0.12 * kickPunch;
+            spread = pairIdx === 0 ? 0.36 : 0.32;
+            power = (pairIdx === 0 ? 0.22 : 0.46) * sidechainSheet * chaseMod * dropPower;
           } else if (cueMode === 2) {
-            // CATHEDRAL_CROWN：交错大倾角斜切搭建哥特式激光穹顶
             yaw = sp.baseYaw - symSign * 0.16;
             pitch = -0.14 + 0.06 * Math.cos(beatInfo.pos * 0.5 * Math.PI + i);
-            roll = symSign * 0.52 * (i % 2 === 0 ? 1 : -0.65);
-            spread = 0.48;
-            power = (0.88 + 0.24 * kickPunch) * dropPower;
+            roll = symSign * 0.54 * (i % 2 === 0 ? 1 : -0.68);
+            spread = 0.50;
+            power = 0.92 * sidechainSheet * chaseMod * dropPower;
           } else {
-            // LIQUID_HORIZON & CHOPPER：经典超宽水平波浪天幕压低掠过镜头头顶
-            yaw = sp.baseYaw + Math.sin(sweepClock * 0.8 + i * 0.7) * 0.14;
-            pitch = -0.175 + 0.065 * Math.sin(sweepClock * 1.45 + pairIdx * 0.55) - 0.025 * kickPunch;
-            roll = symSign * Math.sin(sweepClock * 0.95 + pairIdx) * (cueMode === 3 ? 0.28 : 0.14);
+            yaw = sp.baseYaw + Math.sin(sweepClock * 0.8 + i * 0.7) * 0.15;
+            pitch = -0.175 + 0.065 * Math.sin(sweepClock * 1.45 + pairIdx * 0.55) - 0.032 * kickFast;
+            roll = symSign * Math.sin(sweepClock * 0.95 + pairIdx) * (cueMode === 3 ? 0.30 : 0.15);
             spread = (isDrop && dropPower < 0.70)
-              ? lerp(0.36, 0.56, clamp01((dropPower - 0.35) / 0.35)) + 0.08 * fg.level
-              : 0.56 + 0.08 * fg.level;
-            power = (0.94 + 0.24 * kickPunch + 0.16 * fg.attack) * dropPower;
+              ? lerp(0.36, 0.58, clamp01((dropPower - 0.35) / 0.35)) + 0.08 * fg.level
+              : 0.58 + 0.08 * fg.level;
+            power = 0.98 * sidechainSheet * chaseMod * dropPower;
             waveAmp = 0.65 + 0.45 * fg.level;
           }
         }
-      } else {
-        // 左右两侧高空深暗边界 8 台内倾激光光幕（bank 1 & 2）
+      } else if (sp.bank === 1 || sp.bank === 2) {
+        // 左右两侧高空走廊 8 台内倾激光光幕
         const sideSign = sp.bank === 1 ? 1 : -1;
         if (isBreak) {
           power = 0.0;
@@ -3709,18 +3811,63 @@ export class LaserScene implements MvScene {
           yaw = sideSign * 0.72;
           pitch = lerp(-0.38, -0.16, buildProgress);
           roll = sideSign * 0.25;
-          spread = 0.26;
-          power = Math.max(0, (buildProgress - 0.42) * 0.65);
+          spread = 0.28;
+          power = Math.max(0, (buildProgress - 0.36) * 0.82) * (0.35 + 0.65 * sheetChase);
         } else {
-          const bayWave = 0.5 + 0.5 * Math.sin(beatInfo.pos * Math.PI * 0.5 - sp.idx * 0.9);
+          const bayWave = Math.pow(0.5 + 0.5 * Math.sin(beatInfo.pos * Math.PI - sp.idx * 1.15), 2.6);
+          const sideGate = activeParity * sideSign > 0 ? 1.0 : 0.24;
           const baseSideYaw = isUnisonMode ? sp.baseYaw : sideSign * 0.34;
-          yaw = baseSideYaw + sideSign * Math.sin(sweepClock + sp.idx) * 0.12;
+          yaw = baseSideYaw + sideSign * Math.sin(sweepClock + sp.idx) * 0.14;
           pitch = -0.26 + 0.08 * Math.cos(sweepClock * 1.2 + sp.idx * 0.8);
-          roll = sideSign * (cueMode === 2 ? 0.42 : 0.20);
-          spread = cueMode === 2 ? 0.36 : 0.28;
-          power = (cueMode === 1 ? 0.28 : 0.58) * dropPower * (0.40 + 0.60 * bayWave);
+          roll = sideSign * (cueMode === 2 ? 0.44 : 0.22);
+          spread = cueMode === 2 ? 0.38 : 0.30;
+          power = (cueMode === 1 ? 0.42 : 0.88) * sidechainSheet * (0.14 + 0.86 * bayWave) * sideGate * dropPower;
+        }
+      } else if (sp.bank === 3) {
+        // 舞台前缘台唇 4 台低位仰射宽幅光扇（重拍与军鼓时从地面冲天掀起光浪）
+        const symSign = sp.x < 0 ? -1 : 1;
+        if (isBreak || (isDrop && dropPower < 0.50)) {
+          power = 0.0;
+        } else if (isBuild) {
+          yaw = sp.baseYaw;
+          pitch = lerp(0.12, 0.34, buildProgress);
+          roll = symSign * 0.18;
+          spread = 0.34;
+          power = Math.max(0, (buildProgress - 0.50) * 1.10) * (0.30 + 0.70 * snareFast);
+        } else {
+          yaw = sp.baseYaw + Math.sin(sweepClock * 1.1 + sp.idx) * 0.12;
+          pitch = 0.22 + 0.10 * snareFast + 0.05 * Math.sin(sweepClock + sp.idx);
+          roll = symSign * (0.20 + 0.18 * Math.cos(sweepClock * 0.9));
+          spread = 0.42 + 0.10 * fg.level;
+          const lipBurst = 0.12 + 0.95 * snareFast + 0.62 * hitEnv + 0.38 * kickFast;
+          power = lipBurst * (0.35 + 0.65 * sheetChase) * dropPower;
+        }
+      } else {
+        // 左右频谱灯塔中腰 2 台斜切光扇（交叉切穿半空）
+        const sideSign = sp.idx === 0 ? 1 : -1;
+        if (isBreak || (isDrop && dropPower < 0.48)) {
+          power = 0.0;
+        } else if (isBuild) {
+          yaw = sp.baseYaw;
+          pitch = -0.08;
+          roll = sideSign * 0.48;
+          spread = 0.30;
+          power = Math.max(0, (buildProgress - 0.45) * 0.90);
+        } else {
+          yaw = sp.baseYaw + sideSign * Math.sin(sweepClock * 0.9) * 0.14;
+          pitch = -0.10 + 0.06 * Math.cos(sweepClock * 1.3 + sp.idx);
+          roll = sideSign * (0.52 + 0.22 * Math.sin(beatInfo.pos * Math.PI * 0.5));
+          spread = 0.38;
+          const wingHit = activeParity * sideSign > 0 ? 1.12 : 0.18;
+          power = (0.18 + 0.82 * hitEnv + 0.54 * kickFast) * wingHit * dropPower;
         }
       }
+
+      if (strobeTrigger > 0.05 && power > 0.05) {
+        const sGate = ((i % 2 === 0) ? strobeGatePhase : -strobeGatePhase) > 0 ? 1.32 : 0.08;
+        power *= lerp(1.0, sGate, clamp01(strobeTrigger));
+      }
+      power = Math.min(1.45, power);
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * SHEET_EMITTER_COUNT + i) * 4;
@@ -3738,24 +3885,11 @@ export class LaserScene implements MvScene {
     this.sheetAnglesAttr.needsUpdate = true;
     this.sheetStyleAttr.needsUpdate = true;
 
-    // 7. 更新 36 束军鼓/重音单束快切激光（模式 A 空间相邻颜色严格平滑渐变 / 模式 B 全屏统一纯色瞬切）
+    // 7. 更新 104 束高密刀锋单束激光矩阵（6 大真实机位 + 极低暗底追光/乒乓对切/快门频闪）
     const bEnd = this.beamEndAttr.array as Float32Array;
     const bStyle = this.beamStyleAttr.array as Float32Array;
-
-    // 查找最近一次快切重音脉冲
-    let latestHit: ChopperHitEvent | null = null;
-    let hitAge = 99;
-    const hitIdx = lastIndex(this.chopperTimes, t);
-    if (hitIdx >= 0) {
-      latestHit = this.choppers[hitIdx];
-      hitAge = t - latestHit.t;
-    }
-    const hitEnv = latestHit && hitAge >= 0 && hitAge < 0.42
-      ? latestHit.amp * Math.exp(-hitAge / (isDrop ? 0.145 : 0.19))
-      : 0;
-    const activePattern = latestHit ? latestHit.pattern : (barsIntoSec % 4);
-    const activeParity = latestHit ? latestHit.parity : 1;
-    const pulseTravel = clamp01(hitAge / 0.22);
+    const step16Global = Math.floor(beatInfo.pos * 4);
+    const waveSweep01 = (beatInfo.pos * 1.15) % 1.0;
 
     for (let i = 0; i < BEAM_EMITTER_COUNT; i++) {
       const b = this.beamSpecs[i];
@@ -3763,95 +3897,144 @@ export class LaserScene implements MvScene {
       let beamPower = 0;
 
       if (isBreak) {
-        // 间奏段仅保留舞台前缘柔和静态定格皇冠星束
-        if (b.group === 1 && (b.slot === 0 || b.slot === 5 || b.slot === 6 || b.slot === 11)) {
-          tx = b.x * 1.45;
+        // 间奏空灵段：仅保留台唇与 DJ 皇冠少数静态柔光星束，营造静谧深空感
+        if ((b.group === 1 || b.group === 5) && (b.slot % 5 === 0)) {
+          tx = b.x * 2.2;
           ty = 16.5;
-          tz = -18.0;
-          beamPower = 0.24 + 0.15 * hatSparkle;
+          tz = -16.0;
+          beamPower = 0.18 + 0.24 * hatSparkle;
         }
       } else if (isBuild) {
-        // Build 蓄能：36 束激光随十六分音符依次快闪并向 DJ 控台上空聚拢，不遮挡巨幕主封面
-        const step16 = Math.floor(beatInfo.pos * 4) % 12;
-        const matchSlot = (i % 12) === step16 ? 1.0 : 0.18;
-        tx = lerp(b.x * 0.85, 0.0, buildProgress);
-        ty = lerp(1.2, 4.4, buildProgress);
-        tz = lerp(-5.0, -32.0, buildProgress);
-        beamPower = (0.22 + 0.88 * buildProgress) * matchSlot;
+        // Build 蓄能冲刺：104 束随十六分音符跑马点射，随 buildProgress 加密并汇聚蓄势
+        const ringMod = Math.max(2, Math.round(lerp(8, 2, buildProgress)));
+        const isStepHit = ((i + step16Global) % ringMod) === 0;
+        const gate = isStepHit ? 1.25 : 0.04 + 0.14 * buildProgress;
+        tx = lerp(b.x * 1.15, b.x * 0.28, buildProgress);
+        ty = b.group === 5 ? lerp(8.0, 16.5, buildProgress) : lerp(1.0, 5.2, buildProgress);
+        tz = lerp(4.0, -28.0, buildProgress);
+        beamPower = (0.18 + 0.96 * buildProgress) * gate;
       } else {
-        // Drop / Chorus / Verse：模式 A 采用同侧顺向扇形展开（杜绝跨屏异色交叉打架），模式 B 全屏同色启用大交叉对切张力
-        const pat = cueMode === 3 ? 0 : activePattern;
+        // Drop / Chorus / Verse 现场炸场主秀：高对比明暗反差（暗侧压至 0.04~0.08，重拍亮侧冲上 1.3~1.56 触发满额电离白芯）
+        const pat = cueMode === 3 ? 3 : activePattern;
         const noteVal = readChroma(i % 12);
+        const burstCore = 0.78 * hitEnv + 0.84 * kickFast + 0.48 * snareFast + 0.30 * beatPulse;
 
         if (b.group === 0) {
-          // 舞台顶梁 12 束高能主排
+          // Group 0: 巨幕顶冠 24 束高密梳状激光排
           if (pat === 0) {
+            // 雷霆左右乒乓对切：暗侧近乎全灭 (0.05)，亮侧刀锋劈下
             const isLeft = b.normX < 0;
-            const inactiveDim = isUnisonMode ? 0.30 : 0.68;
-            const bankActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : inactiveDim;
-            tx = (isUnisonMode ? -b.normX * 19.5 : b.normX * 19.5) + Math.sin(t * 2.4 + b.slot) * 1.6;
-            ty = 0.15;
-            tz = -6.0 + Math.abs(b.normX) * 16.0;
-            beamPower = (hitEnv * 1.15 + 0.28 * dropPower) * bankActive;
+            const bankActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : 0.05;
+            const subChaser = 0.65 + 0.55 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - b.slot * 0.55), 2.0);
+            tx = (isUnisonMode ? -b.normX * 21.0 : b.normX * 21.0) + Math.sin(t * 2.8 + b.slot * 0.5) * 1.5;
+            ty = 0.12;
+            tz = -8.0 + Math.abs(b.normX) * 18.0;
+            beamPower = (0.14 + 1.28 * burstCore) * bankActive * subChaser * dropPower;
           } else if (pat === 1) {
-            // Center-Out Wave（中心向外 12 束连续空间渐变扇形排射）
+            // 中心向外超音速海啸冲击波：波峰刺目爆亮，波外迅速归暗
             const distCenter = Math.abs(b.normX);
-            const wavePhase = clamp01(1.0 - Math.abs(distCenter - ((beatInfo.pos * 0.85) % 1.0)) * 2.4);
-            tx = b.normX * 24.0;
-            ty = 1.2 + 4.5 * noteVal;
-            tz = 12.0;
-            beamPower = (0.40 + 0.82 * wavePhase + 0.42 * hitEnv) * dropPower;
-          } else if (pat === 2) {
-            // Guillotine（平行垂直铡刀齐劈地面，清晰展现从左至右丝滑色彩渐变或全屏单色齐劈）
-            tx = b.x * 1.08;
-            ty = 0.05;
-            tz = -12.0 + Math.sin(beatInfo.pos * Math.PI * 0.5 + Math.abs(b.normX) * 2.0) * 14.0;
-            beamPower = (0.36 + 0.92 * hitEnv + 0.34 * kickPunch) * dropPower;
-          } else {
-            // Strobe Matrix（对称高密点射）
-            const pairOn = ((b.slot + Math.floor(beatInfo.pos * 4)) % 3 === 0) ? 1.0 : (isUnisonMode ? 0.24 : 0.52);
-            tx = isUnisonMode ? -b.normX * 12.0 : b.normX * 16.5;
-            ty = 2.8 + (b.slot % 3) * 2.6;
+            const waveCrest = Math.pow(clamp01(1.0 - Math.abs(distCenter - waveSweep01) * 3.1), 2.2);
+            tx = b.normX * 26.0;
+            ty = 0.9 + 5.2 * noteVal;
             tz = 14.0;
-            beamPower = (0.38 + 0.86 * hitEnv) * pairOn * dropPower;
+            beamPower = (0.05 + 1.38 * waveCrest + 0.52 * hitEnv * (1.0 - distCenter * 0.5)) * dropPower;
+          } else if (pat === 2) {
+            // 24 刃垂直铡刀重拍齐劈（与下方皇冠反相对轰）
+            const downSlash = Math.max(kickFast, beatPulse * 0.9, hitEnv * (activeParity > 0 ? 1.0 : 0.15));
+            tx = b.x * 1.12;
+            ty = 0.05;
+            tz = -10.0 + Math.sin(beatInfo.pos * Math.PI * 0.5 + Math.abs(b.normX) * 2.2) * 15.0;
+            beamPower = (0.06 + 1.36 * downSlash) * dropPower;
+          } else {
+            // 十六分音符高密琶音矩阵快闪
+            const arpHit = ((b.slot + step16Global) % 4 === 0) || ((23 - b.slot + step16Global) % 5 === 0);
+            tx = isUnisonMode ? -b.normX * 14.5 : b.normX * 18.5;
+            ty = 2.0 + (b.slot % 4) * 2.4;
+            tz = 15.0;
+            beamPower = (arpHit ? (0.34 + 1.16 * burstCore) : 0.04) * dropPower;
           }
         } else if (b.group === 1) {
-          // 舞台前缘低位仰射 12 束（与正上方顶梁共享横向空间色温，彻底告别上下乱撞杂色）
-          const symActive = ((b.slot + (activeParity > 0 ? 0 : 1)) % 2 === 0) ? 1.0 : (isUnisonMode ? 0.34 : 0.64);
-          tx = b.normX * (isUnisonMode && cueMode === 2 ? -18.5 : 21.0);
-          ty = 13.5 + 4.2 * noteVal;
-          tz = 8.0;
-          beamPower = (0.30 + 0.82 * hitEnv + 0.28 * snarePunch) * symActive * dropPower;
-        } else {
-          // 左右高空侧翼 12 束斜切激光刃（模式 A 落在同侧半场顺滑衔接，模式 B 横贯全屏）
+          // Group 1: 舞台前缘台唇 20 束冲天仰射激光排
+          const distCenter = Math.abs(b.normX);
+          const lipWave = Math.pow(clamp01(1.0 - Math.abs((1.0 - distCenter) - waveSweep01) * 3.0), 2.0);
+          const altOn = ((b.slot + (activeParity > 0 ? 0 : 1)) % 2 === 0);
+          const gate = pat === 1
+            ? (0.06 + 1.32 * lipWave)
+            : pat === 2
+              ? (0.06 + 1.34 * Math.max(snareFast, (1.0 - beatPulse) * 0.72 * (0.4 + hitEnv)))
+              : (altOn ? (0.18 + 1.18 * burstCore) : 0.05);
+          tx = b.normX * (isUnisonMode && cueMode === 2 ? -20.0 : 23.0);
+          ty = 13.0 + 5.5 * noteVal;
+          tz = 10.0;
+          beamPower = gate * dropPower;
+        } else if (b.group === 2 || b.group === 3) {
+          // Group 2 & 3: 左右走廊高空双层 24 束纵深追光刃（由舞台向观众席逐跨极速扫射）
           const sideSign = b.group === 2 ? -1 : 1;
-          const bankHit = (activeParity * sideSign > 0) ? 1.0 : (isUnisonMode ? 0.36 : 0.65);
-          tx = isUnisonMode ? -sideSign * 15.5 : sideSign * 4.2;
-          ty = 0.25 + (b.slot % 2) * 2.4;
-          tz = b.z + 16.5;
-          beamPower = (0.28 + 0.88 * hitEnv) * bankHit * (cueMode === 1 ? 0.55 : 1.0) * dropPower;
+          const bayIdx = b.slot >> 1; // 0..5 由远及近
+          const depthChase = Math.pow(clamp01(1.0 - Math.abs((bayIdx / 5.0) - waveSweep01) * 2.8), 2.2);
+          const sideActive = pat === 0
+            ? ((activeParity * sideSign > 0) ? (0.24 + 1.15 * burstCore) : 0.04)
+            : (0.05 + 1.28 * depthChase + 0.45 * hitEnv);
+          tx = isUnisonMode ? -sideSign * 16.0 : sideSign * 3.6;
+          ty = (b.slot % 2 === 0) ? 0.35 : 4.2 + 2.5 * noteVal;
+          tz = b.z + 18.0;
+          beamPower = sideActive * (cueMode === 1 ? 0.62 : 1.0) * dropPower;
+        } else if (b.group === 4) {
+          // Group 4: 左右频谱灯塔外翼 20 束竖向立体扇排（自下而上音阶追光扫射）
+          const isRightSide = b.slot >= 10;
+          const sideSign = isRightSide ? 1 : -1;
+          const k = b.slot % 10; // 0..9 由低到高
+          const vertWave = Math.pow(0.5 + 0.5 * Math.sin(beatInfo.pos * Math.PI * 2.0 - k * 0.55), 3.2);
+          const sideGate = (pat === 0 && activeParity * sideSign < 0) ? 0.06 : 1.0;
+          const chromaBoost = readChroma((k + (isRightSide ? 5 : 0)) % 12);
+          tx = isUnisonMode ? -sideSign * (8.0 + k * 1.4) : sideSign * (18.5 + k * 0.9);
+          ty = 1.2 + (9 - k) * 1.35;
+          tz = 12.0;
+          beamPower = (0.05 + 0.92 * vertWave + 0.58 * chromaBoost * burstCore) * sideGate * dropPower;
+        } else {
+          // Group 5: DJ 控台后沿 16 束孔雀皇冠放射排（重拍与军鼓时在 DJ 身后冲天炸开皇冠光屏！）
+          const fanU = (b.slot / 15) * 2 - 1; // [-1..1]
+          const crownSpread = 1.0 + 0.28 * kickFast + 0.22 * snareFast;
+          tx = fanU * 27.5 * crownSpread;
+          ty = (11.5 + (1.0 - fanU * fanU * 0.55) * 11.5) * (0.92 + 0.16 * noteVal);
+          tz = 8.0 + (1.0 - Math.abs(fanU)) * 10.0;
+          const crownChase = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - Math.abs(fanU) * 3.6), 2.8);
+          const crownBurst = pat === 2
+            ? Math.max(snareFast * 1.35, (1.0 - beatPulse) * 0.85 + hitEnv * 0.65)
+            : (0.06 + 0.95 * crownChase * (0.35 + 0.85 * burstCore));
+          beamPower = crownBurst * dropPower;
         }
       }
 
-      // 按光束三维可见空间位置（兼顾起点与落点横向坐标）平滑采样渐变色板；模式 B 下恒等于 activeUnisonSlot
+      // 叠加 20Hz 反相快门频闪（军鼓滚奏/强重音刺瞬间触发电光石火的切割感）
+      if (strobeTrigger > 0.05 && beamPower > 0.04) {
+        const bGate = (((i + b.group) % 2 === 0) ? strobeGatePhase : -strobeGatePhase) > 0 ? 1.38 : 0.04;
+        beamPower *= lerp(1.0, bGate, clamp01(strobeTrigger));
+      }
+
+      // 按光束三维可见空间位置平滑采样封面渐变色板；模式 B 下恒等于每句歌词开头锁定的 activeUnisonSlot
       const beamSpatialX = b.x * 0.72 + tx * 0.28;
       const colorMix = evalSpatialColorSlot(beamSpatialX, b.z);
 
-      beamPower = Math.min(1.38, beamPower);
+      beamPower = Math.min(1.52, beamPower);
       if (isDrop && dropPower < 0.55) {
-        // Drop 能量回落时，外围与侧翼辅光束柔和收拢熄灭（触发着色器 discard 门限），中央核心主排优雅维持柔光呼吸
+        // Drop 能量骤降时（如《Nothing Ever After》3:25），94 束外围与辅机位激光平滑熄灭至 0，中央核心保留微光呼吸
         const isCoreBeam = b.group === 0 && Math.abs(b.normX) < 0.42;
         if (!isCoreBeam) {
           const fadeOut = smooth(clamp01((dropPower - 0.35) / 0.20));
           beamPower *= fadeOut;
+        } else {
+          beamPower = Math.max(beamPower * 0.55, 0.14 * dropPower);
         }
       }
+
+      const halfWidth = b.group === 0 ? 0.145 : b.group === 5 ? 0.155 : 0.130;
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * BEAM_EMITTER_COUNT + i) * 4;
         bEnd[slot] = tx;
         bEnd[slot + 1] = ty;
         bEnd[slot + 2] = tz;
-        bEnd[slot + 3] = b.group === 0 ? 0.195 : 0.160;
+        bEnd[slot + 3] = halfWidth;
 
         bStyle[slot] = beamPower;
         bStyle[slot + 1] = colorMix;
@@ -3861,32 +4044,50 @@ export class LaserScene implements MvScene {
     this.beamEndAttr.needsUpdate = true;
     this.beamStyleAttr.needsUpdate = true;
 
-    // 8. 更新双层反向旋转空心断线激光锥笼（Laser Cone Tunnel）
+    // 8. 更新三层反向旋转高密断线激光锥笼（全高潮段立体在线，随重拍脉冲呼吸）
     const cSpec = this.coneSpecAttr.array as Float32Array;
     let outerConePower = 0;
+    let midConePower = 0;
     let innerConePower = 0;
     if (isDrop || isChorus) {
+      const conePulse = 0.32 + 0.78 * kickFast + 0.38 * hitEnv + 0.24 * beatPulse;
       if (cueMode === 1) {
-        // CONE_VORTEX 主场：内外双锥满功率反向高速旋转包裹镜头！
-        outerConePower = (1.05 + 0.25 * kickPunch) * dropPower;
-        innerConePower = (0.88 + 0.22 * fg.level) * dropPower;
+        // CONE_VORTEX 主场：三层激光锥笼满功率正反交错旋转包裹全场！
+        outerConePower = (0.55 + 0.72 * conePulse) * dropPower;
+        midConePower = (0.48 + 0.76 * (0.4 + 0.6 * snareFast + 0.5 * fg.level)) * dropPower;
+        innerConePower = (0.52 + 0.68 * conePulse) * dropPower;
       } else if (cueMode === 2) {
-        // CATHEDRAL_CROWN：保留一层柔和中心内锥作为中轴圣光柱骨架
-        outerConePower = 0.28 * dropPower;
-        innerConePower = 0.55 * dropPower;
+        outerConePower = 0.36 * conePulse * dropPower;
+        midConePower = 0.52 * conePulse * dropPower;
+        innerConePower = 0.68 * conePulse * dropPower;
+      } else {
+        // 其余高潮阵型亦保留脉冲呼吸锥笼骨架，告别单薄断档
+        outerConePower = 0.42 * conePulse * dropPower;
+        midConePower = (0.18 + 0.56 * snareFast) * dropPower;
+        innerConePower = 0.38 * conePulse * dropPower;
       }
-    } else if (isBuild && buildProgress > 0.45) {
-      // Build 后半程内锥逐渐显现蓄势旋转
-      innerConePower = (buildProgress - 0.45) * 1.15;
+      if (isDrop && dropPower < 0.50) {
+        const coneFade = smooth(clamp01((dropPower - 0.35) / 0.15));
+        outerConePower *= coneFade;
+        midConePower *= coneFade;
+        innerConePower *= (0.25 + 0.75 * coneFade);
+      }
+    } else if (isBuild && buildProgress > 0.38) {
+      const bGain = (buildProgress - 0.38) / 0.62;
+      midConePower = bGain * 0.65 * (0.3 + 0.7 * beatPulse);
+      innerConePower = bGain * 1.10;
     }
 
     for (let mirror = 0; mirror < 2; mirror++) {
       const slot0 = (mirror * CONE_LAYER_COUNT + 0) * 4;
       const slot1 = (mirror * CONE_LAYER_COUNT + 1) * 4;
-      cSpec[slot0] = 1.02 + 0.08 * kickPunch;
+      const slot2 = (mirror * CONE_LAYER_COUNT + 2) * 4;
+      cSpec[slot0] = 1.06 + 0.10 * kickFast;
       cSpec[slot0 + 2] = outerConePower;
-      cSpec[slot1] = 0.54 + 0.06 * fg.level;
-      cSpec[slot1 + 2] = innerConePower;
+      cSpec[slot1] = 0.74 + 0.08 * snareFast;
+      cSpec[slot1 + 2] = midConePower;
+      cSpec[slot2] = 0.44 + 0.06 * fg.level;
+      cSpec[slot2 + 2] = innerConePower;
     }
     this.coneSpecAttr.needsUpdate = true;
 
