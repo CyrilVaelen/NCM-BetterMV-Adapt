@@ -789,24 +789,24 @@ test('LaserScene 激光舞台：圆锥激光发射源位于顶部桁架且 DJ �
         assert.ok(!Number.isNaN(laser.camera.position.y), `[${variant}] 相机 Y 坐标不应为 NaN (t=${t})`);
         assert.ok(!Number.isNaN(laser.camera.fov), `[${variant}] 相机 FOV 不应为 NaN (t=${t})`);
 
-        // 检查右手
+        // 检查右手（严禁绕 Z 轴向左右两侧横撇抬手，必须沿 X 轴往正前上方抬举）
         const rShZ = dj.shoulderR.rotation.z;
         const rElBend = Math.hypot(dj.elbowR.rotation.x, dj.elbowR.rotation.z);
         assert.ok(
-          Math.abs(rShZ) < 1.6,
-          `[${variant}:${sec.label}] DJ 右肩 Z 轴旋转角度过大 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 1.6)，存在过度挥手问题 (t=${t.toFixed(2)})`,
+          Math.abs(rShZ) < 0.25,
+          `[${variant}:${sec.label}] DJ 右肩禁止向侧面外展挥手 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 0.25) (t=${t.toFixed(2)})`,
         );
         assert.ok(
           rElBend > 0.6,
           `[${variant}:${sec.label}] DJ 右肘应保持自然屈肘 (rElBend=${rElBend.toFixed(3)} <= 0.6)，不应伸直成棍 (t=${t.toFixed(2)})`,
         );
 
-        // 检查左手
+        // 检查左手（严禁绕 Z 轴向左右两侧横撇抬手）
         const lShZ = dj.shoulderL.rotation.z;
         const lElBend = Math.hypot(dj.elbowL.rotation.x, dj.elbowL.rotation.z);
         assert.ok(
-          Math.abs(lShZ) < 1.6,
-          `[${variant}:${sec.label}] DJ 左肩 Z 轴旋转角度过大 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 1.6)，存在过度挥手问题 (t=${t.toFixed(2)})`,
+          Math.abs(lShZ) < 0.25,
+          `[${variant}:${sec.label}] DJ 左肩禁止向侧面外展挥手 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 0.25) (t=${t.toFixed(2)})`,
         );
         assert.ok(
           lElBend > 0.6,
@@ -905,16 +905,30 @@ test('LaserScene 激光舞台：极端音频工况（超高速 BPM 200 / 极慢 
 
         const rShZ = dj.shoulderR.rotation.z;
         const lShZ = dj.shoulderL.rotation.z;
-        assert.ok(Math.abs(rShZ) < 1.45, `极端工况下 DJ 右肩 Z 轴旋转超标 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 1.45)`);
-        assert.ok(Math.abs(lShZ) < 1.45, `极端工况下 DJ 左肩 Z 轴旋转超标 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 1.45)`);
+        assert.ok(Math.abs(rShZ) < 0.25, `极端工况下 DJ 右肩禁止往侧面抬手 (|rShZ|=${Math.abs(rShZ).toFixed(3)} >= 0.25)`);
+        assert.ok(Math.abs(lShZ) < 0.25, `极端工况下 DJ 左肩禁止往侧面抬手 (|lShZ|=${Math.abs(lShZ).toFixed(3)} >= 0.25)`);
 
         const rElBend = Math.hypot(dj.elbowR.rotation.x, dj.elbowR.rotation.z);
         const lElBend = Math.hypot(dj.elbowL.rotation.x, dj.elbowL.rotation.z);
         assert.ok(rElBend >= 0.65 && rElBend <= 1.35, `极端工况下 DJ 右肘屈曲度异常 (${rElBend.toFixed(3)})`);
         assert.ok(lElBend >= 0.65 && lElBend <= 1.35, `极端工况下 DJ 左肘屈曲度异常 (${lElBend.toFixed(3)})`);
 
-        assert.ok(dj.shoulderR.rotation.x < -0.1, `DJ 右臂大臂应保持前倾 (rotX=${dj.shoulderR.rotation.x.toFixed(3)})`);
-        assert.ok(dj.shoulderL.rotation.x < -0.1, `DJ 左臂大臂应保持前倾 (rotX=${dj.shoulderL.rotation.x.toFixed(3)})`);
+        assert.ok(dj.shoulderR.rotation.x < -0.5, `DJ 右臂大臂应往前方抬起 (rotX=${dj.shoulderR.rotation.x.toFixed(3)})`);
+        assert.ok(dj.shoulderL.rotation.x < -0.5, `DJ 左臂大臂应往前方抬起 (rotX=${dj.shoulderL.rotation.x.toFixed(3)})`);
+
+        // 当右手完全抬起律动时，验证三维运动学坐标严格满足“往前往上抬，而非往左往右抬”
+        if (laser.djArmRaiseR > 0.85) {
+          dj.root.updateMatrixWorld(true);
+          const invSpine = dj.spine.matrixWorld.clone().invert();
+          const shLocal = new THREE.Vector3().setFromMatrixPosition(dj.shoulderR.matrixWorld).applyMatrix4(invSpine);
+          const wristLocal = new THREE.Vector3().setFromMatrixPosition(dj.handR.matrixWorld).applyMatrix4(invSpine);
+          const dx = wristLocal.x - shLocal.x;
+          const dy = wristLocal.y - shLocal.y;
+          const dz = wristLocal.z - shLocal.z;
+          assert.ok(dz > 0.28, `DJ 抬手时手腕必须位于肩部正前方 (dz=${dz.toFixed(3)} <= 0.28)`);
+          assert.ok(dy > 0.08, `DJ 抬手时手腕必须往肩部上方抬起 (dy=${dy.toFixed(3)} <= 0.08)`);
+          assert.ok(Math.abs(dx) < 0.06, `DJ 抬手时严禁往左右两侧横撇 (|dx|=${Math.abs(dx).toFixed(3)} >= 0.06)`);
+        }
       }
     }
   }

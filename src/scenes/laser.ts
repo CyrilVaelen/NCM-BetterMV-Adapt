@@ -3212,9 +3212,9 @@ export class LaserScene implements MvScene {
   }
 
   /**
-   * 实时驱动写实三维骨骼 DJ 的身体律动、平滑抬落手过渡与克制自然的屈肘律动运动学：
-   * - 屈肘帅气律动：收敛双臂挥舞幅度，肘关节始终保持约 113°~130° 舒适弹性屈曲，大臂保持自然前倾（杜绝直臂指挥家形态）；
-   * - 双臂自然抬放：消除离散小节突变，采用连续时间 S 斜坡 + 帧间角速度限幅平滑器（抬落全程约 0.75~0.90s）及胸前微屈过渡弧线。
+   * 实时驱动写实三维骨骼 DJ 的身体律动、平滑抬落手过渡与“正前方往上抬举（Forward-Upward Pump）”运动学：
+   * - 正前上方抬臂推举：DJ 面朝 +Z，双臂严格沿正前方矢状面（绕 X 轴负向俯仰）往前往上抬起并随重拍向上推举，绝不绕 Z 轴向身体左右两侧横撇扇动；
+   * - 双臂自然抬放：消除离散小节突变，采用连续时间 S 斜坡 + 帧间角速度限幅平滑器（抬落全程约 0.75~0.90s）沿控台正上方自然提落。
    */
   private updateDjPerformance(
     t: number,
@@ -3313,72 +3313,80 @@ export class LaserScene implements MvScene {
     const headRoll = Math.cos(barRad + 0.6) * 0.048;
     dj.head.rotation.set(headPitch, headYaw, headRoll);
 
-    // 4. 真实自然 DJ 现场身体律动（收敛双臂挥动幅度，屈肘自然随节拍轻推，告别大幅度直臂指挥家挥舞）
-    const phraseMod = 0.94 + 0.06 * Math.sin(barRad * 0.5);
+    // 4. 真实自然 DJ 正前上方抬手律动（沿矢状面绕 X 轴往前往上抬起并随节拍向上推举，零左右横向甩臂）
+    const phraseMod = 0.96 + 0.04 * Math.sin(barRad * 0.5);
     const rawWaveR = 0.5 + 0.5 * Math.cos(beatRad - 0.55);
     const pumpR = clamp01(Math.pow(rawWaveR, 1.1) * 0.82 + 0.10 * kickPunch + 0.08 * snarePunch);
 
     const rawWaveL = 0.5 + 0.5 * Math.cos(beatRad - 0.75); // 左手细微异步差
     const pumpL = clamp01(Math.pow(rawWaveL, 1.1) * 0.80 + 0.10 * kickPunch + 0.08 * snarePunch);
 
-    // 5. 左手（+X 侧，YZX 旋转顺序）：混音台调音推子 <-> 抬至胸前/肩部高度保持自然屈肘微幅律动
+    // 5. 左手（+X 侧，YZX 旋转顺序）：混音台调音推子 <-> 沿身体正前方往前往上抬起并向上弹性推举
     const knobTwist = Math.sin(t * (isBuild ? 5.5 + 6.0 * buildProgress : 2.6)) * 0.09;
     const faderPush = Math.cos(beatRad * 0.5) * 0.07 + snarePunch * 0.06;
     const midArcL = 4.0 * rL * (1.0 - rL);
 
     const deckLx = -0.68 - faderPush;
     const deckLy = 0.14 + knobTwist * 0.5;
-    const deckLz = -0.15;
-    const deckElLx = -0.84 + faderPush * 0.75;
-    const deckElLz = -0.16;
+    const deckLz = 0.12;
+    const deckElLx = -0.84 + faderPush * 0.65;
+    const deckElLz = -0.12;
 
-    // 屈肘前倾姿势：大臂自然前倾 -0.38 rad，外展保持在 72°~80° 舒适区，肘关节保持 52°~68° 弹性屈曲，绝不伸直成棍
-    const hypeLx = lerp(-0.40, -0.34, pumpL);
-    const hypeLy = lerp(-0.22, -0.16, pumpL);
-    const hypeLz = lerp(1.26, 1.40 * phraseMod, pumpL);
-    const hypeElLx = lerp(-0.20, -0.14, pumpL);
-    const hypeElLz = lerp(1.16, 0.86, pumpL);
+    // 往前往上抬手：绕 X 轴将大臂从正前方抬向斜前上方 (-1.32 -> -1.96 rad)，前臂沿同平面向上推举 (-1.14 -> -0.70 rad)，横向保持肩宽正前方
+    const hypeLx = lerp(-1.32, -1.96 * phraseMod, pumpL);
+    const hypeLy = 0.06;
+    const hypeLz = 0.05;
+    const hypeElLx = lerp(-1.14, -0.70, pumpL);
+    const hypeElLz = -0.04;
 
     dj.shoulderL.rotation.set(
-      lerp(deckLx, hypeLx, rL) - 0.15 * midArcL,
+      lerp(deckLx, hypeLx, rL) - 0.12 * midArcL,
       lerp(deckLy, hypeLy, rL),
       lerp(deckLz, hypeLz, rL),
     );
     dj.elbowL.rotation.set(
-      lerp(deckElLx, hypeElLx, rL) - 0.22 * midArcL,
-      lerp(-0.14, 0.06, rL),
+      lerp(deckElLx, hypeElLx, rL) - 0.14 * midArcL,
+      lerp(-0.10, -0.06, rL),
       lerp(deckElLz, hypeElLz, rL),
     );
-    dj.handL.rotation.set(lerp(0.32, 0.06 + 0.12 * pumpL, rL), knobTwist * (1.0 - rL), 0);
+    dj.handL.rotation.set(
+      lerp(0.32, -0.08 - 0.06 * pumpL, rL),
+      lerp(knobTwist, -0.52, rL),
+      0,
+    );
 
-    // 6. 右手（-X 侧，YZX 旋转顺序）：CDJ 搓盘/控台 <-> 抬至胸前/肩部保持自然屈肘微幅律动
+    // 6. 右手（-X 侧，YZX 旋转顺序）：CDJ 搓盘/控台 <-> 沿身体正前方往前往上抬起并向上弹性推举
     const platterScrub = Math.sin(t * 3.4) * 0.08;
     const midArcR = 4.0 * rR * (1.0 - rR);
 
     const deckRx = -0.64 + platterScrub * 0.45;
     const deckRy = -0.06 + platterScrub;
-    const deckRz = -0.22;
+    const deckRz = -0.12;
     const deckElRx = -0.84 - platterScrub * 0.35;
-    const deckElRz = 0.16;
+    const deckElRz = 0.12;
 
-    // 屈肘前倾姿势：大臂自然前倾 -0.40 rad，外展保持在 -72°~-80°，肘关节弹性微动 (幅差仅约 17°)，律动克制帅气
-    const hypeRx = lerp(-0.40, -0.34, pumpR);
-    const hypeRy = lerp(0.22, 0.16, pumpR);
-    const hypeRz = lerp(-1.26, -1.40 * phraseMod, pumpR);
-    const hypeElRx = lerp(-0.20, -0.14, pumpR);
-    const hypeElRz = lerp(-1.16, -0.86, pumpR);
+    // 往前往上抬手：绕 X 轴将大臂往前往上抬升 (-1.32 -> -1.96 rad)，前臂在正前方往上推举 (-1.14 -> -0.70 rad)，杜绝往左右两侧外展
+    const hypeRx = lerp(-1.32, -1.96 * phraseMod, pumpR);
+    const hypeRy = -0.06;
+    const hypeRz = -0.05;
+    const hypeElRx = lerp(-1.14, -0.70, pumpR);
+    const hypeElRz = 0.04;
 
     dj.shoulderR.rotation.set(
-      lerp(deckRx, hypeRx, rR) - 0.15 * midArcR,
+      lerp(deckRx, hypeRx, rR) - 0.12 * midArcR,
       lerp(deckRy, hypeRy, rR),
       lerp(deckRz, hypeRz, rR),
     );
     dj.elbowR.rotation.set(
-      lerp(deckElRx, hypeElRx, rR) - 0.22 * midArcR,
-      lerp(0.12, -0.06, rR),
+      lerp(deckElRx, hypeElRx, rR) - 0.14 * midArcR,
+      lerp(0.10, 0.06, rR),
       lerp(deckElRz, hypeElRz, rR),
     );
-    dj.handR.rotation.set(lerp(0.30, 0.06 + 0.12 * pumpR, rR), 0, 0);
+    dj.handR.rotation.set(
+      lerp(0.30, -0.08 - 0.06 * pumpR, rR),
+      lerp(0, 0.52, rR),
+      0,
+    );
   }
 
   update(ctx: FrameCtx): void {
