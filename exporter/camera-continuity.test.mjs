@@ -2267,6 +2267,8 @@ test('LaserScene 激光舞台：激光强度 E 随 Lead 强度 I 的指数呼吸
   let sharpTransitions = 0;
   let prevBo = 0;
   let minBloomInBlackout = 1;
+  let maxLaserPowerInFullCut = 0;
+  let minWashPowerInFullCut = Infinity;
 
   for (let t = 0.05; t < 20.0; t += dtScan) {
     const curT = +t.toFixed(5);
@@ -2303,27 +2305,50 @@ test('LaserScene 激光舞台：激光强度 E 随 Lead 强度 I 的指数呼吸
     } else if (inBlackout && bo <= 0.15) {
       inBlackout = false;
     }
-    if (bo >= 0.98 && fx.bloom < minBloomInBlackout) {
-      minBloomInBlackout = fx.bloom;
+    if (bo >= 0.999) {
+      if (fx.bloom < minBloomInBlackout) minBloomInBlackout = fx.bloom;
+      for (let b = 0; b < 152; b++) {
+        maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.beamStyleAttr.array[b * 4]);
+      }
+      for (let s = 0; s < 12; s++) {
+        maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.sheetStyleAttr.array[s * 4 + 1]);
+      }
+      for (let sc = 0; sc < 10; sc++) {
+        maxLaserPowerInFullCut = Math.max(maxLaserPowerInFullCut, blackoutLaser.scanStyleAttr.array[sc * 4 + 1]);
+      }
+      maxLaserPowerInFullCut = Math.max(
+        maxLaserPowerInFullCut,
+        blackoutLaser.coneSpecAttr.array[2],
+        blackoutLaser.coneSpecAttr.array[6],
+      );
+      let frameMaxWash = 0;
+      for (let w = 0; w < 24; w++) {
+        frameMaxWash = Math.max(frameMaxWash, blackoutLaser.washStateAttr.array[w * 4]);
+      }
+      if (frameMaxWash < minWashPowerInFullCut) minWashPowerInFullCut = frameMaxWash;
     }
     prevBo = bo;
   }
 
   assert.ok(
     dropBlackoutCount >= 18,
-    `16 秒 Drop 区间内应触发高频全场突然全黑 (>=18 次)，实测 ${dropBlackoutCount} 次`,
+    `16 秒 Drop 区间内应触发高频瞬时激光归零切光 (>=18 次)，实测 ${dropBlackoutCount} 次`,
   );
   assert.ok(
     buildBlackoutCount >= 6,
-    `Build 蓄能段应触发密集加速频闪切黑 (>=6 次)，实测 ${buildBlackoutCount} 次`,
+    `Build 蓄能段应触发密集加速激光切零 (>=6 次)，实测 ${buildBlackoutCount} 次`,
   );
   assert.ok(
     sharpTransitions >= 20,
-    `黑场切入必须为毫秒级突然断电硬切而非缓慢渐变，实测陡峭跳变帧数=${sharpTransitions}`,
+    `激光归零切入必须为毫秒级利落瞬切而非拖泥带水，实测陡峭跳变帧数=${sharpTransitions}`,
   );
   assert.ok(
-    minBloomInBlackout < 0.025,
-    `全场突然变黑时后期 Bloom 泛光必须同步压灭以防亮雾残留，实测最低 bloom=${minBloomInBlackout.toFixed(4)}`,
+    maxLaserPowerInFullCut < 1e-4,
+    `切光瞬间 (uBlackout=1) 全部四套激光强度必须归零，实测残留峰值=${maxLaserPowerInFullCut}`,
+  );
+  assert.ok(
+    minBloomInBlackout >= 0.18 && minWashPowerInFullCut > 0.25,
+    `切光瞬间绝不硬黑全屏：后期泛光与舞台氛围灯必须保持自然常亮 (minBloom=${minBloomInBlackout.toFixed(4)}, minWash=${minWashPowerInFullCut.toFixed(4)})`,
   );
 
   // 验证每个小节正拍落点（downbeats）黑场已 100% 瞬开归零（确保重拍瞬间激光满功率炸裂）
@@ -2384,6 +2409,92 @@ test('LaserScene 激光舞台：激光强度 E 随 Lead 强度 I 的指数呼吸
     assert.ok(Math.abs(blackoutLaser.uniforms.uBlackout.value - fresh.uniforms.uBlackout.value) < 1e-6);
     assert.ok(Math.abs(blackoutLaser.uniforms.uLeadBreath.value - fresh.uniforms.uLeadBreath.value) < 1e-6);
   }
+});
+
+test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫描激光(图二)及封面/灯塔常亮不黑验证', async () => {
+  const m = mods;
+  const fixture = buildMockFixture();
+  const { music, lyrics, palette, init } = fixture;
+
+  const ls = new m.LaserScene({ ...init, music, lyrics, seed: 20261104 }, 'pulse');
+
+  // 1. 验证实例总数与空间避让：24 组氛围灯与 10 座交叉扫描激光均严格位于中央专辑封面可视盘面外部
+  assert.equal(ls.washStateAttr.count / 2, 24, '舞台体积烟雾氛围灯本体应为 24 组 (12 横条灯 + 12 摇头染色灯)');
+  assert.equal(ls.scanStyleAttr.count / 2, 10, '交叉几何平面扫描激光本体应为 10 座');
+
+  for (let i = 0; i < 24; i++) {
+    const wx = ls.washOriginAttr.array[i * 4];
+    const wy = ls.washOriginAttr.array[i * 4 + 1];
+    const wz = ls.washOriginAttr.array[i * 4 + 2];
+    const insideCover = Math.abs(wx) < 7.5 && wy > 2.6 && wy < 17.6 && wz <= -51.5;
+    assert.ok(!insideCover, `氛围灯 #${i} (${wx}, ${wy}, ${wz}) 不得遮挡中央专辑封面内部`);
+  }
+  for (let i = 0; i < 10; i++) {
+    const sx = ls.scanOriginAttr.array[i * 4];
+    const sy = ls.scanOriginAttr.array[i * 4 + 1];
+    const sz = ls.scanOriginAttr.array[i * 4 + 2];
+    const insideCover = Math.abs(sx) < 7.5 && sy > 2.6 && sy < 17.6 && sz <= -51.5;
+    assert.ok(!insideCover, `扫描激光 #${i} (${sx}, ${sy}, ${sz}) 不得位于中央专辑封面内部`);
+  }
+
+  // 2. 验证交叉扫描激光的三轴动态扫描运动、色彩同源性 ([0, 5] 色槽) 与随机 Seek 幂等性
+  const sec0 = music.a.sections[0];
+  const shot0 = {
+    index: 0,
+    start: sec0.start,
+    end: sec0.end,
+    scene: 'laser',
+    variant: 'arena',
+    section: sec0,
+    sectionIndex: 0,
+    seed: 20261104,
+    short: false,
+  };
+  ls.update({ t: 1.0, dt: 1 / 60, shotT: 1.0, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+  const anglesT1 = Float32Array.from(ls.scanAnglesAttr.array.slice(0, 40));
+
+  ls.update({ t: 2.2, dt: 1 / 60, shotT: 2.2, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+  const anglesT2 = Float32Array.from(ls.scanAnglesAttr.array.slice(0, 40));
+
+  let angleDeltaSum = 0;
+  for (let i = 0; i < 10; i++) {
+    angleDeltaSum += Math.abs(anglesT2[i * 4] - anglesT1[i * 4])
+                   + Math.abs(anglesT2[i * 4 + 1] - anglesT1[i * 4 + 1])
+                   + Math.abs(anglesT2[i * 4 + 2] - anglesT1[i * 4 + 2]);
+    const colorSlot = ls.scanStyleAttr.array[i * 4 + 2];
+    assert.ok(colorSlot >= 0 && colorSlot <= 5.0, `扫描激光 #${i} 色槽必须严格落在封面同源 6 槽色板 [0,5] 内，实测 ${colorSlot}`);
+  }
+  assert.ok(angleDeltaSum > 0.25, `交叉几何扫描激光必须具备明显的三轴动态振镜扫描轨迹，实测角度总位移=${angleDeltaSum.toFixed(4)}`);
+
+  for (let i = 0; i < 24; i++) {
+    const wPower = ls.washStateAttr.array[i * 4];
+    const wSlot = ls.washStateAttr.array[i * 4 + 1];
+    assert.ok(wPower > 0.15, `氛围灯 #${i} 应持续提供饱满体积烟雾氛围光，实测 ${wPower}`);
+    assert.ok(wSlot >= 0 && wSlot <= 5.0, `氛围灯 #${i} 色槽必须严格落在封面同源 6 槽色板 [0,5] 内，实测 ${wSlot}`);
+  }
+
+  // Seek 幂等性校验
+  const lsFresh = new m.LaserScene({ ...init, music, lyrics, seed: 20261104 }, 'pulse');
+  lsFresh.update({ t: 2.2, dt: 1 / 60, shotT: 2.2, shot: shot0, music, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+  for (let k = 0; k < 40; k++) {
+    assert.ok(Math.abs(ls.scanAnglesAttr.array[k] - lsFresh.scanAnglesAttr.array[k]) < 1e-6);
+    assert.ok(Math.abs(ls.scanStyleAttr.array[k] - lsFresh.scanStyleAttr.array[k]) < 1e-6);
+  }
+  for (let k = 0; k < 96; k++) {
+    assert.ok(Math.abs(ls.washStateAttr.array[k] - lsFresh.washStateAttr.array[k]) < 1e-6);
+  }
+
+  // 3. 着色器源码级保证：中央专辑封面主屏 (LED_MAIN_FRAG) 与两侧 12 半音颜色显示台 (LED_TOWER_FRAG) 绝不乘 uBlackout 硬变黑
+  const fsMod = await import('node:fs/promises');
+  const pathMod = await import('node:path');
+  const laserSrc = await fsMod.readFile(pathMod.resolve('src/scenes/laser.ts'), 'utf8');
+  const mainFragMatch = laserSrc.match(/const LED_MAIN_FRAG\s*=\s*\/\* glsl \*\/\s*`([\s\S]*?)`;/);
+  const towerFragMatch = laserSrc.match(/const LED_TOWER_FRAG\s*=\s*\/\* glsl \*\/\s*`([\s\S]*?)`;/);
+  const washFragMatch = laserSrc.match(/const ATMOS_WASH_FRAG\s*=\s*\/\* glsl \*\/\s*`([\s\S]*?)`;/);
+  assert.ok(mainFragMatch && towerFragMatch && washFragMatch, '应能定位 LED_MAIN_FRAG / LED_TOWER_FRAG / ATMOS_WASH_FRAG 着色器');
+  assert.ok(!/1\.0\s*-\s*(?:0\.\d+\s*\*\s*)?uBlackout/.test(mainFragMatch[1]), 'LED_MAIN_FRAG 专辑封面主屏严禁被 uBlackout 压黑');
+  assert.ok(!/1\.0\s*-\s*(?:0\.\d+\s*\*\s*)?uBlackout/.test(towerFragMatch[1]), 'LED_TOWER_FRAG 两侧颜色显示台严禁被 uBlackout 压黑');
+  assert.ok(!/uBlackout/.test(washFragMatch[1]), 'ATMOS_WASH_FRAG 舞台体积氛围灯严禁被 uBlackout 硬切黑');
 });
 
 

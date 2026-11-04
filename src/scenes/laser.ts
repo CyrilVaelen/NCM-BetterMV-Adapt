@@ -4,10 +4,10 @@
 //    随底鼓重拍泛起封面同源热惯性余晖，两侧高空激光阵列隐没于深黑空间中直接切穿干冰薄雾；
 // 2. 舞台中央视觉核心与镜面黑金地坪：远景舞台矗立 1:1 巨幅微距 RGB LED 点阵封面主屏与两侧 12 半音全彩频谱灯塔，
 //    下方设重工业超低音炮阵列台座、拉丝黑钛铝折面 DJ 控台与三维骨骼锐舞 DJ；全场铺设湿润黑曜石反光地面，1:1 菲涅尔倒映漫天彩光；
-// 3. 封面原色调同色系微调 + Lead 指数呼吸曲线 (y=e^x) + 高频瞬时全场黑场爆切：
+// 3. 封面原色调同色系微调 + 图一舞台体积氛围灯 + 图二交叉几何扫描激光 + Lead 指数呼吸 (y=e^x) + 纯激光归零断奏：
 //    - 基于播放种子围绕封面原始色调做克制同色系微调（±6°~±16°，绝不跨色系跳变，保持感知明度 L 与色块拓扑连贯）；
-//    - 激光强度 E 随 Lead 强度 I 呈指数函数响应 E(I) ∝ e^(k·I)，低谷深吸内敛、高潮电离爆发；
-//    - 密集编排小节预拍、切分反拍、重音刺与句首瞬时全场黑场（Snap Blackout），极暗反差下释放最强激光视觉冲击力。
+//    - 配备台唇横排染光灯条 + 高空摇头体积烟雾氛围灯（图一），以及四角/顶冠连续半透明玻璃感交叉扫描激光平面（图二）；
+//    - 激光强度 E 随 Lead 强度 I 呈指数函数响应 E(I) ∝ e^(k·I)，并在预拍/反拍/重音前高频将激光强度瞬切归零（不硬黑画面，封面与两侧频谱灯塔保持常亮）。
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import type { Section } from '../types.ts';
@@ -29,8 +29,10 @@ const SCREEN_CENTER_Y = 10.1;
 const STAGE_DECK_H = 1.82;
 const STAGE_LIP_Z = -46.8;
 
-/** 四大灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
+/** 六大舞台灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
 const SHEET_EMITTER_COUNT = 12;
+const SCAN_LASER_COUNT = 10;
+const WASH_FIXTURE_COUNT = 24;
 const BEAM_EMITTER_COUNT = 152;
 const CONE_LAYER_COUNT = 2;
 const CRYO_JET_COUNT = 8;
@@ -94,6 +96,41 @@ interface BeamEmitterSpec {
   normX: number;
 }
 
+/** 图一风格：舞台体积烟雾染色氛围灯与台唇双管频闪染光灯条静态布局 */
+interface WashFixtureSpec {
+  x: number;
+  y: number;
+  z: number;
+  /** 0=高空/侧翼圆形摇头体积染色灯(● + 浓烟云团), 1=台唇横排双管宽幅染光频闪灯条(▬) */
+  kind: number;
+  /** 体积烟雾染光云团世界半径（米） */
+  radius: number;
+  /** 默认光束偏向 X [-0.4..0.4] */
+  baseAimX: number;
+  /** 默认光束偏向 Y [-0.4..0.4] */
+  baseAimY: number;
+  /** 编组序号（用于追光相位） */
+  groupIdx: number;
+}
+
+/** 图二风格：连续半透明玻璃感几何交叉扫描激光平面静态布局 */
+interface ScanLaserEmitterSpec {
+  x: number;
+  y: number;
+  z: number;
+  /** 0=舞台左右下角斜向上交叉扫描扇, 1=巨幕顶冠内侧高空交叉扫描扇, 2=灯塔外翼斜切扫描扇, 3=前场走廊头顶交叉扫描扇 */
+  group: number;
+  /** 组内序号 */
+  idx: number;
+  /** 左右符号 (-1 或 +1) */
+  side: number;
+  baseYaw: number;
+  basePitch: number;
+  baseRoll: number;
+  spread: number;
+  length: number;
+}
+
 /** 预构建的全屏同色瞬切事件（模式 B：全屏统一颜色 1 -> 下一重音瞬切为封面颜色 2） */
 interface UnisonCutEvent {
   /** 瞬切触发时间戳（秒） */
@@ -129,8 +166,8 @@ export function evalLeadExponentialBreath(leadIntensity: number): number {
   return Math.exp(LEAD_EXP_SLOPE * (iClamped - LEAD_EXP_REF));
 }
 
-/** 瞬时硬切黑场梯形门控函数：极陡边缘（~15ms 瞬切全黑、~13ms 瞬开爆亮），杜绝温吞慢淡入淡出 */
-function snapBlackoutWindow(x: number, start: number, end: number, edgeIn = 0.015, edgeOut = 0.013): number {
+/** 激光强度瞬切归零门控函数（~20ms 利落切零、~16ms 瞬开释放；仅作用于激光功率，绝不硬黑专辑封面、两侧频谱台与舞台环境） */
+function snapBlackoutWindow(x: number, start: number, end: number, edgeIn = 0.020, edgeOut = 0.016): number {
   if (x <= start || x >= end) return 0;
   const attack = edgeIn > 1e-5 ? clamp01((x - start) / edgeIn) : 1;
   const release = edgeOut > 1e-5 ? clamp01((end - x) / edgeOut) : 1;
@@ -1088,6 +1125,153 @@ function buildBeamEmitters(): BeamEmitterSpec[] {
   return list;
 }
 
+/**
+ * 构建 24 组图一风格舞台体积烟雾氛围灯阵列（严格避开中央专辑封面可视盘面）：
+ * - 0..11 (kind=1): 舞台台唇与两侧延伸横排双管宽幅染光频闪灯条（GLP JDC1 风格，留出中央 DJ 剪影窗口）；
+ * - 12..19 (kind=0): 左右两侧中低空与中高空摇头体积染色灯（明亮圆形灯珠核 ● + 浓郁翻涌彩色干冰烟雾云团）；
+ * - 20..23 (kind=0): 舞台巨幕顶冠上方摇头体积染色灯（向下倾泻梦幻彩色体积雾）。
+ */
+function buildWashFixtures(): WashFixtureSpec[] {
+  const list: WashFixtureSpec[] = [];
+  const lipXs = [-25.0, -20.6, -16.4, -12.4, -8.4, -4.4, 4.4, 8.4, 12.4, 16.4, 20.6, 25.0];
+  for (let i = 0; i < lipXs.length; i++) {
+    const x = lipXs[i];
+    list.push({
+      x,
+      y: STAGE_DECK_H + 0.28,
+      z: STAGE_LIP_Z + 0.38,
+      kind: 1,
+      radius: 8.2,
+      baseAimX: -Math.sign(x) * 0.06,
+      baseAimY: 0.16,
+      groupIdx: Math.min(5, Math.floor(Math.abs(i - 5.5))),
+    });
+  }
+
+  const wingCoords: Array<[number, number, number]> = [
+    [-23.5, 8.6, -44.5],
+    [-18.6, 12.8, -46.8],
+    [-14.6, 7.6, -48.6],
+    [-13.2, 15.2, -50.4],
+    [13.2, 15.2, -50.4],
+    [14.6, 7.6, -48.6],
+    [18.6, 12.8, -46.8],
+    [23.5, 8.6, -44.5],
+  ];
+  for (let i = 0; i < wingCoords.length; i++) {
+    const [x, y, z] = wingCoords[i];
+    list.push({
+      x,
+      y,
+      z,
+      kind: 0,
+      radius: 14.6,
+      baseAimX: -Math.sign(x) * 0.14,
+      baseAimY: -0.10,
+      groupIdx: i % 4,
+    });
+  }
+
+  const crownXs = [-9.8, -3.6, 3.6, 9.8];
+  const crownYs = [19.35, 19.75, 19.75, 19.35];
+  for (let i = 0; i < 4; i++) {
+    list.push({
+      x: crownXs[i],
+      y: crownYs[i],
+      z: -51.4,
+      kind: 0,
+      radius: 15.2,
+      baseAimX: -Math.sign(crownXs[i]) * 0.08,
+      baseAimY: -0.18,
+      groupIdx: i < 2 ? i : 3 - i,
+    });
+  }
+  return list;
+}
+
+/**
+ * 构建 10 座图二风格连续半透明几何交叉扫描激光平面发射器（严格避开中央专辑封面可视盘面）：
+ * - 0..1 (group=0): 舞台左右下角外侧斜向上大张角交叉扫描扇（还原图二左下/右下璀璨顶点向高空对角切穿的标志性几何扇面）；
+ * - 2..3 (group=1): 巨幕顶冠上方左右内侧倾斜扫描扇（与下角仰射扇在半空交汇形成菱形/多边形透光叠影）；
+ * - 4..5 (group=2): 两侧频谱灯塔外翼中腰大倾角滚转扫描扇；
+ * - 6..9 (group=3): 观众席中前场高空走廊对称内切扫描扇（营造头顶近场玻璃感扫描天幕与水面折光）。
+ */
+function buildScanLaserEmitters(): ScanLaserEmitterSpec[] {
+  const list: ScanLaserEmitterSpec[] = [];
+  // Group 0: 舞台左右下角外翼斜向上交叉扫描平面
+  for (let i = 0; i < 2; i++) {
+    const side = i === 0 ? -1 : 1;
+    list.push({
+      x: side * 11.9,
+      y: STAGE_DECK_H + 0.42,
+      z: -48.5,
+      group: 0,
+      idx: i,
+      side,
+      baseYaw: -side * 0.24,
+      basePitch: 0.23,
+      baseRoll: side * 0.64,
+      spread: 0.50,
+      length: 78.0,
+    });
+  }
+  // Group 1: 巨幕顶冠上方交叉俯仰扫描平面
+  for (let i = 0; i < 2; i++) {
+    const side = i === 0 ? -1 : 1;
+    list.push({
+      x: side * 4.9,
+      y: 18.18,
+      z: -51.4,
+      group: 1,
+      idx: i,
+      side,
+      baseYaw: -side * 0.13,
+      basePitch: 0.04,
+      baseRoll: -side * 0.52,
+      spread: 0.54,
+      length: 78.0,
+    });
+  }
+  // Group 2: 灯塔外翼中腰大倾角对切扫描平面
+  for (let i = 0; i < 2; i++) {
+    const side = i === 0 ? -1 : 1;
+    list.push({
+      x: side * 13.4,
+      y: 9.6,
+      z: -49.8,
+      group: 2,
+      idx: i,
+      side,
+      baseYaw: -side * 0.28,
+      basePitch: 0.06,
+      baseRoll: side * 0.44,
+      spread: 0.46,
+      length: 72.0,
+    });
+  }
+  // Group 3: 中前场高空走廊头顶交叉扫描平面
+  const foreZs = [-34.0, -19.5];
+  for (let k = 0; k < 2; k++) {
+    for (let s = 0; s < 2; s++) {
+      const side = s === 0 ? -1 : 1;
+      list.push({
+        x: side * 16.2,
+        y: k === 0 ? 14.2 : 13.6,
+        z: foreZs[k],
+        group: 3,
+        idx: k * 2 + s,
+        side,
+        baseYaw: -side * 0.52,
+        basePitch: -0.14,
+        baseRoll: -side * 0.36,
+        spread: 0.44,
+        length: 56.0,
+      });
+    }
+  }
+  return list;
+}
+
 /** 预构建全曲确定性激光快切事件、全屏同色瞬切事件、重音前瞬时黑场事件与 Drop 前缘 CO2 气柱喷发事件 */
 function buildLaserShowEvents(
   music: Music,
@@ -1430,14 +1614,12 @@ void main() {
 
   vec3 col = base;
   col += uCoverGlow * pow(stageAlign, 20.0) * (0.042 + 0.045 * uSectionEnergy) * hazeDensity;
-  col += laserHaze * (stageHalo + skyScatter) * (0.32 + 0.68 * uLeadBreath) * hazeDensity;
+  // 激光归零瞬间仅消退天穹中的激光大气散射，保持暗场底色、封面背晕与盲眼灯余晖自然连续（绝不硬黑画面）
+  col += laserHaze * (stageHalo + skyScatter) * (0.32 + 0.68 * uLeadBreath) * (1.0 - uBlackout) * hazeDensity;
 
   // 舞台盲眼灯触发时在舞台上空勾勒封面同源余晖
   float blinderScatter = pow(stageAlign, 5.0) * smoothstep(-0.05, 0.55, up) * uBlinderGlow;
   col += uBlinderWarm * blinderScatter * 0.026 * hazeDensity;
-
-  // 全场瞬时切黑阀门（彻底沉入极黑深渊）
-  col *= (1.0 - 0.992 * uBlackout);
 
   gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
 }
@@ -1568,7 +1750,6 @@ void main() {
     vec3 frameMetal = uEnvDark * 3.2 + vec3(0.005);
     vec3 accent = mix(uLaserPrimary, uLaserSecondary, clamp(vUv.y, 0.0, 1.0));
     vec3 frameCol = frameMetal + accent * bevel * (0.22 + 0.38 * uDropPower + 0.20 * uSnarePunch);
-    frameCol *= (1.0 - 0.990 * uBlackout);
     gl_FragColor = vec4(frameCol, 1.0);
     return;
   }
@@ -1596,8 +1777,8 @@ void main() {
   // 扫描刷新微光波纹
   float scanWave = 0.97 + 0.03 * sin(innerUv.y * 90.0 - uTime * 8.0);
 
-  // 亮度控制：保证封面色彩 100% 原汁原味且不过曝洗白，全场黑场瞬间连同中央主屏一并断电骤黑
-  float gain = (0.72 + 0.20 * uSectionEnergy + 0.07 * uKickPunch + 0.05 * uSnarePunch) * (1.0 - 0.988 * uBlackout);
+  // 亮度控制：保证专辑封面主屏始终清晰常亮（激光切零时不将封面变黑）
+  float gain = 0.72 + 0.20 * uSectionEnergy + 0.07 * uKickPunch + 0.05 * uSnarePunch;
   vec3 col = texLinear * ledMask * scanWave * gain;
 
   // 屏幕内侧边缘柔和暗角压边，增强巨幕立体厚度
@@ -1645,8 +1826,8 @@ void main() {
   vec3 darkFrame = uEnvDark * 4.2 + vec3(0.004);
   float lit = padMask * barFill * (0.24 + 0.88 * noteEnergy + 0.30 * uDropPower);
 
+  // 两侧 12 半音颜色显示台保持常亮律动（激光切零时不跟着变黑）
   vec3 col = darkFrame + tint * lit * (1.0 + 0.28 * uKickPunch);
-  col *= (1.0 - 0.992 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -1742,7 +1923,7 @@ void main() {
   vec3 H = normalize(V + overheadLight);
   float crestSpec = pow(max(0.0, dot(N, H)), 42.0) * rippleFade;
   float rippleCrest = smoothstep(0.55, 0.98, 0.5 + 0.32 * w1 + 0.22 * w2 + 0.35 * bassRipple) * rippleFade;
-  float breathScale = 0.28 + 0.72 * uLeadBreath;
+  float breathScale = (0.28 + 0.72 * uLeadBreath) * (1.0 - uBlackout);
   vec3 laserWaterGlint = mix(waterTint, waterCore, 0.45) * (crestSpec * 0.28 + rippleCrest * 0.032 * fresnel) * (0.20 + 0.95 * uDropPower) * breathScale;
 
   vec3 waterDepthBase = (uEnvDark * 0.55 + vec3(0.0006)) * (0.85 + 0.15 * w1);
@@ -1756,11 +1937,10 @@ void main() {
   float stageNear = smoothstep(12.0, -48.0, P.z);
   vec3 groundMist = waterTint * pow(lowFog, 1.65) * (0.010 + 0.028 * uDropPower) * breathScale * stageNear;
 
-  // 远距离边界柔和渐隐融入深邃暗场
+  // 远距离边界柔和渐隐融入深邃暗场（激光归零时保留专辑封面与两侧颜色灯塔的自然水波倒影，绝不硬黑）
   float edgeFade = (1.0 - smoothstep(28.0, 35.5, abs(P.x))) * (1.0 - smoothstep(20.0, 31.0, P.z)) * (1.0 - smoothstep(-66.0, -75.0, P.z));
 
   vec3 col = (waterDepthBase + screenRefl * reflectivity + laserWaterGlint + blinderFloor + groundMist) * edgeFade;
-  col *= (1.0 - 0.992 * uBlackout);
 
   gl_FragColor = vec4(col, 1.0);
 }
@@ -1811,8 +1991,9 @@ void main() {
   float camDist = length(cameraPosition - vWorldPos);
   float detailFade = 1.0 - smoothstep(16.0, 56.0, camDist);
 
+  float laserGate = 1.0 - uBlackout;
   vec3 laserMid = mix(uLaserPrimary, uLaserSecondary, clamp(0.5 + vWorldPos.x * 0.035, 0.0, 1.0));
-  vec3 stageLight = uCoverGlow * (0.20 + 0.16 * uDropPower) + laserMid * (0.10 + 0.18 * uDropPower) + uBlinderWarm * uBlinderGlow * 0.22;
+  vec3 stageLight = uCoverGlow * (0.20 + 0.16 * uDropPower) + laserMid * (0.10 + 0.18 * uDropPower) * laserGate + uBlinderWarm * uBlinderGlow * 0.22;
 
   if (N.y > 0.5) {
     // 舞台顶面：深炭黑防滑巡演甲板（1.22m x 2.44m 标准拼装锁扣暗缝 + 磨砂颗粒 + 台唇枪灰金属压条）
@@ -1831,7 +2012,6 @@ void main() {
     float lipMetal = 1.0 - smoothstep(0.0, 0.09, abs(vWorldPos.z - (${STAGE_LIP_Z.toFixed(2)})));
     col += (vec3(0.012) + stageLight * 0.28) * lipMetal;
 
-    col *= (1.0 - 0.992 * uBlackout);
     gl_FragColor = vec4(col, 1.0);
     return;
   }
@@ -1891,7 +2071,7 @@ void main() {
 
   // 底部与湿润地面交界处的真实接触环境光遮蔽（Contact AO），赋予钢铁基座沉甸甸的落地重量感
   float contactAO = mix(0.26, 1.0, smoothstep(0.0, 0.24, by));
-  col *= contactAO * (1.0 - 0.992 * uBlackout);
+  col *= contactAO;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -1953,7 +2133,7 @@ void main() {
   vec3 innerCore = (uEnvDark * 1.55 + vec3(0.0042)) * brushedTex * louver;
   vec3 metalBase = mix(outerMetal, innerCore, recessedMask);
 
-  vec3 envLight = uCoverGlow * (0.24 + 0.18 * uDropPower) + laserTint * (0.18 + 0.24 * uDropPower + 0.12 * uSnarePunch) + uBlinderWarm * uBlinderGlow * 0.30;
+  vec3 envLight = uCoverGlow * (0.24 + 0.18 * uDropPower) + laserTint * (0.18 + 0.24 * uDropPower + 0.12 * uSnarePunch) * (1.0 - uBlackout) + uBlinderWarm * uBlinderGlow * 0.30;
   vec3 col = metalBase;
   col += (vec3(0.008) + envLight * 0.42) * (anisoSpec * (1.0 - 0.35 * recessedMask) + fresnel * 0.26);
   col += (vec3(0.012) + envLight * 0.32) * topRim;
@@ -1962,7 +2142,6 @@ void main() {
   float underglow = (1.0 - smoothstep(0.0, 0.09, vUv.y)) * isSideFace;
   col += laserTint * underglow * (0.07 + 0.10 * uDropPower + 0.06 * uKickPunch);
 
-  col *= (1.0 - 0.992 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -2035,7 +2214,6 @@ void main() {
     col += deckTint * 0.25 * innerHub + uLaserPrimaryCore * cueBtn * 0.65 + altTint * playBtn * 0.65;
   }
 
-  col *= (1.0 - 0.992 * uBlackout);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -2084,14 +2262,15 @@ void main() {
   float ndotv = clamp(dot(N, V), 0.0, 1.0);
   float fresnel = pow(1.0 - ndotv, vMatTag > 1.5 ? 2.6 : 3.8);
   float backFacing = smoothstep(-0.28, 0.72, -N.z * 0.68 + abs(N.x) * 0.52 + N.y * 0.35);
+  float laserGate = 1.0 - uBlackout;
   vec3 sideTint = mix(uLaserPrimary, uLaserSecondary, clamp(0.5 + vWorldPos.x * 0.9, 0.0, 1.0));
-  vec3 backScreenTint = mix(uCoverGlow, mix(sideTint, uLaserPrimaryCore, 0.38), 0.58);
+  vec3 backScreenTint = mix(uCoverGlow, mix(sideTint, uLaserPrimaryCore, 0.38), 0.58 * laserGate);
   vec3 rimLight = backScreenTint * fresnel * backFacing * (0.48 + 0.68 * uDropPower + 0.28 * uKickPunch) * specBoost;
 
-  // 2. 头顶激光天幕与盲眼灯体积漫射顶光（照亮帽顶、斜方肌肩线与高举挥动的小臂上侧）
+  // 2. 头顶激光天幕与盲眼灯体积漫射顶光（激光切零时仅隐去顶棚激光散射，保留盲眼灯与封面逆光）
   float skyFacing = pow( clamp(N.y * 0.78 + 0.22, 0.0, 1.0), 2.2 );
   float frontShadow = 0.38 + 0.62 * smoothstep(0.65, -0.45, N.z); // 面向观众的正胸暗部深沉，突出立体剪影感
-  vec3 skyLaser = mix(uLaserPrimary, uLaserSecondary, 0.5) * (0.065 + 0.16 * uDropPower) + uBlinderWarm * uBlinderGlow * 0.14;
+  vec3 skyLaser = mix(uLaserPrimary, uLaserSecondary, 0.5) * (0.065 + 0.16 * uDropPower) * laserGate + uBlinderWarm * uBlinderGlow * 0.14;
   vec3 topScatter = skyLaser * skyFacing * frontShadow * (vMatTag > 1.5 ? 1.55 : 0.85);
 
   // 3. 身前四联 CDJ 与混音台屏幕向上的近场微光反射（微妙照亮帽檐下沿、下颌、胸前褶皱与打碟双手）
@@ -2103,7 +2282,7 @@ void main() {
   float consoleAtten = 1.0 / (1.0 + distConsole * distConsole * 3.2);
   vec3 consoleGlow = mix(sideTint, uLaserPrimaryCore, 0.35) * consoleNdotL * consoleAtten * (0.16 + 0.14 * uKickPunch);
 
-  vec3 col = (baseAlbedo + rimLight + topScatter + consoleGlow) * (1.0 - 0.992 * uBlackout);
+  vec3 col = baseAlbedo + rimLight + topScatter + consoleGlow;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -2131,8 +2310,8 @@ void main() {
   float smoke = 0.52 + 0.68 * (mist1 * 0.65 + mist2 * 0.35);
 
   float radial = exp(-r * r * 7.8) * smoothstep(0.0, 0.14, vUv.y);
-  vec3 tint = mix(uCoverGlow, mix(uLaserPrimary, uLaserSecondary, vUv.x), 0.55);
-  float alpha = radial * smoke * (0.20 + 0.22 * uDropPower + 0.10 * uKickPunch) * (1.0 - uBlackout);
+  vec3 tint = mix(uCoverGlow, mix(uLaserPrimary, uLaserSecondary, vUv.x), 0.55 * (1.0 - uBlackout));
+  float alpha = radial * smoke * (0.20 + 0.22 * uDropPower + 0.10 * uKickPunch) * mix(1.0, 0.62, uBlackout);
   if (alpha < 0.003) discard;
   gl_FragColor = vec4(tint * alpha, 1.0);
 }
@@ -2198,7 +2377,6 @@ void main() {
 
   float intensity = (pod * 1.15 + halo + streak * (1.0 - 0.45 * vCool)) * vPower * 0.62;
   if (vMirror > 0.5) intensity *= 0.32;
-  intensity *= (1.0 - uBlackout);
 
   if (intensity < 0.003) discard;
   gl_FragColor = vec4(col * intensity, 1.0);
@@ -2655,15 +2833,268 @@ void main() {
   float lifeFade = (1.0 - smoothstep(0.45, 1.0, vAge));
   float density = (radial * billow * cutoffBottom * topSoft * 1.35 + nozzleCore) * vStrength * lifeFade;
 
-  // 8 座低温白雾气柱按横向空间坐标实时吸收上方激光照射（模式 A 横向渐变，模式 B 全屏同色瞬切）
+  // 8 座低温白雾气柱按横向空间坐标实时吸收上方激光照射（激光切零时仅隐去激光染光，保留白雾与盲眼灯暖辉）
   vec3 laserMix, coreDummy;
   sampleStageGradient((vWorldPos.x + 15.0) / 30.0, laserMix, coreDummy);
   vec3 steamBase = vec3(0.86, 0.88, 0.91);
-  vec3 litColor = steamBase * 0.26 + laserMix * 0.92 + uBlinderWarm * uBlinderGlow * 0.30;
-  vec3 col = mix(litColor, mix(laserMix, vec3(1.0), 0.72), clamp(nozzleCore * 0.52, 0.0, 0.72));
+  vec3 litColor = steamBase * 0.30 + laserMix * 0.92 * (1.0 - uBlackout) + uBlinderWarm * uBlinderGlow * 0.34;
+  vec3 col = mix(litColor, mix(laserMix, vec3(1.0), 0.72), clamp(nozzleCore * 0.52 * (1.0 - 0.65 * uBlackout), 0.0, 0.72));
 
-  float alpha = density * (vMirror > 0.5 ? 0.20 : 0.46) * (1.0 - uBlackout);
+  float alpha = density * (vMirror > 0.5 ? 0.20 : 0.46);
   if (alpha < 0.003) discard;
+  gl_FragColor = vec4(col * alpha, 1.0);
+}
+`;
+
+// ============================================================================
+// 11. 舞台体积烟雾氛围灯着色器 (ATMOS_WASH — 图一风格横排双管频闪染光条 + 空中摇头浓烟染色聚光灯)
+// ============================================================================
+const ATMOS_WASH_VERT = /* glsl */ `
+attribute vec4 aWashOrigin; // xyz: 灯头世界坐标, w: 0=空中本体, 1=水面镜像
+attribute vec4 aWashSpec;   // x: 扩散半径(米), y: 0=圆形摇头染色灯(●), 1=横排双管染光条(===), z: aimX, w: aimY
+attribute vec4 aWashState;  // x: 体积雾功率 [0..1.8], y: 色板槽位 [0..5], z: 灯珠频闪增亮 [0..1.8], w: 相位种子
+varying vec2 vQuad;
+varying vec3 vWorldPos;
+varying vec4 vWashMeta; // (radius, kind, aimX, aimY)
+varying vec4 vWashDyn;  // (power, colorMix, strobe, seed)
+varying float vMirror;
+
+void main() {
+  vQuad = position.xy;
+  vWashMeta = aWashSpec;
+  vWashDyn = aWashState;
+  vMirror = aWashOrigin.w;
+
+  if (aWashState.x < 0.005 && aWashState.z < 0.005) {
+    vWorldPos = vec3(0.0);
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+
+  vec3 wp = aWashOrigin.xyz;
+  if (vMirror > 0.5) wp.y = -wp.y;
+
+  vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+  vec3 camUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+  float r = aWashSpec.x;
+  float aspectY = vMirror > 0.5 ? 1.22 : (aWashSpec.y > 0.5 ? 0.88 : 1.0);
+
+  vec3 worldVert = wp + camRight * (position.x * r) + camUp * (position.y * r * aspectY);
+  vWorldPos = worldVert;
+  gl_Position = projectionMatrix * viewMatrix * vec4(worldVert, 1.0);
+}
+`;
+
+const ATMOS_WASH_FRAG = /* glsl */ `
+uniform float uTime;
+varying vec2 vQuad;
+varying vec3 vWorldPos;
+varying vec4 vWashMeta;
+varying vec4 vWashDyn;
+varying float vMirror;
+${GLSL_HAZE_COMMON}
+${GLSL_PALETTE_COMMON}
+
+void main() {
+  float power = vWashDyn.x;
+  float colorMix = vWashDyn.y;
+  float strobe = vWashDyn.z;
+  float seed = vWashDyn.w;
+  if (power < 0.005 && strobe < 0.005) discard;
+
+  float qLen = length(vQuad);
+  if (qLen > 1.0) discard;
+  if (vMirror > 0.5 && vWorldPos.y > 0.15) discard;
+
+  float radius = vWashMeta.x;
+  float kind = vWashMeta.y;
+  vec2 aim = vWashMeta.zw;
+  vec2 metric = vQuad * radius; // 以灯头为原点的世界米制平面坐标
+
+  // 1. 灯具发光亮核：kind=1 为台唇/侧翼横排双管宽幅胶囊染光频闪灯条(===)；kind=0 为空中圆形摇头染色聚光灯(●)
+  float fixtureCore = 0.0;
+  float fixtureHalo = 0.0;
+  if (kind > 0.5) {
+    vec2 q = abs(metric) - vec2(0.62, 0.048);
+    float dBar = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
+    float dualTube = 0.74 + 0.34 * cos(metric.y * 50.0);
+    fixtureCore = exp(-max(0.0, dBar) * 13.5) * dualTube;
+    fixtureHalo = exp(-abs(metric.y) * 2.35) * exp(-max(0.0, abs(metric.x) - 0.58) * 1.25) * 0.56;
+  } else {
+    float dLens = length(metric);
+    fixtureCore = exp(-(dLens * dLens) / 0.125);
+    fixtureHalo = exp(-dLens * 1.08) * 0.58;
+  }
+
+  // 2. 3D 翻涌电音节彩色浓烟体积云团（沿灯头投射方向偏置漫延，边缘平滑消隐绝无方形切边）
+  float aimDirY = vMirror > 0.5 ? -aim.y : aim.y;
+  vec2 cloudOff = vQuad - vec2(aim.x, aimDirY) * 0.36;
+  float rCloud = length(cloudOff * vec2(0.86, kind > 0.5 ? 1.12 : 0.94));
+  float quadSoftEdge = 1.0 - smoothstep(0.62, 0.99, qLen);
+  float cloudEnvelope = exp(-rCloud * rCloud * (kind > 0.5 ? 2.75 : 2.05)) * quadSoftEdge;
+
+  vec2 smokeUv = vWorldPos.xy * 0.112 + vec2(vWorldPos.z * 0.042 + seed * 6.3, -uTime * 0.19);
+  float n1 = hazeFbm(smokeUv);
+  float n2 = hazeFbm(smokeUv * 2.18 - vec2(uTime * 0.10, -uTime * 0.15));
+  float billow = pow(clamp(n1 * 0.64 + n2 * 0.36, 0.0, 1.0), 1.28);
+  float smokeDensity = cloudEnvelope * (0.26 + 1.38 * billow) * (kind > 0.5 ? 0.105 : 0.155);
+
+  // 保护中央 1:1 专辑封面主屏清晰度，让浓郁烟雾环绕两翼、顶冠与台唇翻涌而不糊白封面中心
+  float inCoverX = 1.0 - smoothstep(5.8, 8.6, abs(vWorldPos.x));
+  float inCoverY = smoothstep(1.8, 3.6, vWorldPos.y) * (1.0 - smoothstep(16.2, 18.4, vWorldPos.y));
+  float coverClear = 1.0 - 0.80 * inCoverX * inCoverY * (1.0 - vMirror);
+  smokeDensity *= coverClear;
+
+  // 水面波光倒影动态摇曳权重
+  float waterWave = 0.78 + 0.22 * sin(vWorldPos.z * 2.6 - uTime * 4.8 + vWorldPos.x * 1.3);
+  float mirrorScale = vMirror > 0.5 ? 0.30 * waterWave : 1.0;
+
+  // 严格采样微调后的专辑封面 6 槽同源渐变色板（氛围灯在激光归零切光时保持常亮呼吸，绝不硬黑）
+  vec3 washTint, washCore;
+  sampleLaserPalette(colorMix, washTint, washCore);
+  vec3 hotWhite = mix(washCore, vec3(1.0), 0.74);
+
+  float lampDrive = (0.48 * power + 1.15 * strobe) * mirrorScale;
+  float mistDrive = power * mirrorScale;
+
+  vec3 lampPart = (hotWhite * fixtureCore * 1.18 + mix(washTint, washCore, 0.46) * fixtureHalo) * lampDrive;
+  vec3 mistPart = mix(washTint, washCore, 0.18 * billow) * smokeDensity * mistDrive;
+  vec3 totalLight = lampPart + mistPart;
+
+  if (max(totalLight.r, max(totalLight.g, totalLight.b)) < 0.002) discard;
+  gl_FragColor = vec4(totalLight, 1.0);
+}
+`;
+
+// ============================================================================
+// 12. 交叉几何平面扫描激光着色器 (SCAN_LASER — 图二风格锐利振镜驻留边界 + 无条纹丝滑半透明琉璃激光面)
+// ============================================================================
+const SCAN_LASER_VERT = /* glsl */ `
+attribute vec4 aScanOrigin; // xyz: 发射顶点世界坐标, w: 0=空中本体, 1=水面镜像
+attribute vec4 aScanAngles; // x: yaw(偏航), y: pitch(俯仰), z: roll(滚转), w: spread(半张角 tan)
+attribute vec4 aScanStyle;  // x: 射程长度(米), y: 功率强度, z: 色板槽位 [0..5], w: 内部折面棱线位置
+varying vec2 vScanUv;       // x ∈ [-1..1] 横向归一化张角, y ∈ [0..1] 射程归一化距离
+varying vec3 vWorldPos;
+varying vec3 vOrigin;
+varying vec4 vScanMeta;     // (power, colorMix, length, spread)
+varying vec2 vScanExtra;    // (creasePos, mirror)
+
+void main() {
+  vScanUv = vec2(position.x, position.z);
+  vScanMeta = vec4(aScanStyle.y, aScanStyle.z, aScanStyle.x, aScanAngles.w);
+  vScanExtra = vec2(aScanStyle.w, aScanOrigin.w);
+
+  if (aScanStyle.y < 0.006) {
+    vWorldPos = vec3(0.0);
+    vOrigin = vec3(0.0);
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+
+  float dist = position.z * aScanStyle.x;
+  float lateral = position.x * dist * aScanAngles.w;
+  // 纯平紧绷几何激光平面（零正弦波浪弯曲），使多片扫描激光交汇时切割出凌厉笔直的多边形棱边
+  vec3 local = vec3(lateral, 0.0, dist);
+
+  float cr = cos(aScanAngles.z), sr = sin(aScanAngles.z);
+  local.xy = mat2(cr, -sr, sr, cr) * local.xy;
+
+  float cp = cos(aScanAngles.y), sp = sin(aScanAngles.y);
+  local.yz = mat2(cp, -sp, sp, cp) * local.yz;
+
+  float cy = cos(aScanAngles.x), sy = sin(aScanAngles.x);
+  local.xz = mat2(cy, sy, -sy, cy) * local.xz;
+
+  vec3 orig = aScanOrigin.xyz;
+  vec3 wp = orig + local;
+  if (aScanOrigin.w > 0.5) {
+    orig.y = -orig.y;
+    wp.y = -wp.y;
+  }
+
+  vOrigin = orig;
+  vWorldPos = wp;
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}
+`;
+
+const SCAN_LASER_FRAG = /* glsl */ `
+uniform float uTime;
+uniform float uBlackout;
+uniform float uSheetSpread;
+varying vec2 vScanUv;
+varying vec3 vWorldPos;
+varying vec3 vOrigin;
+varying vec4 vScanMeta;
+varying vec2 vScanExtra;
+${GLSL_HAZE_COMMON}
+${GLSL_PALETTE_COMMON}
+
+void main() {
+  float vPower = vScanMeta.x;
+  float vColorMix = vScanMeta.y;
+  float vLength = vScanMeta.z;
+  float vSpread = vScanMeta.w;
+  float vCrease = vScanExtra.x;
+  float vMirror = vScanExtra.y;
+
+  if (vPower < 0.006) discard;
+  bool underStageBox = (vWorldPos.z < -46.75 && abs(vWorldPos.x) < 15.6);
+  if (vMirror > 0.5 && vWorldPos.y > 0.02 && underStageBox) discard;
+
+  float waterRipple = sin(vWorldPos.z * 2.7 - uTime * 5.6 + sin(vWorldPos.x * 1.6 + uTime * 2.0) * 1.3);
+  float subDepth = clamp(-vWorldPos.y * 0.16, 0.0, 1.0);
+  float u = vScanUv.x + (vWorldPos.y < 0.0 ? waterRipple * 0.014 * subDepth : 0.0);
+  float r = vScanUv.y;
+  float absU = abs(u);
+  if (absU > 1.03) discard;
+
+  // 1. 世界米制恒定锐度外边界振镜驻留光束（从顶点星芒一路笔直延伸至远端，绝不随扇面张开变糊）
+  float spanHalfMeters = max(0.16, r * vLength * vSpread);
+  float edgeMeters = (1.0 - min(1.0, absU)) * spanHalfMeters;
+  float ionize = smoothstep(0.40, 2.20, vPower);
+  float boundaryCore = exp(-(edgeMeters * edgeMeters) / mix(0.0072, 0.0042, ionize)) * (1.42 + 0.52 * ionize);
+  float boundaryGlow = exp(-edgeMeters * 4.5) * (0.48 + 0.28 * ionize);
+
+  // 2. 扇面内部单道几何折面棱线射线（还原图二高速多边形振镜折点射线，无密集梳齿条纹）
+  float creaseMeters = abs(u - vCrease) * spanHalfMeters;
+  float creaseRay = (exp(-(creaseMeters * creaseMeters) / 0.0080) * 0.64 + exp(-creaseMeters * 5.4) * 0.18)
+                  * smoothstep(0.015, 0.10, r);
+
+  // 3. 连续丝滑半透明琉璃激光内腔（正弦扫描边缘自然微凝，多扇交叠时切出通透发光菱形/多边形）
+  float galvoDwell = 1.0 / sqrt(max(0.15, 1.03 - u * u));
+  float glassVeil = (1.0 - smoothstep(0.985, 1.008, absU)) * (0.062 + 0.048 * galvoDwell);
+
+  // 4. 细腻三维空气烟雾散射与发射顶点璀璨星芒核 (✦)
+  vec2 hazeCoord = vWorldPos.xz * 0.072 + vec2(vWorldPos.y * 0.056, -uTime * 0.18);
+  float h1 = hazeFbm(hazeCoord);
+  float h2 = hazeFbm(hazeCoord * 2.1 + vec2(uTime * 0.12, 3.1));
+  float smokeMedium = 0.48 + 0.86 * pow(h1 * 0.65 + h2 * 0.35, 1.22);
+
+  float dOrigin = length(vWorldPos - vOrigin);
+  float apexStar = exp(-dOrigin * 1.35) * exp(-absU * 2.8) * (1.65 + 0.55 * ionize) * (1.0 - vMirror * 0.55);
+  float distAtten = (1.0 - smoothstep(0.68, 1.0, r)) * smoothstep(0.0, 0.008, r);
+  float eyeProx = exp(-abs(vWorldPos.y - cameraPosition.y) * 0.40) * (1.0 - vMirror);
+  float mieBoost = 1.0 + 0.36 * eyeProx;
+
+  vec3 baseLaser, baseCore;
+  sampleLaserPalette(vColorMix + u * uSheetSpread * 0.52, baseLaser, baseCore);
+
+  float beamHighlight = boundaryCore + boundaryGlow + creaseRay;
+  float density = (glassVeil * smokeMedium + beamHighlight * (0.65 + 0.35 * smokeMedium)) * distAtten * mieBoost + apexStar * 0.34;
+  float coreMixFactor = clamp(boundaryCore * 0.68 + creaseRay * 0.45 + apexStar * 0.58 + ionize * 0.14, 0.0, 0.94);
+  vec3 col = mix(baseLaser, baseCore, coreMixFactor)
+           + vec3(0.18 * ionize) * clamp(boundaryCore * 0.55 + apexStar * 0.40, 0.0, 0.34);
+
+  float rippleGain = 0.50 + 0.14 * waterRipple;
+  float mediumWeight = vMirror < 0.5
+    ? mix(0.26 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
+    : mix(rippleGain, 0.62 * exp(-max(0.0, vWorldPos.y) * 0.18), smoothstep(-0.04, 0.06, vWorldPos.y));
+
+  float alpha = density * vPower * 0.215 * mediumWeight;
+  alpha *= (1.0 - uBlackout);
+
+  if (alpha < 0.002) discard;
   gl_FragColor = vec4(col * alpha, 1.0);
 }
 `;
@@ -2839,6 +3270,8 @@ export class LaserScene implements MvScene {
 
   private readonly sheetSpecs: SheetEmitterSpec[];
   private readonly beamSpecs: BeamEmitterSpec[];
+  private readonly washSpecs: WashFixtureSpec[];
+  private readonly scanSpecs: ScanLaserEmitterSpec[];
   private readonly choppers: ChopperHitEvent[];
   private readonly chopperTimes: Float64Array;
   private readonly unisonCuts: UnisonCutEvent[];
@@ -2854,8 +3287,16 @@ export class LaserScene implements MvScene {
   private readonly blinderStateAttr: THREE.InstancedBufferAttribute;
   private readonly blinderCoords: Array<{ x: number; y: number; z: number; portalIdx: number; side: number }>;
 
+  private readonly washOriginAttr: THREE.InstancedBufferAttribute;
+  private readonly washSpecAttr: THREE.InstancedBufferAttribute;
+  private readonly washStateAttr: THREE.InstancedBufferAttribute;
+
   private readonly sheetAnglesAttr: THREE.InstancedBufferAttribute;
   private readonly sheetStyleAttr: THREE.InstancedBufferAttribute;
+
+  private readonly scanOriginAttr: THREE.InstancedBufferAttribute;
+  private readonly scanAnglesAttr: THREE.InstancedBufferAttribute;
+  private readonly scanStyleAttr: THREE.InstancedBufferAttribute;
 
   private readonly beamStartAttr: THREE.InstancedBufferAttribute;
   private readonly beamEndAttr: THREE.InstancedBufferAttribute;
@@ -2925,9 +3366,11 @@ export class LaserScene implements MvScene {
       uEnvDark: { value: pal.envDark },
     };
 
-    // 2. 预计算发射器坐标与确定性控台事件表（含重音快切、全屏同色瞬切与 CO2 低温气柱）
+    // 2. 预计算发射器坐标与确定性控台事件表（含重音快切、全屏同色瞬切、氛围灯、扫描激光与 CO2 低温气柱）
     this.sheetSpecs = buildSheetEmitters();
     this.beamSpecs = buildBeamEmitters();
+    this.washSpecs = buildWashFixtures();
+    this.scanSpecs = buildScanLaserEmitters();
     const ev = buildLaserShowEvents(init.music, init.seed ?? 1, pal.unisonSlots);
     this.choppers = ev.choppers;
     this.chopperTimes = ev.chopperTimes;
@@ -2980,12 +3423,24 @@ export class LaserScene implements MvScene {
     this.blinderStateAttr = blinders.stateAttr;
     this.blinderCoords = blinders.coords;
 
-    // 7. 构建 14 座振镜扫描体积光膜（Liquid Sky & Fan Sheets，×2 本体+镜像 = 28 实例）
+    // 6b. 构建 24 组图一风格舞台体积烟雾氛围灯（台唇双管频闪条 + 两翼/顶冠摇头浓烟染色灯，×2 本体+镜像 = 48 实例）
+    const washes = this.buildWashSystem();
+    this.washOriginAttr = washes.originAttr;
+    this.washSpecAttr = washes.specAttr;
+    this.washStateAttr = washes.stateAttr;
+
+    // 7. 构建 12 座振镜扫描体积光膜（Liquid Sky & Fan Sheets，×2 本体+镜像 = 24 实例）
     const sheets = this.buildLaserSheets();
     this.sheetAnglesAttr = sheets.anglesAttr;
     this.sheetStyleAttr = sheets.styleAttr;
 
-    // 8. 构建 36 束军鼓/重音 X 型交叉铡刀单束激光（×2 本体+镜像 = 72 实例）
+    // 7b. 构建 10 座图二风格交叉几何平面扫描激光（锐利振镜驻留边 + 连续半透明琉璃内腔，×2 本体+镜像 = 20 实例）
+    const scans = this.buildScanLasers();
+    this.scanOriginAttr = scans.originAttr;
+    this.scanAnglesAttr = scans.anglesAttr;
+    this.scanStyleAttr = scans.styleAttr;
+
+    // 8. 构建 152 束军鼓/重音高密单束激光（×2 本体+镜像 = 304 实例）
     const beams = this.buildLaserBeams();
     this.beamStartAttr = beams.startAttr;
     this.beamEndAttr = beams.endAttr;
@@ -3623,6 +4078,151 @@ export class LaserScene implements MvScene {
     return stateAttr;
   }
 
+  /** 构建 24 组图一风格舞台体积烟雾氛围灯网格（renderOrder = 1，铺垫浓郁 3D 舞台烟雾底色并呈现清晰双管灯条/圆透镜灯头） */
+  private buildWashSystem() {
+    const total = WASH_FIXTURE_COUNT * 2;
+    const baseQuad = new THREE.PlaneGeometry(2, 2);
+    const instGeo = new THREE.InstancedBufferGeometry();
+    instGeo.index = baseQuad.index;
+    instGeo.attributes.position = baseQuad.attributes.position;
+    instGeo.instanceCount = total;
+
+    const originArr = new Float32Array(total * 4);
+    const specArr = new Float32Array(total * 4);
+    const stateArr = new Float32Array(total * 4);
+
+    for (let mirror = 0; mirror < 2; mirror++) {
+      for (let i = 0; i < WASH_FIXTURE_COUNT; i++) {
+        const slot = (mirror * WASH_FIXTURE_COUNT + i) * 4;
+        const w = this.washSpecs[i];
+        originArr[slot] = w.x;
+        originArr[slot + 1] = w.y;
+        originArr[slot + 2] = w.z;
+        originArr[slot + 3] = mirror;
+
+        specArr[slot] = w.radius;
+        specArr[slot + 1] = w.kind;
+        specArr[slot + 2] = w.baseAimX;
+        specArr[slot + 3] = w.baseAimY;
+
+        stateArr[slot] = 0.55;
+        stateArr[slot + 1] = (i % 6);
+        stateArr[slot + 2] = 0.0;
+        stateArr[slot + 3] = (i * 0.381966 + 0.17) % 1;
+      }
+    }
+
+    const originAttr = new THREE.InstancedBufferAttribute(originArr, 4);
+    const specAttr = new THREE.InstancedBufferAttribute(specArr, 4);
+    const stateAttr = new THREE.InstancedBufferAttribute(stateArr, 4);
+    specAttr.setUsage(THREE.DynamicDrawUsage);
+    stateAttr.setUsage(THREE.DynamicDrawUsage);
+
+    instGeo.setAttribute('aWashOrigin', originAttr);
+    instGeo.setAttribute('aWashSpec', specAttr);
+    instGeo.setAttribute('aWashState', stateAttr);
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: ATMOS_WASH_VERT,
+      fragmentShader: ATMOS_WASH_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const mesh = new THREE.Mesh(instGeo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 1;
+    this.scene.add(mesh);
+
+    return { originAttr, specAttr, stateAttr };
+  }
+
+  /** 构建 10 座图二风格交叉几何平面扫描激光网格（纯平紧绷三角形扇面，无波浪折皱与梳齿条纹，含水面镜像） */
+  private buildScanLasers() {
+    const segX = 32;
+    const segZ = 16;
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    for (let iz = 0; iz <= segZ; iz++) {
+      const rz = iz / segZ;
+      for (let ix = 0; ix <= segX; ix++) {
+        const rx = (ix / segX) * 2 - 1;
+        positions.push(rx, 0, rz);
+      }
+    }
+    const stride = segX + 1;
+    for (let iz = 0; iz < segZ; iz++) {
+      for (let ix = 0; ix < segX; ix++) {
+        const a = iz * stride + ix;
+        const b = a + 1;
+        const c = a + stride;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    const total = SCAN_LASER_COUNT * 2;
+    const instGeo = new THREE.InstancedBufferGeometry();
+    instGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    instGeo.setIndex(indices);
+    instGeo.instanceCount = total;
+
+    const originArr = new Float32Array(total * 4);
+    const anglesArr = new Float32Array(total * 4);
+    const styleArr = new Float32Array(total * 4);
+
+    for (let mirror = 0; mirror < 2; mirror++) {
+      for (let i = 0; i < SCAN_LASER_COUNT; i++) {
+        const slot = (mirror * SCAN_LASER_COUNT + i) * 4;
+        const sc = this.scanSpecs[i];
+        originArr[slot] = sc.x;
+        originArr[slot + 1] = sc.y;
+        originArr[slot + 2] = sc.z;
+        originArr[slot + 3] = mirror;
+
+        anglesArr[slot] = sc.baseYaw;
+        anglesArr[slot + 1] = sc.basePitch;
+        anglesArr[slot + 2] = sc.baseRoll;
+        anglesArr[slot + 3] = sc.spread;
+
+        styleArr[slot] = sc.length;
+        styleArr[slot + 1] = 0;
+        styleArr[slot + 2] = (i % 6);
+        styleArr[slot + 3] = sc.side * 0.28;
+      }
+    }
+
+    const originAttr = new THREE.InstancedBufferAttribute(originArr, 4);
+    const anglesAttr = new THREE.InstancedBufferAttribute(anglesArr, 4);
+    const styleAttr = new THREE.InstancedBufferAttribute(styleArr, 4);
+    anglesAttr.setUsage(THREE.DynamicDrawUsage);
+    styleAttr.setUsage(THREE.DynamicDrawUsage);
+
+    instGeo.setAttribute('aScanOrigin', originAttr);
+    instGeo.setAttribute('aScanAngles', anglesAttr);
+    instGeo.setAttribute('aScanStyle', styleAttr);
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: SCAN_LASER_VERT,
+      fragmentShader: SCAN_LASER_FRAG,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: true,
+    });
+    const mesh = new THREE.Mesh(instGeo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 2;
+    this.scene.add(mesh);
+
+    return { originAttr, anglesAttr, styleAttr };
+  }
+
   resize(aspect: number): void {
     this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
@@ -4060,8 +4660,8 @@ export class LaserScene implements MvScene {
       }
     }
 
-    // 高密度全场瞬时切黑（Full-Stage Snap Blackout，100% 纯函数 f(t)）：
-    // 在小节预下拍、中段反拍、强重音刺、歌词句首及段落交界前瞬间硬切全场全黑，随后在正拍落点 0ms 瞬开爆亮！
+    // 高密度瞬时激光归零切光（Laser-Only Zero-Intensity Choke，100% 纯函数 f(t)）：
+    // 在小节预下拍、中段反拍、强重音刺、歌词句首及段落交界前瞬间将激光强度归零（封面、两侧颜色显示台与体积氛围灯保持自然常亮，绝不硬黑全屏），随后在正拍落点瞬开爆亮！
     const meter = Math.max(2, music.meter || 4);
     const inBar = beatInfo.inBar;
     const beatFrac = beatInfo.pos - Math.floor(beatInfo.pos);
@@ -4069,7 +4669,7 @@ export class LaserScene implements MvScene {
     const edgeBeatOut = Math.min(0.05, 0.013 / Math.max(0.2, beatDur));
     let blackout = 0;
 
-    // (a) 段落交界蓄力断电全黑（进入 Drop / Chorus / Build / Verse 前瞬间全黑）
+    // (a) 段落交界蓄力激光归零（进入 Drop / Chorus / Build / Verse 前瞬间收光蓄力）
     if (nextSec && nextSec.label !== 'outro') {
       const rem = sec.end - t;
       const preWindow = (nextSec.label === 'drop' || nextSec.label === 'chorus') ? 0.28 : 0.19;
@@ -4255,7 +4855,8 @@ export class LaserScene implements MvScene {
     this.blinderStateAttr.needsUpdate = true;
     const avgBlinderGlow = clamp01((totalBlinderEnergy / BLINDER_COUNT) * 0.95);
 
-    // 预提取快响应重拍侧链包络（Sidechain Pump）与重音脉冲（纯函数 f(t)，零奇偶乱闪）
+    // 预提取快响应重拍侧链包络（Sidechain Pump）、重音脉冲与纯激光切零门控（切光时仅激光归零，封面/灯塔/氛围灯绝不硬黑）
+    const laserGate = 1.0 - blackout;
     const kickFast = clamp01(music.pulse('kick', t, 0.075) * 1.24);
     const snareFast = clamp01(music.pulse('snare', t, 0.072) * 1.22);
     const beatPulse = Math.pow(Math.max(0, Math.cos(beatInfo.pos * Math.PI)), 3.2);
@@ -4273,11 +4874,65 @@ export class LaserScene implements MvScene {
     const activeParity = latestHit ? latestHit.parity : ((barsIntoSec % 2 === 0) ? 1 : -1);
     const pulseTravel = clamp01(hitAge / 0.20);
 
-    // 6. 更新 12 座振镜扫描体积光膜（按 Cue 阵型秩序退让，整组同步侧链与 Lead 指数呼吸 E ∝ e^(k·I)）
+    // 5b. 更新 24 组图一风格舞台体积烟雾氛围灯（台唇双管频闪染光条 + 两翼/顶冠摇头浓烟染色灯，激光切零时依然常亮呼吸）
+    const wSpec = this.washSpecAttr.array as Float32Array;
+    const wState = this.washStateAttr.array as Float32Array;
+    const washBreathEnv = 0.72 + 0.28 * Math.min(1.8, leadBreath);
+    for (let i = 0; i < WASH_FIXTURE_COUNT; i++) {
+      const w = this.washSpecs[i];
+      const washWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - w.groupIdx * 0.85), 1.8);
+      const washColorSlot = evalSpatialColorSlot(w.x, w.z);
+
+      let aimX = w.baseAimX;
+      let aimY = w.baseAimY;
+      if (w.kind === 0) {
+        const panPhase = t * 0.42 + i * 0.75;
+        aimX = w.baseAimX + Math.sin(panPhase) * 0.18;
+        aimY = w.baseAimY + Math.cos(panPhase * 0.82) * 0.14;
+      }
+
+      let washPower: number;
+      let washStrobe: number;
+      if (isBreak) {
+        washPower = (w.kind === 0 ? 0.64 : 0.44) * (0.82 + 0.18 * Math.sin(t * 0.65 + w.groupIdx));
+        washStrobe = (w.kind === 1 ? 0.16 : 0.22) + 0.20 * hatSparkle;
+      } else if (isBuild) {
+        const buildSwirl = 0.45 + 0.55 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - w.groupIdx * 0.7), 2.0);
+        washPower = (0.46 + 0.50 * buildProgress) * buildSwirl;
+        washStrobe = w.kind === 1
+          ? (0.24 + 0.92 * buildProgress * buildSwirl)
+          : (0.26 + 0.56 * buildProgress * washWave);
+      } else if (isDrop || isChorus) {
+        washPower = (w.kind === 0 ? 0.68 : 0.56) * (0.52 + 0.58 * dropPower) * (0.62 + 0.38 * washWave) * washBreathEnv;
+        washStrobe = w.kind === 1
+          ? (0.26 + 0.82 * Math.max(kickFast, downbeatFlash * 0.85) * washWave + 0.30 * snareFast) * dropPower
+          : (0.28 + 0.58 * Math.max(kickPunch * 0.75, beatPulse * 0.65) * washWave) * (0.45 + 0.55 * dropPower);
+      } else {
+        washPower = (w.kind === 0 ? 0.58 : 0.46) * (0.76 + 0.24 * washWave);
+        washStrobe = (0.20 + 0.36 * kickPunch * washWave);
+      }
+
+      for (let mirror = 0; mirror < 2; mirror++) {
+        const slot = (mirror * WASH_FIXTURE_COUNT + i) * 4;
+        wSpec[slot] = w.radius;
+        wSpec[slot + 1] = w.kind;
+        wSpec[slot + 2] = aimX;
+        wSpec[slot + 3] = aimY;
+
+        wState[slot] = washPower;
+        wState[slot + 1] = washColorSlot;
+        wState[slot + 2] = washStrobe;
+      }
+    }
+    this.washSpecAttr.needsUpdate = true;
+    this.washStateAttr.needsUpdate = true;
+
+    // 6. 更新 12 座振镜扫描体积光膜（按 Cue 阵型秩序退让，同步挂载 Lead 指数呼吸与纯激光切零门控）
     const sAngles = this.sheetAnglesAttr.array as Float32Array;
     const sStyle = this.sheetStyleAttr.array as Float32Array;
     const sweepClock = t * 0.85 + leadMotion * 0.22;
     const sidechainSheet = 0.28 + 0.78 * kickFast + 0.34 * beatPulse + 0.30 * hitEnv;
+    const sheetModeScale = (isDrop || isChorus) ? 0.64 : 0.80;
 
     for (let i = 0; i < SHEET_EMITTER_COUNT; i++) {
       const sp = this.sheetSpecs[i];
@@ -4366,7 +5021,7 @@ export class LaserScene implements MvScene {
         }
       }
 
-      power = Math.min(4.20, power * leadBreath);
+      power = Math.min(4.20, power * sheetModeScale * leadBreath) * laserGate;
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * SHEET_EMITTER_COUNT + i) * 4;
@@ -4383,6 +5038,94 @@ export class LaserScene implements MvScene {
     }
     this.sheetAnglesAttr.needsUpdate = true;
     this.sheetStyleAttr.needsUpdate = true;
+
+    // 6b. 更新 10 座图二风格交叉几何平面扫描激光（左下/右下对角仰射 + 顶冠交叉下切 + 侧翼滚转，动态三轴扫描 + Lead 指数呼吸 + 激光切零）
+    const scAngles = this.scanAnglesAttr.array as Float32Array;
+    const scStyle = this.scanStyleAttr.array as Float32Array;
+    const scanClock = t * (isDrop || isChorus ? 0.94 : isBuild ? (0.62 + 0.56 * buildProgress) : 0.46) + leadMotion * 0.26;
+    const sidechainScan = 0.34 + 0.74 * kickFast + 0.34 * snareFast + 0.30 * beatPulse + 0.28 * hitEnv;
+
+    const evalScanColorSlot = (x: number, group: number): number => {
+      if (isUnisonMode) return activeUnisonSlot;
+      const nx = clamp01((x * 0.82 + 14.6) / 29.2);
+      const compNorm = clamp01(1.0 - nx * 0.68 - group * 0.06);
+      return clampRange(palBase + compNorm * palSpan, 0.0, 5.0);
+    };
+
+    for (let i = 0; i < SCAN_LASER_COUNT; i++) {
+      const sc = this.scanSpecs[i];
+      let yaw = sc.baseYaw;
+      let pitch = sc.basePitch;
+      let roll = sc.baseRoll;
+      let spread = sc.spread;
+      let scanPower = 0;
+      const scanChase = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - sc.group * 0.85 - sc.idx * 0.65), 1.8);
+      const creasePos = sc.side * (0.22 + 0.26 * Math.sin(scanClock * 0.82 + i * 1.1));
+
+      if (sc.group === 0) {
+        // 舞台左下角与右下角向上斜切天空的标志性交叉几何扫描扇（还原图二双下角发射顶点 X 型切空平面）
+        yaw = sc.baseYaw + sc.side * Math.sin(scanClock * 1.12) * 0.16;
+        pitch = sc.basePitch + 0.075 * Math.cos(scanClock * 0.90 + sc.idx * 1.1) + 0.032 * kickFast;
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.78) * 0.24;
+        spread = sc.spread + 0.07 * Math.sin(scanClock * 1.30);
+      } else if (sc.group === 1) {
+        // 巨幕顶冠上方左右内切扫描扇（与下角仰射扇在半空交叠形成清脆发光菱形与几何多边形）
+        yaw = sc.baseYaw - sc.side * Math.cos(scanClock * 1.04) * 0.15;
+        pitch = sc.basePitch - 0.09 + 0.070 * Math.sin(scanClock * 0.86 + sc.idx * 0.9);
+        roll = sc.baseRoll + sc.side * Math.cos(scanClock * 0.72) * 0.24;
+        spread = sc.spread + 0.06 * Math.cos(scanClock * 1.15);
+      } else if (sc.group === 2) {
+        // 两侧频谱灯塔外翼中腰大倾角滚转扫描扇
+        yaw = sc.baseYaw + sc.side * Math.sin(scanClock * 0.96 + 0.8) * 0.18;
+        pitch = sc.basePitch + 0.075 * Math.sin(scanClock * 1.18);
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.84 + 1.3) * 0.28;
+        spread = sc.spread + 0.05 * fg.level;
+      } else {
+        // 观众席中前场高空走廊头顶近场玻璃扫描扇
+        yaw = sc.baseYaw + sc.side * Math.cos(scanClock * 0.88 + sc.idx * 0.6) * 0.16;
+        pitch = sc.basePitch + 0.062 * Math.sin(scanClock * 1.06 + sc.idx * 0.8);
+        roll = sc.baseRoll + sc.side * Math.sin(scanClock * 0.74 + sc.idx * 0.5) * 0.20;
+        spread = sc.spread;
+      }
+
+      if (isBreak) {
+        scanPower = sc.group <= 1 ? (0.28 + 0.10 * hatSparkle) : 0.0;
+      } else if (isBuild) {
+        const groupGate = sc.group <= 1 ? 1.0 : smooth(clamp01((buildProgress - 0.30) / 0.45));
+        scanPower = (0.22 + 0.78 * buildProgress) * (0.42 + 0.58 * scanChase) * groupGate;
+      } else if (isDrop || isChorus) {
+        const cueScale = cueMode === 1
+          ? (sc.group === 0 || sc.group === 3 ? 0.46 : 0.18)
+          : cueMode === 2
+            ? (sc.group <= 2 ? 0.96 : 0.62)
+            : (sc.group <= 1 ? 1.02 : 0.76);
+        scanPower = cueScale * sidechainScan * (0.46 + 0.54 * scanChase) * dropPower;
+        if (isDrop && dropPower < 0.55) {
+          const scanFade = smooth(clamp01((dropPower - 0.35) / 0.20));
+          scanPower *= (sc.group === 0 ? (0.30 + 0.70 * scanFade) : scanFade);
+        }
+      } else {
+        scanPower = (sc.group <= 1 ? 0.64 : sc.group === 2 ? 0.36 : 0.0) * sidechainScan * dropPower;
+      }
+
+      const scanColorSlot = evalScanColorSlot(sc.x, sc.group);
+      scanPower = Math.min(4.40, scanPower * leadBreath) * laserGate;
+
+      for (let mirror = 0; mirror < 2; mirror++) {
+        const slot = (mirror * SCAN_LASER_COUNT + i) * 4;
+        scAngles[slot] = yaw;
+        scAngles[slot + 1] = pitch;
+        scAngles[slot + 2] = roll;
+        scAngles[slot + 3] = spread;
+
+        scStyle[slot] = sc.length;
+        scStyle[slot + 1] = scanPower;
+        scStyle[slot + 2] = scanColorSlot;
+        scStyle[slot + 3] = creasePos;
+      }
+    }
+    this.scanAnglesAttr.needsUpdate = true;
+    this.scanStyleAttr.needsUpdate = true;
 
     // 7. 更新 88 束严整对称单束激光阵列（左右高空下射各加密至 18 束，下射光束精准打穿水面 y=0 并激发 V 形镜面折返反射束）
     const bEnd = this.beamEndAttr.array as Float32Array;
@@ -4567,7 +5310,7 @@ export class LaserScene implements MvScene {
           beamPower = Math.max(beamPower * 0.55, 0.14 * dropPower * leadBreath);
         }
       }
-      beamPower = Math.min(5.20, beamPower);
+      beamPower = Math.min(5.20, beamPower) * laserGate;
 
       const halfWidth = b.group === 0 ? 0.108 : b.group === 4 ? 0.114 : 0.098;
       for (let mirror = 0; mirror < 2; mirror++) {
@@ -4585,7 +5328,7 @@ export class LaserScene implements MvScene {
     this.beamEndAttr.needsUpdate = true;
     this.beamStyleAttr.needsUpdate = true;
 
-    // 8. 更新双层反向旋转断线激光锥笼（严格仅在 Cue 1 隧道主场与 Build 冲刺末段开启，同步挂载 Lead 指数呼吸增益）
+    // 8. 更新双层反向旋转断线激光锥笼（严格仅在 Cue 1 隧道主场与 Build 冲刺末段开启，同步挂载 Lead 指数呼吸与激光切零门控）
     const cSpec = this.coneSpecAttr.array as Float32Array;
     let outerConePower = 0;
     let innerConePower = 0;
@@ -4603,8 +5346,8 @@ export class LaserScene implements MvScene {
       outerConePower = bGain * 0.48 * (0.35 + 0.65 * beatPulse);
       innerConePower = bGain * 0.88;
     }
-    outerConePower = Math.min(4.20, outerConePower * leadBreath);
-    innerConePower = Math.min(4.20, innerConePower * leadBreath);
+    outerConePower = Math.min(4.20, outerConePower * leadBreath) * laserGate;
+    innerConePower = Math.min(4.20, innerConePower * leadBreath) * laserGate;
 
     for (let mirror = 0; mirror < 2; mirror++) {
       const slot0 = (mirror * CONE_LAYER_COUNT + 0) * 4;
@@ -4669,13 +5412,16 @@ export class LaserScene implements MvScene {
     (u.uChroma1.value as THREE.Vector4).set(readChroma(4), readChroma(5), readChroma(6), readChroma(7));
     (u.uChroma2.value as THREE.Vector4).set(readChroma(8), readChroma(9), readChroma(10), readChroma(11));
 
-    // 11. 后期效果调优：全画幅 16:9 展现无界深邃暗场与地面镜像，全场瞬切黑场时同步压灭泛光残影
+    // 11. 后期效果调优：激光切零时保留专辑封面、两侧颜色显示台与体积氛围灯的自然泛光，仅收敛激光额外辉光，绝不硬压黑全屏
     fx.letterbox = 0;
     fx.invert = 0;
     fx.duotone = 0;
     fx.glitch = Math.min(fx.glitch, 0.06);
     fx.zoom = Math.min(fx.zoom, 0.012 + 0.014 * kickPunch * dropPower);
-    fx.bloom = ((this.soft ? 0.20 : 0.22) + 0.05 * dropPower + 0.025 * Math.max(0, leadBreath - 1.0) + 0.02 * avgBlinderGlow) * (1.0 - 0.95 * blackout);
+    fx.bloom = (this.soft ? 0.20 : 0.22)
+      + 0.05 * dropPower * (1.0 - 0.35 * blackout)
+      + 0.025 * Math.max(0, leadBreath - 1.0) * laserGate
+      + 0.02 * avgBlinderGlow;
     fx.vignette = 0.44;
     fx.grain = 0.035;
 
