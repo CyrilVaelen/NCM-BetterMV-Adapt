@@ -298,62 +298,28 @@ function buildDistinctUnisonOrder(ordered: ExtractedCoverSwatch[]): number[] {
 }
 
 /**
- * 精选电音舞台高级和谐色系弧段库（OKLab 色相角，单位：度）：
- * - 全部采用经过舞台视觉验证的同色系/邻近色平滑弧段（总跨度 48°~64°）；
- * - 彻底拉黑 [+73°, +177°] 暗黄橄榄绿与刺眼荧光草绿区间，从数学根源上杜绝“红配绿”、“紫配屎黄”等撞色灾难。
- */
-interface HarmonicStageArc {
-  readonly id: string;
-  readonly midDeg: number;
-  readonly halfSpanDeg: number;
-}
-
-const HARMONIC_STAGE_ARCS: readonly HarmonicStageArc[] = [
-  { id: 'sapphire-cyan', midDeg: -130, halfSpanDeg: 30 },   // 深海宝石蓝 ↔ 天青蓝 ↔ 冰晶青
-  { id: 'indigo-violet', midDeg: -72, halfSpanDeg: 30 },    // 皇家靛蓝 ↔ 电光紫罗兰 ↔ 霓虹兰紫
-  { id: 'amethyst-rose', midDeg: -28, halfSpanDeg: 30 },    // 紫水晶 ↔ 浆果洋红 ↔ 绯樱玫红
-  { id: 'crimson-gold', midDeg: 44, halfSpanDeg: 28 },      // 绯红红宝石 ↔ 落日焰橙 ↔ 暖琥珀流金
-  { id: 'coral-sunset', midDeg: 22, halfSpanDeg: 29 },      // 绯粉玫红 ↔ 珊瑚赤红 ↔ 暮光暖橘
-  { id: 'ocean-teal', midDeg: -158, halfSpanDeg: 24 },      // 深海蔚蓝 ↔ 冰湖青 ↔ 极光冷青
-  { id: 'glacier-cosmic', midDeg: -102, halfSpanDeg: 31 },  // 冰川天蓝 ↔ 钴蓝 ↔ 星云深紫
-  { id: 'velvet-magenta', midDeg: -48, halfSpanDeg: 28 },   // 丝绒魅紫 ↔ 赛博霓虹洋红
-];
-
-/**
- * 激光舞台封面临时和谐随机重配色参数（CPU 像素聚类与 GPU 巨幕/水面倒影严格同构）：
- * - 零空间坐标依赖（纯色彩空间平滑解析映射），原封面上同一大块颜色区域严格映射为单一连贯新色块，绝不分裂；
- * - 将原封面全色轮平滑收敛至精选和谐色系弧段 [targetHue - halfSpan, targetHue + halfSpan]，彻底杜绝红绿对撞与脏色；
- * - 严格保持感知明度 L 不变，并对高光白区做洁净度保护（白色光门、白发、文字不被染成浑浊米黄）。
+ * 激光舞台封面原色调同色系微调参数（CPU 像素聚类与 GPU 巨幕/水面倒影严格同构）：
+ * - 彻底摒弃跨色系大幅随机变色（防止整曲 MV 为绿/蓝调时激光舞台突兀跳成红色）；
+ * - 严格围绕每个像素自身的原色相做 ±6°~±16° 同色系细腻微调（无 atan2 分支切口），同一大块颜色区域 100% 连贯不分裂；
+ * - 严格保持感知明度 L 不变，高光白区与无彩色灰阶洁净如初，黑白封面保持原汁原味不乱染色。
  */
 export interface CoverRecolorScheme {
   enabled: boolean;
-  /** 原封面为黑白/无彩色时启用单色相和谐晕染，保留纯黑纯白与全部光影轮廓 */
+  /** 原封面是否为黑白/无彩色 */
   monoTint: boolean;
-  /** 命中的精选和谐色系标识 */
+  /** 微调模式标识 */
   paletteId: string;
   /** 原封面主导色相角（OKLab 弧度 [-π, π]） */
   domHue: number;
-  /** 原封面主副色块对称参考相位角（OKLab 弧度 [-π, π]） */
-  refCenter: number;
-  /** 目标和谐色系中心色相角（OKLab 弧度 [-π, π]） */
-  targetHue: number;
-  /** 相对原主导色相的旋转角（角度制，便于测试断言） */
+  /** 同色系整体微调角（角度制，有彩色封面严格落在 [-16°, -6°] ∪ [+6°, +16°]） */
   hueShiftDeg: number;
-  /** 带极性方向的和谐色弧半宽（弧度，chirality * halfSpanRad） */
-  signedSpanRad: number;
-  /** 柔和 S 型色块对比拉伸系数 [1.05..1.95] */
-  curveGain: number;
-  /** 相对色域饱和度微调增益 [0.95..1.05] */
+  /** 同色系整体微调角（弧度制） */
+  deltaHueRad: number;
+  /** 邻近次级色块细腻呼吸微差（弧度制，[-3°, +3°]） */
+  nuanceRad: number;
+  /** 饱和度微调增益 [0.95..1.07] */
   chromaGain: number;
 }
-
-const wrapAnglePi = (rad: number): number => {
-  let a = (rad + Math.PI) % (Math.PI * 2);
-  if (a < 0) a += Math.PI * 2;
-  return a - Math.PI;
-};
-
-const circAbsRad = (h1: number, h2: number): number => Math.abs(wrapAnglePi(h1 - h2));
 
 const smoothstep01 = (e0: number, e1: number, x: number): number => {
   const t = clampRange((x - e0) / Math.max(1e-6, e1 - e0), 0, 1);
@@ -373,7 +339,7 @@ const linearToSrgbU8 = (lin: number): number => {
 
 /**
  * 在固定 OKLab 感知明度 L 与色相方向 (cosH, sinH) 下，8 步二分精确求解线性 sRGB [0,1]^3 色域最大色度 C_max，
- * 彻底杜绝色相变换时亮部通道溢出裁切或产生生硬断层色斑。
+ * 彻底杜绝色相微调时亮部通道溢出裁切或产生生硬断层色斑。
  */
 export function maxLinearChromaInGamut(L: number, cosH: number, sinH: number): number {
   const ka = 0.3963377774 * cosH + 0.2158037573 * sinH;
@@ -407,7 +373,7 @@ export function maxLinearChromaInGamut(L: number, cosH: number, sinH: number): n
 }
 
 /**
- * 对单个线性光 RGB 像素执行保明度 OKLCh 精选和谐色弧重配色（与 GLSL 着色器 recolorCoverLinear 逐指令同构）。
+ * 对单个线性光 RGB 像素执行保明度 OKLab 原色调同色系微调（与 GLSL 着色器 recolorCoverLinear 逐指令同构）。
  */
 export function recolorLinearRgb(
   lr: number,
@@ -430,38 +396,25 @@ export function recolorLinearRgb(
   if (L <= 0.004 || L >= 0.996) return [r0, g0, b0];
 
   const C = Math.hypot(oa, ob);
-  let cosNew: number;
-  let sinNew: number;
-  let cNew: number;
+  if (C < 0.004) return [r0, g0, b0];
 
-  if (scheme.monoTint) {
-    cosNew = Math.cos(scheme.targetHue);
-    sinNew = Math.sin(scheme.targetHue);
-    const maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
-    const midArch = Math.sin(Math.PI * clampRange(L, 0, 1));
-    cNew = Math.min(maxNew * 0.985, maxNew * 0.40 * scheme.chromaGain * midArch);
-  } else {
-    if (C < 1e-5) return [r0, g0, b0];
-    const hOrig = Math.atan2(ob, oa);
-    const sWave = Math.sin(hOrig - scheme.refCenter);
-    const g = scheme.curveGain;
-    const uArc = (g * sWave) / Math.sqrt(1.0 + (g * g - 1.0) * sWave * sWave);
-    const hNew = scheme.targetHue + scheme.signedSpanRad * uArc;
+  const cosOrig = oa / C;
+  const sinOrig = ob / C;
+  const cosDom = Math.cos(scheme.domHue);
+  const sinDom = Math.sin(scheme.domHue);
+  const sRel = sinOrig * cosDom - cosOrig * sinDom;
+  const theta = scheme.deltaHueRad + scheme.nuanceRad * sRel;
+  const cosT = Math.cos(theta);
+  const sinT = Math.sin(theta);
+  const cosNew = cosOrig * cosT - sinOrig * sinT;
+  const sinNew = sinOrig * cosT + cosOrig * sinT;
 
-    const cosOrig = oa / C;
-    const sinOrig = ob / C;
-    cosNew = Math.cos(hNew);
-    sinNew = Math.sin(hNew);
-    const maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
-    const maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
-    const relSat = Math.min(1.0, C / Math.max(1e-4, maxOrig));
-    const blendedC = C * 0.38 + relSat * maxNew * 0.62;
-    // 高光洁净度保护：亮白光门、云层高光、白发（高明度低色度）收敛色度上限，绝不被染成浑浊黄桃/米色
-    const highlightClean = 1.0 - 0.58 * smoothstep01(0.75, 0.94, L) * (1.0 - smoothstep01(0.014, 0.062, C));
-    const cCapRatio = 1.0 + 0.24 * highlightClean;
-    const cCapped = Math.min(C * cCapRatio, blendedC) * scheme.chromaGain * highlightClean;
-    cNew = Math.min(maxNew * 0.985, cCapped);
-  }
+  const maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
+  const maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+  const gamutScale = clampRange(maxNew / Math.max(1e-4, maxOrig), 0.72, 1.18);
+  const highlightClean = 1.0 - 0.35 * smoothstep01(0.78, 0.95, L) * (1.0 - smoothstep01(0.012, 0.055, C));
+  const cScaled = C * (0.5 + 0.5 * gamutScale) * scheme.chromaGain * highlightClean;
+  const cNew = Math.min(maxNew * 0.985, cScaled);
 
   const aNew = cNew * cosNew;
   const bNew = cNew * sinNew;
@@ -479,9 +432,9 @@ export function recolorLinearRgb(
 }
 
 /**
- * 基于当次播放随机种子生成精选和谐封面配色方案：
- * - 分析原封面主色块与次级色块相对角度，对称对齐正弦映射相位，保证原封面不同色块层次分明且单色块绝不分裂；
- * - 仅从与原主色相差 >= 52° 的精选高级舞台和谐色系库中随机抽选，100% 免疫红配绿与暗黄脏色。
+ * 依据原封面主色调与播放种子生成克制的同色系微调方案：
+ * - 色相仅在原色调基础上微偏 ±6°~±16°（绿调封面仍为翠绿/青绿，蓝调仍为冰蓝/钴蓝，红调仍为绯红/玫红），与全曲其他场景浑然一体；
+ * - 针对暖金/鲜绿交界处智能规避暗黄橄榄浊色方向；黑白封面保持纯净原色不强行染色。
  */
 export function buildHarmonicCoverRecolorScheme(
   coverPixels: Uint8ClampedArray | undefined,
@@ -490,8 +443,6 @@ export function buildHarmonicCoverRecolorScheme(
 ): CoverRecolorScheme {
   let cosSum = 0;
   let sinSum = 0;
-  let totalChromaW = 0;
-  const hueSamples: Array<{ h: number; w: number }> = [];
   const dList: number[] = [];
 
   if (coverPixels && coverPixels.length >= 16) {
@@ -515,8 +466,6 @@ export function buildHarmonicCoverRecolorScheme(
           const w = c * (0.35 + 0.65 * v);
           cosSum += Math.cos(h) * w;
           sinSum += Math.sin(h) * w;
-          totalChromaW += w;
-          hueSamples.push({ h, w });
         }
       }
     }
@@ -525,60 +474,49 @@ export function buildHarmonicCoverRecolorScheme(
   dList.sort((a, b) => a - b);
   const d90 = dList.length > 0 ? dList[Math.min(dList.length - 1, Math.floor(dList.length * 0.90))] : 0;
   const hasRealColor = !paletteMono && (dList.length === 0 || d90 >= 0.045);
-  const domHue = Math.hypot(cosSum, sinSum) > 1e-5 ? Math.atan2(sinSum, cosSum) : 0.35;
+  const domHue = Math.hypot(cosSum, sinSum) > 1e-5 ? Math.atan2(sinSum, cosSum) : 0.0;
 
-  // 探测原封面是否存在显著的第二色块（与主色相距 >= 24°），以对称锁定正弦相位中心
-  let secCos = 0;
-  let secSin = 0;
-  let secW = 0;
-  for (const s of hueSamples) {
-    if (circAbsRad(s.h, domHue) >= 0.42) {
-      secCos += Math.cos(s.h) * s.w;
-      secSin += Math.sin(s.h) * s.w;
-      secW += s.w;
-    }
-  }
-
-  let refCenter: number;
-  let curveGain: number;
-  if (totalChromaW > 1e-5 && secW >= totalChromaW * 0.06 && Math.hypot(secCos, secSin) > 1e-5) {
-    const secHue = Math.atan2(secSin, secCos);
-    const deltaAD = wrapAnglePi(secHue - domHue);
-    refCenter = wrapAnglePi(domHue + 0.5 * deltaAD);
-    const halfSin = Math.abs(Math.sin(0.5 * deltaAD));
-    curveGain = clampRange(0.92 / Math.max(0.45, halfSin), 1.08, 1.92);
-  } else {
-    refCenter = wrapAnglePi(domHue + 0.58);
-    curveGain = 1.18;
+  if (!hasRealColor) {
+    return {
+      enabled: false,
+      monoTint: true,
+      paletteId: 'mono-preserve',
+      domHue,
+      hueShiftDeg: 0,
+      deltaHueRad: 0,
+      nuanceRad: 0,
+      chromaGain: 1.0,
+    };
   }
 
   const rand = rng(((seed ?? 0x9e3779b9) ^ 0x6c8e9cf5) >>> 0);
-  const minShiftRad = (56 * Math.PI) / 180;
-  let validArcs = HARMONIC_STAGE_ARCS.filter(
-    arc => circAbsRad((arc.midDeg * Math.PI) / 180, domHue) >= minShiftRad,
-  );
-  if (validArcs.length === 0) validArcs = HARMONIC_STAGE_ARCS.slice();
+  const domHueDeg = (domHue * 180) / Math.PI;
+  const magDeg = 6.0 + rand() * 10.0; // [6°, 16°] 克制同色系微偏
 
-  const chosen = validArcs[Math.floor(rand() * validArcs.length) % validArcs.length];
-  // 在精选色系中心附近施加 ±4° 细腻有机微调，兼顾丰富度与绝对色彩和谐
-  const jitterDeg = (rand() * 2 - 1) * 4.0;
-  const targetHue = wrapAnglePi(((chosen.midDeg + jitterDeg) * Math.PI) / 180);
-  const hueShiftDeg = (wrapAnglePi(targetHue - domHue) * 180) / Math.PI;
-  const chirality = rand() < 0.5 ? 1 : -1;
-  const halfSpanRad = (chosen.halfSpanDeg * Math.PI) / 180;
-  const signedSpanRad = chirality * halfSpanRad;
-  const chromaGain = 0.96 + rand() * 0.09;
+  // 暖金封面朝暖琥珀/珊瑚方向微偏，鲜绿封面朝翠绿/青玉方向微偏，避免滑入暗黄橄榄浊色区
+  let sign: number;
+  if (domHueDeg >= 52 && domHueDeg <= 85) {
+    sign = -1;
+  } else if (domHueDeg > 85 && domHueDeg <= 128) {
+    sign = 1;
+  } else {
+    sign = rand() < 0.5 ? -1 : 1;
+  }
+
+  const hueShiftDeg = sign * magDeg;
+  const deltaHueRad = (hueShiftDeg * Math.PI) / 180;
+  const nuanceDeg = (rand() * 2 - 1) * 3.0; // [-3°, +3°] 细腻层次呼吸
+  const nuanceRad = (nuanceDeg * Math.PI) / 180;
+  const chromaGain = 0.95 + rand() * 0.12; // [0.95, 1.07] 饱和度轻润微调
 
   return {
     enabled: true,
-    monoTint: !hasRealColor,
-    paletteId: chosen.id,
+    monoTint: false,
+    paletteId: sign > 0 ? 'origin-tone-warm-shift' : 'origin-tone-cool-shift',
     domHue,
-    refCenter,
-    targetHue,
     hueShiftDeg,
-    signedSpanRad,
-    curveGain,
+    deltaHueRad,
+    nuanceRad,
     chromaGain,
   };
 }
@@ -1445,8 +1383,8 @@ void main() {
 // 2. 远景巨幅微距 LED 点阵封面主屏与两侧 12 半音全彩频谱灯塔着色器 (LED_MONOLITH)
 // ============================================================================
 const GLSL_COVER_RECOLOR_COMMON = /* glsl */ `
-uniform vec4 uRecolorParams; // (refCenter, targetHue, signedSpanRad, curveGain)
-uniform vec4 uRecolorExtra;  // (enabled, 0.0, chromaGain, monoTint)
+uniform vec4 uRecolorParams; // (cosDom, sinDom, deltaHueRad, nuanceRad)
+uniform vec4 uRecolorExtra;  // (enabled, 0.0, chromaGain, 0.0)
 
 float maxLinearChromaInGamut(float L, float cosH, float sinH) {
   float ka = 0.3963377774 * cosH + 0.2158037573 * sinH;
@@ -1493,37 +1431,23 @@ vec3 recolorCoverLinear(vec3 linRgb) {
   if (L <= 0.004 || L >= 0.996) return c0;
 
   float C = length(vec2(oa, ob));
-  float cosNew;
-  float sinNew;
-  float cNew;
+  if (C < 0.004) return c0;
 
-  if (uRecolorExtra.w > 0.5) {
-    cosNew = cos(uRecolorParams.y);
-    sinNew = sin(uRecolorParams.y);
-    float maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
-    float midArch = sin(3.14159265359 * clamp(L, 0.0, 1.0));
-    cNew = min(maxNew * 0.985, maxNew * 0.40 * uRecolorExtra.z * midArch);
-  } else {
-    if (C < 0.00001) return c0;
-    float hOrig = atan(ob, oa);
-    float sWave = sin(hOrig - uRecolorParams.x);
-    float g = uRecolorParams.w;
-    float uArc = (g * sWave) * inversesqrt(1.0 + (g * g - 1.0) * sWave * sWave);
-    float hNew = uRecolorParams.y + uRecolorParams.z * uArc;
+  float cosOrig = oa / C;
+  float sinOrig = ob / C;
+  float sRel = sinOrig * uRecolorParams.x - cosOrig * uRecolorParams.y;
+  float theta = uRecolorParams.z + uRecolorParams.w * sRel;
+  float cosT = cos(theta);
+  float sinT = sin(theta);
+  float cosNew = cosOrig * cosT - sinOrig * sinT;
+  float sinNew = sinOrig * cosT + cosOrig * sinT;
 
-    float cosOrig = oa / C;
-    float sinOrig = ob / C;
-    cosNew = cos(hNew);
-    sinNew = sin(hNew);
-    float maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
-    float maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
-    float relSat = min(1.0, C / max(0.0001, maxOrig));
-    float blendedC = C * 0.38 + relSat * maxNew * 0.62;
-    float highlightClean = 1.0 - 0.58 * smoothstep(0.75, 0.94, L) * (1.0 - smoothstep(0.014, 0.062, C));
-    float cCapRatio = 1.0 + 0.24 * highlightClean;
-    float cCapped = min(C * cCapRatio, blendedC) * uRecolorExtra.z * highlightClean;
-    cNew = min(maxNew * 0.985, cCapped);
-  }
+  float maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
+  float maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+  float gamutScale = clamp(maxNew / max(0.0001, maxOrig), 0.72, 1.18);
+  float highlightClean = 1.0 - 0.35 * smoothstep(0.78, 0.95, L) * (1.0 - smoothstep(0.012, 0.055, C));
+  float cScaled = C * (0.5 + 0.5 * gamutScale) * uRecolorExtra.z * highlightClean;
+  float cNew = min(maxNew * 0.985, cScaled);
 
   float aNew = cNew * cosNew;
   float bNew = cNew * sinNew;
@@ -2886,15 +2810,15 @@ export class LaserScene implements MvScene {
     this.camera = new THREE.PerspectiveCamera(CAM_FOV, init.aspect, 0.2, 240);
     this.scene.add(this.camera);
 
-    // 1. 初始化全局着色器 Uniforms（动态色彩向量独立 clone，主屏与水面倒影共享临时重配色参数）
+    // 1. 初始化全局着色器 Uniforms（动态色彩向量独立 clone，主屏与水面倒影共享原色调同色系微调参数）
     this.uniforms = {
       uCover: { value: init.cover },
       uRecolorParams: {
         value: new THREE.Vector4(
-          recolorScheme.refCenter,
-          recolorScheme.targetHue,
-          recolorScheme.signedSpanRad,
-          recolorScheme.curveGain,
+          Math.cos(recolorScheme.domHue),
+          Math.sin(recolorScheme.domHue),
+          recolorScheme.deltaHueRad,
+          recolorScheme.nuanceRad,
         ),
       },
       uRecolorExtra: {
@@ -2902,7 +2826,7 @@ export class LaserScene implements MvScene {
           recolorScheme.enabled ? 1 : 0,
           0,
           recolorScheme.chromaGain,
-          recolorScheme.monoTint ? 1 : 0,
+          0,
         ),
       },
       uTime: { value: 0 },

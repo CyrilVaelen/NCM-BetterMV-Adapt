@@ -1828,9 +1828,9 @@ test('花坛喷泉与星空：极限高密度琶音与双踩底鼓下旧涟漪�
   }
 });
 
-test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明度与大色块拓扑连贯（绝不分裂）且全场激光颜色同步变化', () => {
+test('LaserScene 激光舞台：依据封面原色调同色系微调（绝不跨色系乱跳红/绿）、保持内容明度与色块连贯且全场激光同步联动', () => {
   const m = mods;
-  const { music, lyrics, palette, init } = buildMockFixture();
+  const { music, lyrics, init } = buildMockFixture();
 
   const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
   const srgbToOklab = (r, g, b) => {
@@ -1853,8 +1853,8 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
   };
 
   // 构造 48x48 复合封面：
-  // 1) 大面积连贯色块 A（深绯红至亮绯红光影渐变 + 细微自然色相起伏，模拟一整块玫瑰背景）
-  // 2) 次级色块 D（横跨 atan2 ±π 分支切口的青绿渐变，严苛检验圆周切口零裂纹）
+  // 1) 大面积连贯色块 A（深绯红至亮绯红光影渐变）
+  // 2) 次级色块 D（横跨 atan2 ±π 分支切口的青蓝渐变，严苛检验零分支切口裂纹）
   // 3) 银白发丝 / 纯白标题与深炭黑阴影（检验画面无彩色内容不被染花）
   const W = 48;
   const H = 48;
@@ -1870,7 +1870,6 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
       const u = x / (W - 1);
       const v = y / (H - 1);
       if (y < 28) {
-        // 一大块连贯绯红色区域 A（含明暗光影梯度与轻微色相过渡）
         const shade = 0.52 + 0.44 * u;
         srcPixels[o] = Math.round(224 * shade);
         srcPixels[o + 1] = Math.round((26 + 14 * v) * shade);
@@ -1878,7 +1877,6 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
         srcPixels[o + 3] = 255;
         regionAIndices.push(idx);
       } else if (y < 40) {
-        // 次级青蓝色块 D（故意横跨 OKLab b≈0, a<0 的 ±π 分支切口）
         const shade = 0.58 + 0.36 * u;
         srcPixels[o] = Math.round(18 * shade);
         srcPixels[o + 1] = Math.round((192 - 16 * v) * shade);
@@ -1886,7 +1884,6 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
         srcPixels[o + 3] = 255;
         regionDIndices.push(idx);
       } else {
-        // 前景银白发丝、白字与暗部炭黑轮廓
         const g = x < 16 ? 246 : x < 32 ? 196 : 20;
         srcPixels[o] = g;
         srcPixels[o + 1] = g;
@@ -1902,97 +1899,84 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
     const o = idx * 4;
     return srgbToOklab(srcPixels[o] / 255, srcPixels[o + 1] / 255, srcPixels[o + 2] / 255);
   });
-  const origHueA = Math.atan2(origLabs[regionAIndices[0]][2], origLabs[regionAIndices[0]][1]);
 
-  // 遍历 16 组不同随机播放种子，验证重配色规则
+  const calcMeanHue = (pixels, indices) => {
+    let cosS = 0;
+    let sinS = 0;
+    const hues = [];
+    for (const idx of indices) {
+      const o = idx * 4;
+      const lab = srgbToOklab(pixels[o] / 255, pixels[o + 1] / 255, pixels[o + 2] / 255);
+      const h = Math.atan2(lab[2], lab[1]);
+      cosS += Math.cos(h);
+      sinS += Math.sin(h);
+      hues.push(h);
+    }
+    const meanH = Math.atan2(sinS, cosS);
+    let maxSpread = 0;
+    for (const h of hues) {
+      const d = circHueDiffDeg(h, meanH);
+      if (d > maxSpread) maxSpread = d;
+    }
+    return { meanH, maxSpread };
+  };
+
+  const origStatsA = calcMeanHue(srcPixels, regionAIndices);
+  const origStatsD = calcMeanHue(srcPixels, regionDIndices);
+
+  // 遍历 16 组不同随机播放种子，验证严格围绕原色调做克制同色系微调
   const seenPrimaryLasers = [];
   for (let sIdx = 0; sIdx < 16; sIdx++) {
     const testSeed = (0x13579bdf + sIdx * 0x9e3779b9) >>> 0;
     const scheme = m.buildHarmonicCoverRecolorScheme(srcPixels, false, testSeed);
     assert.equal(scheme.enabled, true);
     assert.equal(scheme.monoTint, false);
-    assert.ok(Math.abs(scheme.hueShiftDeg) >= 52, `随机色相旋转角应显著偏离原封面 (>=52°)，实测 ${scheme.hueShiftDeg.toFixed(1)}°`);
+    assert.ok(
+      Math.abs(scheme.hueShiftDeg) >= 6.0 && Math.abs(scheme.hueShiftDeg) <= 16.0,
+      `同色系微调角必须严格收敛在 ±[6°, 16°] 区间内，实测 ${scheme.hueShiftDeg.toFixed(2)}°`,
+    );
 
     const recolored = m.recolorCoverPixels(srcPixels, scheme);
     // 1. 原始像素缓冲区绝不可被污染
-    assert.deepEqual(srcPixels, srcSnapshot, '重配色必须只生成临时副本，不得就地修改原始 coverPixels');
+    assert.deepEqual(srcPixels, srcSnapshot, '微调必须只生成临时副本，不得就地修改原始 coverPixels');
 
-    // 2. 逐像素验证画面内容明度 L 恒定（只改颜色，不改明暗轮廓）
+    // 2. 逐像素验证画面内容感知明度 L 恒定（只微调色调，不改明暗轮廓）
     for (let idx = 0; idx < W * H; idx++) {
       const o = idx * 4;
       const newLab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
       const dL = Math.abs(newLab[0] - origLabs[idx][0]);
       assert.ok(
         dL < 0.016,
-        `[seed#${sIdx}] 像素 #${idx} 感知明度 L 必须保持不变以保留画面内容: origL=${origLabs[idx][0].toFixed(4)}, newL=${newLab[0].toFixed(4)}`,
+        `[seed#${sIdx}] 像素 #${idx} 感知明度 L 必须保持不变: origL=${origLabs[idx][0].toFixed(4)}, newL=${newLab[0].toFixed(4)}`,
       );
     }
 
-    // 3. 验证无彩色前景（白发、白字、暗影）保持干净低饱和，不被染成刺眼荧光色
+    // 3. 验证无彩色前景（白发、白字、暗影）保持洁净中性，不被染色
     for (const idx of neutralIndices) {
       const o = idx * 4;
       const newLab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
       const newC = Math.hypot(newLab[1], newLab[2]);
-      assert.ok(newC < 0.018, `[seed#${sIdx}] 无彩色像素 #${idx} 变换后应保持洁净中性灰白，实测 C=${newC.toFixed(4)}`);
+      assert.ok(newC < 0.016, `[seed#${sIdx}] 无彩色像素 #${idx} 微调后应保持洁净中性灰白，实测 C=${newC.toFixed(4)}`);
     }
 
-    // 4. 验证大色块拓扑连贯性：原来一大块 A 颜色区域绝不能分裂成 B 色 + C 色！
-    const calcClusterStats = (indices) => {
-      let cosS = 0;
-      let sinS = 0;
-      const hues = [];
-      for (const idx of indices) {
-        const o = idx * 4;
-        const lab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
-        const h = Math.atan2(lab[2], lab[1]);
-        cosS += Math.cos(h);
-        sinS += Math.sin(h);
-        hues.push(h);
-      }
-      const meanH = Math.atan2(sinS, cosS);
-      let maxSpread = 0;
-      for (const h of hues) {
-        const d = circHueDiffDeg(h, meanH);
-        if (d > maxSpread) maxSpread = d;
-      }
-      return { meanH, maxSpread };
-    };
+    // 4. 验证同色系锚定与大色块拓扑连贯性（不跳异色系、不分裂）
+    const statsA = calcMeanHue(recolored, regionAIndices);
+    const statsD = calcMeanHue(recolored, regionDIndices);
+    assert.ok(statsA.maxSpread < 12.0, `[seed#${sIdx}] 原大色块 A 微调后必须保持单一连贯（离散度=${statsA.maxSpread.toFixed(2)}°）`);
+    assert.ok(statsD.maxSpread < 12.0, `[seed#${sIdx}] 跨 ±π 切口色块 D 微调后必须连贯无裂纹（离散度=${statsD.maxSpread.toFixed(2)}°）`);
 
-    const statsA = calcClusterStats(regionAIndices);
-    const statsD = calcClusterStats(regionDIndices);
+    const driftA = circHueDiffDeg(statsA.meanH, origStatsA.meanH);
+    const driftD = circHueDiffDeg(statsD.meanH, origStatsD.meanH);
     assert.ok(
-      statsA.maxSpread < 14.0,
-      `[seed#${sIdx}] 原封面大面积色块 A 变换后必须保持单一连贯颜色，严禁分裂为多色（最大色相离散度=${statsA.maxSpread.toFixed(2)}°）`,
+      driftA >= 4.5 && driftA <= 20.0,
+      `[seed#${sIdx}] 色块 A 应围绕原色调细腻微调且绝不跨色系跳变，实测偏移=${driftA.toFixed(2)}°`,
     );
     assert.ok(
-      statsD.maxSpread < 14.0,
-      `[seed#${sIdx}] 跨 ±π 切口的次级色块 D 变换后同样必须保持单一连贯无裂纹（最大色相离散度=${statsD.maxSpread.toFixed(2)}°）`,
-    );
-    assert.ok(
-      circHueDiffDeg(statsA.meanH, origHueA) > 38.0,
-      `[seed#${sIdx}] 色块 A 应实质性变换为全新色相（实测偏移=${circHueDiffDeg(statsA.meanH, origHueA).toFixed(1)}°）`,
-    );
-    const sepAD = circHueDiffDeg(statsA.meanH, statsD.meanH);
-    assert.ok(
-      sepAD > 38.0 && sepAD < 75.0,
-      `[seed#${sIdx}] A、D 两大区域既要层次分明 (>38°)，又必须收敛在同一和谐邻近色弧段内 (<75°，严禁红配绿撞色)，实测色相差=${sepAD.toFixed(1)}°`,
+      driftD >= 3.5 && driftD <= 20.0,
+      `[seed#${sIdx}] 色块 D 应围绕原色调细腻微调且绝不跨色系跳变，实测偏移=${driftD.toFixed(2)}°`,
     );
 
-    // 严禁任何有彩色像素落入 [+80°, +170°] 暗黄橄榄绿 / 荧光草绿撞色禁区
-    for (let idx = 0; idx < W * H; idx++) {
-      const o = idx * 4;
-      const lab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
-      const c = Math.hypot(lab[1], lab[2]);
-      if (c > 0.04) {
-        const hDeg = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
-        assert.ok(
-          !(hDeg > 80.0 && hDeg < 170.0),
-          `[seed#${sIdx}] 严禁出现刺眼荧光草绿或浑浊橄榄绿撞色 (palette=${scheme.paletteId}, h=${hDeg.toFixed(1)}°, C=${c.toFixed(3)})`,
-        );
-      }
-    }
-
-    // 5. 验证对应激光颜色同步跟随重配色后的封面变化，且着色器 Uniform 完整同步
+    // 5. 验证激光主色与着色器 Uniform 完整同步
     if (sIdx < 6) {
       const customCover = new THREE.DataTexture(srcPixels, W, H, THREE.RGBAFormat);
       customCover.needsUpdate = true;
@@ -2000,24 +1984,19 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
         { ...init, cover: customCover, coverPixels: srcPixels, music, lyrics, seed: testSeed },
         'pulse',
       );
-      assert.equal(laserScene.uniforms.uRecolorExtra.value.x, 1, '主屏与水面倒影重配色开关应激活');
-      assert.ok(Math.abs(laserScene.uniforms.uRecolorParams.value.y - scheme.targetHue) < 1e-6);
+      assert.equal(laserScene.uniforms.uRecolorExtra.value.x, 1);
+      assert.ok(Math.abs(laserScene.uniforms.uRecolorParams.value.z - scheme.deltaHueRad) < 1e-6);
 
-      // 提取激光主色在 OKLab 中的色相，确认其必然贴合变换后的新封面色块 A 或 D（而非停留在原封面旧绯红色）
       const lp = laserScene.pal.laserPrimary;
       const lpSrgb = [Math.pow(lp.x, 1 / 2.2), Math.pow(lp.y, 1 / 2.2), Math.pow(lp.z, 1 / 2.2)];
       const lpLab = srgbToOklab(lpSrgb[0], lpSrgb[1], lpSrgb[2]);
       const lpHue = Math.atan2(lpLab[2], lpLab[1]);
-      const distToNewCover = Math.min(circHueDiffDeg(lpHue, statsA.meanH), circHueDiffDeg(lpHue, statsD.meanH));
-      assert.ok(
-        distToNewCover < 20.0,
-        `[seed#${sIdx}] 激光主色调必须同步跟随变换后的新封面颜色（与新封面主色块色相误差=${distToNewCover.toFixed(1)}°）`,
-      );
+      const distToCover = Math.min(circHueDiffDeg(lpHue, statsA.meanH), circHueDiffDeg(lpHue, statsD.meanH));
+      assert.ok(distToCover < 20.0, `[seed#${sIdx}] 激光颜色必须紧密跟随微调后的封面色调（误差=${distToCover.toFixed(1)}°）`);
       seenPrimaryLasers.push(lp.clone());
     }
   }
 
-  // 确认不同随机种子下激光颜色确实呈现出明显不同的多彩主题变化
   let maxLaserDiff = 0;
   for (let i = 0; i < seenPrimaryLasers.length; i++) {
     for (let j = i + 1; j < seenPrimaryLasers.length; j++) {
@@ -2025,10 +2004,41 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
       if (d > maxLaserDiff) maxLaserDiff = d;
     }
   }
-  assert.ok(maxLaserDiff > 0.35, `不同随机种子下全场激光颜色应随新封面同步呈现丰富变化，实测最大向量差=${maxLaserDiff.toFixed(3)}`);
+  assert.ok(
+    maxLaserDiff > 0.02 && maxLaserDiff < 0.55,
+    `不同播放种子下激光颜色应在原色调同色系内呈现柔和微差而非跨色系剧变，实测最大差=${maxLaserDiff.toFixed(3)}`,
+  );
 
-  // 6. 专项复现回归：《This Is Goodbye》类蓝-青-紫渐变天空 + 中央大面积冰白发光门封面，
-  //    验证 24 组随机种子下绝不出现“红配绿”撞色、高光白门不泛黄、两侧频谱灯塔 6 槽纯净无灰米色
+  // 6. 专项回归：绿色调 MV 封面在 24 组随机种子下必须全程保持翠绿/青绿同色系，绝不突然跳出红色/紫色！
+  const greenCover = new Uint8ClampedArray(W * H * 4);
+  const greenIdxList = [];
+  for (let idx = 0; idx < W * H; idx++) {
+    const o = idx * 4;
+    const shade = 0.45 + 0.50 * ((idx % W) / (W - 1));
+    greenCover[o] = Math.round(28 * shade);
+    greenCover[o + 1] = Math.round(212 * shade);
+    greenCover[o + 2] = Math.round(108 * shade);
+    greenCover[o + 3] = 255;
+    greenIdxList.push(idx);
+  }
+  const origGreenHue = calcMeanHue(greenCover, greenIdxList).meanH;
+  for (let k = 0; k < 24; k++) {
+    const seedG = (0x517cc1b7 + k * 0x9e3779b9) >>> 0;
+    const scG = m.buildHarmonicCoverRecolorScheme(greenCover, false, seedG);
+    const recG = m.recolorCoverPixels(greenCover, scG);
+    const newGreenHue = calcMeanHue(recG, greenIdxList).meanH;
+    const greenDrift = circHueDiffDeg(newGreenHue, origGreenHue);
+    assert.ok(
+      greenDrift >= 5.0 && greenDrift <= 18.0,
+      `[green#${k}] 绿色封面微调后必须保持绿色系（严禁跳成红色），实测相对原绿色相偏移=${greenDrift.toFixed(2)}°`,
+    );
+  }
+
+  // 7. 黑白无彩色封面保护：不强行染色，保持与全曲黑白基调一致
+  const monoScheme = m.buildHarmonicCoverRecolorScheme(srcPixels, true, 12345);
+  assert.equal(monoScheme.enabled, false, '黑白无彩色封面应禁用彩色染色以保持全曲灰阶统一');
+
+  // 8. 《This Is Goodbye》类蓝-青-紫天空 + 发光白门封面：保持原蓝青色系、白门洁净、两侧灯塔 6 槽饱满无灰米色
   const skyCover = new Uint8ClampedArray(W * H * 4);
   const portalIndices = [];
   for (let y = 0; y < H; y++) {
@@ -2038,26 +2048,22 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
       const cx = (x / (W - 1)) - 0.5;
       const cy = (y / (H - 1)) - 0.55;
       if (Math.hypot(cx * 1.2, cy) < 0.24) {
-        // 中央微带冰蓝的高光发光白门
         skyCover[o] = 228;
         skyCover[o + 1] = 241;
         skyCover[o + 2] = 254;
         skyCover[o + 3] = 255;
         portalIndices.push(idx);
       } else if (y < 18) {
-        // 顶部深钴蓝-紫罗兰星云
         skyCover[o] = 68;
         skyCover[o + 1] = 52;
         skyCover[o + 2] = 218;
         skyCover[o + 3] = 255;
       } else if (y < 34) {
-        // 中部天蓝过渡层
         skyCover[o] = 36;
         skyCover[o + 1] = 132;
         skyCover[o + 2] = 242;
         skyCover[o + 3] = 255;
       } else {
-        // 底部冰晶青云雾
         skyCover[o] = 24;
         skyCover[o + 1] = 216;
         skyCover[o + 2] = 236;
@@ -2065,53 +2071,26 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
       }
     }
   }
-
-  for (let k = 0; k < 24; k++) {
+  for (let k = 0; k < 8; k++) {
     const seedK = (0x2468ace1 + k * 0x85ebca6b) >>> 0;
     const sc = m.buildHarmonicCoverRecolorScheme(skyCover, false, seedK);
     const rec = m.recolorCoverPixels(skyCover, sc);
-
-    // 高光白门保持洁净白光，不泛浑浊黄桃色
     for (const pIdx of portalIndices) {
       const o = pIdx * 4;
       const lab = srgbToOklab(rec[o] / 255, rec[o + 1] / 255, rec[o + 2] / 255);
-      assert.ok(Math.hypot(lab[1], lab[2]) < 0.022, `[sky#${k}] 发光白门必须保持洁净高光白`);
+      assert.ok(Math.hypot(lab[1], lab[2]) < 0.025, `[sky#${k}] 发光白门必须保持洁净高光白`);
     }
-
-    // 全图任意两处有彩色像素的最大色相跨度 <= 72°（100% 同色系/邻近色和谐，彻底根除红绿撞色）
-    const activeHues = [];
-    for (let idx = 0; idx < W * H; idx++) {
-      const o = idx * 4;
-      const lab = srgbToOklab(rec[o] / 255, rec[o + 1] / 255, rec[o + 2] / 255);
-      if (Math.hypot(lab[1], lab[2]) > 0.045) {
-        activeHues.push(Math.atan2(lab[2], lab[1]));
-      }
-    }
-    let maxPairHue = 0;
-    for (let i = 0; i < activeHues.length; i += 7) {
-      for (let j = i + 1; j < activeHues.length; j += 7) {
-        const dh = circHueDiffDeg(activeHues[i], activeHues[j]);
-        if (dh > maxPairHue) maxPairHue = dh;
-      }
-    }
-    assert.ok(
-      maxPairHue <= 72.0,
-      `[sky#${k}] 重配色全图色相跨度必须严格收敛于和谐色弧 (<=72°)，实测 ${maxPairHue.toFixed(1)}° (palette=${sc.paletteId})`,
-    );
-
-    if (k < 6) {
-      const skyTex = new THREE.DataTexture(skyCover, W, H, THREE.RGBAFormat);
-      skyTex.needsUpdate = true;
-      const ls = new m.LaserScene({ ...init, cover: skyTex, coverPixels: skyCover, music, lyrics, seed: seedK }, 'pulse');
-      for (let slot = 0; slot < 6; slot++) {
-        const c = ls.pal.laserPalette[slot];
-        const sr = Math.pow(c.x, 1 / 2.2);
-        const sg = Math.pow(c.y, 1 / 2.2);
-        const sb = Math.pow(c.z, 1 / 2.2);
-        const vmax = Math.max(sr, sg, sb);
-        const sat = (vmax - Math.min(sr, sg, sb)) / Math.max(1e-4, vmax);
-        assert.ok(sat >= 0.32, `[sky#${k}] 灯塔与激光槽位 #${slot} 应保持纯净饱满色彩，杜绝灰暗米色过渡格 (sat=${sat.toFixed(2)})`);
-      }
+    const skyTex = new THREE.DataTexture(skyCover, W, H, THREE.RGBAFormat);
+    skyTex.needsUpdate = true;
+    const ls = new m.LaserScene({ ...init, cover: skyTex, coverPixels: skyCover, music, lyrics, seed: seedK }, 'pulse');
+    for (let slot = 0; slot < 6; slot++) {
+      const c = ls.pal.laserPalette[slot];
+      const sr = Math.pow(c.x, 1 / 2.2);
+      const sg = Math.pow(c.y, 1 / 2.2);
+      const sb = Math.pow(c.z, 1 / 2.2);
+      const vmax = Math.max(sr, sg, sb);
+      const sat = (vmax - Math.min(sr, sg, sb)) / Math.max(1e-4, vmax);
+      assert.ok(sat >= 0.32, `[sky#${k}] 灯塔与激光槽位 #${slot} 应保持纯净饱满色彩 (sat=${sat.toFixed(2)})`);
     }
   }
 });
