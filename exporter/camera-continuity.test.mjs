@@ -262,6 +262,8 @@ before(async () => {
     LaserScene: laserMod.LaserScene,
     buildHarmonicCoverRecolorScheme: laserMod.buildHarmonicCoverRecolorScheme,
     recolorCoverPixels: laserMod.recolorCoverPixels,
+    evalLeadExponentialBreath: laserMod.evalLeadExponentialBreath,
+    LEAD_EXP_SLOPE: laserMod.LEAD_EXP_SLOPE,
     BlackHoleScene: blackholeMod.BlackHoleScene,
   };
 });
@@ -2094,6 +2096,296 @@ test('LaserScene 激光舞台：依据封面原色调同色系微调（绝不跨
     }
   }
 });
+
+test('LaserScene 激光舞台：激光强度 E 随 Lead 强度 I 的指数呼吸曲线 (y=e^x) 与高频全场突然变黑爆切验证', () => {
+  const m = mods;
+  const fixture = buildMockFixture();
+  const { lyrics, palette, init } = fixture;
+  const emptyLyrics = new m.LyricTrack([]);
+
+  // 1. 验证纯数学指数呼吸曲线 E(I) = c * e^(k * I) 的等步长恒定倍率与严格二阶正凸性
+  const levels = [0.0, 0.25, 0.50, 0.75, 1.0];
+  const expectedStepRatio = Math.exp(m.LEAD_EXP_SLOPE * 0.25);
+  const curveVals = levels.map((lv) => m.evalLeadExponentialBreath(lv));
+  for (let i = 1; i < curveVals.length; i++) {
+    const ratio = curveVals[i] / curveVals[i - 1];
+    assert.ok(
+      Math.abs(ratio - expectedStepRatio) < 1e-6,
+      `evalLeadExponentialBreath 等步长比值应恒等于 e^(0.25*k)=${expectedStepRatio.toFixed(4)}，实测 ${ratio.toFixed(4)}`,
+    );
+  }
+  assert.ok(
+    curveVals[4] / curveVals[0] > 6.0,
+    `Lead 从 0 到 1 的指数呼吸总动态比应超过 6.0x，实测 ${(curveVals[4] / curveVals[0]).toFixed(3)}x`,
+  );
+
+  // 2. 验证真实场景更新中单束激光、扫描光幕、双环锥笼功率随 env.lead 严格呈指数函数增长（无封顶削平）
+  const dur = 20;
+  const bpm = 128;
+  const beatLen = 60 / bpm;
+  const beats = [];
+  const downbeats = [];
+  const kicks = [];
+  for (let i = 0; i * beatLen <= dur; i++) {
+    const bt = +(i * beatLen).toFixed(4);
+    beats.push(bt);
+    if (i % 4 === 0) downbeats.push(bt);
+    kicks.push([bt, 0.90]);
+  }
+  const envFps = 30;
+  const envLen = dur * envFps;
+  const lowArr = new Float32Array(envLen).fill(0.88);
+  const rmsArr = new Float32Array(envLen).fill(0.90);
+
+  const sampleAtLead = (leadVal, checkT, variant = 'arena') => {
+    const leadArr = new Float32Array(envLen).fill(leadVal);
+    const leadAtkArr = new Float32Array(envLen).fill(0);
+    const leadMusic = new m.Music({
+      version: 1,
+      duration: dur,
+      bpm,
+      namedBpm: bpm,
+      meter: 4,
+      beats,
+      beatInBar: beats.map((_, i) => i % 4),
+      tempo: beats.map(() => bpm),
+      downbeats,
+      sections: [{ start: 0, end: dur, label: 'drop', energy: 0.94, group: 0, vocal: false }],
+      hits: { kick: kicks, snare: [], leads: [] },
+      roles: { kick: kicks, snare: [], lead: [] },
+      env: { fps: envFps, low: lowArr, rms: rmsArr, lead: leadArr, leadAttack: leadAtkArr },
+    });
+    const ls = new m.LaserScene({ ...init, music: leadMusic, lyrics: emptyLyrics, seed: 202607 }, 'pulse');
+    const sec = leadMusic.a.sections[0];
+    ls.update({
+      t: checkT,
+      dt: 1 / 60,
+      shotT: checkT,
+      shot: {
+        index: 0,
+        start: 0,
+        end: dur,
+        scene: 'laser',
+        variant,
+        section: sec,
+        sectionIndex: 0,
+        seed: 202607,
+        short: false,
+      },
+      music: leadMusic,
+      lyrics: emptyLyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+    let maxBeam = 0;
+    for (let b = 0; b < 152; b++) {
+      const p = ls.beamStyleAttr.array[b * 4];
+      if (p > maxBeam) maxBeam = p;
+    }
+    let maxSheet = 0;
+    for (let s = 0; s < 12; s++) {
+      const p = ls.sheetStyleAttr.array[s * 4 + 1];
+      if (p > maxSheet) maxSheet = p;
+    }
+    const outerCone = ls.coneSpecAttr.array[2];
+    return {
+      maxBeam,
+      maxSheet,
+      outerCone,
+      uLeadBreath: ls.uniforms.uLeadBreath.value,
+    };
+  };
+
+  // 在正拍点采样 arena 阵型（光幕+单束）与 tunnel 阵型（锥笼+侧廊单束）
+  const checkT = +(4 * beatLen).toFixed(4);
+  const arenaSamples = levels.map((lv) => sampleAtLead(lv, checkT, 'arena'));
+  const tunnelSamples = levels.map((lv) => sampleAtLead(lv, checkT, 'tunnel'));
+
+  for (let i = 1; i < levels.length; i++) {
+    const beamRatio = arenaSamples[i].maxBeam / arenaSamples[i - 1].maxBeam;
+    const sheetRatio = arenaSamples[i].maxSheet / arenaSamples[i - 1].maxSheet;
+    const coneRatio = tunnelSamples[i].outerCone / tunnelSamples[i - 1].outerCone;
+    assert.ok(
+      Math.abs(beamRatio - expectedStepRatio) < 0.02,
+      `单束激光功率随 Lead 步进 [${levels[i - 1]}->${levels[i]}] 应遵循 y=e^x 比例 ${expectedStepRatio.toFixed(3)}，实测 ${beamRatio.toFixed(3)}`,
+    );
+    assert.ok(
+      Math.abs(sheetRatio - expectedStepRatio) < 0.02,
+      `扫描光幕功率随 Lead 步进 [${levels[i - 1]}->${levels[i]}] 应遵循 y=e^x 比例 ${expectedStepRatio.toFixed(3)}，实测 ${sheetRatio.toFixed(3)}`,
+    );
+    assert.ok(
+      Math.abs(coneRatio - expectedStepRatio) < 0.02,
+      `旋转锥笼功率随 Lead 步进 [${levels[i - 1]}->${levels[i]}] 应遵循 y=e^x 比例 ${expectedStepRatio.toFixed(3)}，实测 ${coneRatio.toFixed(3)}`,
+    );
+  }
+  // 验证二阶差分为正（严格指数上凹呼吸：高强度区间增幅显著大于低强度区间增幅）
+  const lowDeltaBeam = arenaSamples[1].maxBeam - arenaSamples[0].maxBeam;
+  const highDeltaBeam = arenaSamples[4].maxBeam - arenaSamples[3].maxBeam;
+  assert.ok(
+    highDeltaBeam > lowDeltaBeam * 3.5,
+    `指数函数呼吸高段跃升 (${highDeltaBeam.toFixed(3)}) 必须显著强于低段变化 (${lowDeltaBeam.toFixed(3)})`,
+  );
+
+  // 3. 验证高频“全场突然变黑”（Full-Stage Snap Blackout）次数、瞬切陡峭度与正拍满功率释放
+  const blackoutMusic = new m.Music({
+    version: 1,
+    duration: 24,
+    bpm: 128,
+    namedBpm: 128,
+    meter: 4,
+    beats: Array.from({ length: 52 }, (_, i) => +(i * beatLen).toFixed(4)),
+    beatInBar: Array.from({ length: 52 }, (_, i) => i % 4),
+    tempo: Array.from({ length: 52 }, () => 128),
+    downbeats: Array.from({ length: 13 }, (_, i) => +(i * 4 * beatLen).toFixed(4)),
+    sections: [
+      { start: 0, end: 8 * beatLen, label: 'build', energy: 0.72, group: 0, vocal: false },
+      { start: 8 * beatLen, end: 24, label: 'drop', energy: 0.95, group: 1, vocal: true },
+    ],
+    hits: {
+      kick: Array.from({ length: 52 }, (_, i) => [+(i * beatLen).toFixed(4), 0.92]),
+      snare: Array.from({ length: 26 }, (_, i) => [+((i * 2 + 1) * beatLen).toFixed(4), 0.85]),
+      accent: [[+(12 * beatLen + 0.23).toFixed(4), 0.90], [+(20 * beatLen + 0.23).toFixed(4), 0.92]],
+    },
+    roles: {
+      kick: Array.from({ length: 52 }, (_, i) => [+(i * beatLen).toFixed(4), 0.92]),
+      synthStab: [[+(16 * beatLen + 0.23).toFixed(4), 0.88]],
+    },
+    env: {
+      fps: 30,
+      low: new Float32Array(24 * 30).fill(0.88),
+      rms: new Float32Array(24 * 30).fill(0.90),
+      lead: Float32Array.from({ length: 24 * 30 }, (_, idx) => 0.5 + 0.5 * Math.sin(idx * 0.25)),
+    },
+  });
+
+  const blackoutLaser = new m.LaserScene({ ...init, music: blackoutMusic, lyrics, seed: 8899 }, 'pulse');
+  const dtScan = 1 / 120; // 120 FPS 高时间分辨率扫描
+  let dropBlackoutCount = 0;
+  let buildBlackoutCount = 0;
+  let inBlackout = false;
+  let sharpTransitions = 0;
+  let prevBo = 0;
+  let minBloomInBlackout = 1;
+
+  for (let t = 0.05; t < 20.0; t += dtScan) {
+    const curT = +t.toFixed(5);
+    const secIdx = blackoutMusic.sectionIndex(curT);
+    const sec = blackoutMusic.a.sections[secIdx];
+    const fx = m.defaultFx();
+    blackoutLaser.update({
+      t: curT,
+      dt: dtScan,
+      shotT: curT - sec.start,
+      shot: {
+        index: secIdx,
+        start: sec.start,
+        end: sec.end,
+        scene: 'laser',
+        variant: 'arena',
+        section: sec,
+        sectionIndex: secIdx,
+        seed: 8899,
+        short: false,
+      },
+      music: blackoutMusic,
+      lyrics,
+      palette,
+      fx,
+      aspect: 16 / 9,
+    });
+    const bo = blackoutLaser.uniforms.uBlackout.value;
+    if (bo - prevBo > 0.35) sharpTransitions++;
+    if (!inBlackout && bo >= 0.95) {
+      inBlackout = true;
+      if (sec.label === 'drop') dropBlackoutCount++;
+      else if (sec.label === 'build') buildBlackoutCount++;
+    } else if (inBlackout && bo <= 0.15) {
+      inBlackout = false;
+    }
+    if (bo >= 0.98 && fx.bloom < minBloomInBlackout) {
+      minBloomInBlackout = fx.bloom;
+    }
+    prevBo = bo;
+  }
+
+  assert.ok(
+    dropBlackoutCount >= 18,
+    `16 秒 Drop 区间内应触发高频全场突然全黑 (>=18 次)，实测 ${dropBlackoutCount} 次`,
+  );
+  assert.ok(
+    buildBlackoutCount >= 6,
+    `Build 蓄能段应触发密集加速频闪切黑 (>=6 次)，实测 ${buildBlackoutCount} 次`,
+  );
+  assert.ok(
+    sharpTransitions >= 20,
+    `黑场切入必须为毫秒级突然断电硬切而非缓慢渐变，实测陡峭跳变帧数=${sharpTransitions}`,
+  );
+  assert.ok(
+    minBloomInBlackout < 0.025,
+    `全场突然变黑时后期 Bloom 泛光必须同步压灭以防亮雾残留，实测最低 bloom=${minBloomInBlackout.toFixed(4)}`,
+  );
+
+  // 验证每个小节正拍落点（downbeats）黑场已 100% 瞬开归零（确保重拍瞬间激光满功率炸裂）
+  for (let bar = 2; bar <= 10; bar++) {
+    const downT = +(bar * 4 * beatLen).toFixed(4);
+    const secIdx = blackoutMusic.sectionIndex(downT);
+    const sec = blackoutMusic.a.sections[secIdx];
+    blackoutLaser.update({
+      t: downT,
+      dt: 1 / 60,
+      shotT: downT - sec.start,
+      shot: {
+        index: secIdx,
+        start: sec.start,
+        end: sec.end,
+        scene: 'laser',
+        variant: 'arena',
+        section: sec,
+        sectionIndex: secIdx,
+        seed: 8899,
+        short: false,
+      },
+      music: blackoutMusic,
+      lyrics: emptyLyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+    assert.equal(
+      blackoutLaser.uniforms.uBlackout.value,
+      0,
+      `小节正拍落点 t=${downT}s 处黑场必须瞬开归零以释放最强激光冲击，实测 uBlackout=${blackoutLaser.uniforms.uBlackout.value}`,
+    );
+  }
+
+  // 4. 验证 uBlackout 与 uLeadBreath 跨时间轴随机 Seek 幂等性
+  for (const seekT of [1.76, 3.68, 7.38, 11.12, 14.89, 18.62]) {
+    const secIdx = blackoutMusic.sectionIndex(seekT);
+    const sec = blackoutMusic.a.sections[secIdx];
+    const shot = {
+      index: secIdx,
+      start: sec.start,
+      end: sec.end,
+      scene: 'laser',
+      variant: 'arena',
+      section: sec,
+      sectionIndex: secIdx,
+      seed: 8899,
+      short: false,
+    };
+    const fresh = new m.LaserScene({ ...init, music: blackoutMusic, lyrics, seed: 8899 }, 'pulse');
+    fresh.update({ t: seekT, dt: 0.05, shotT: seekT - sec.start, shot, music: blackoutMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+
+    blackoutLaser.update({ t: 19.4, dt: 0.05, shotT: 19.4 - sec.start, shot, music: blackoutMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    blackoutLaser.update({ t: 0.3, dt: 0.05, shotT: 0.3, shot, music: blackoutMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    blackoutLaser.update({ t: seekT, dt: 0.05, shotT: seekT - sec.start, shot, music: blackoutMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+
+    assert.ok(Math.abs(blackoutLaser.uniforms.uBlackout.value - fresh.uniforms.uBlackout.value) < 1e-6);
+    assert.ok(Math.abs(blackoutLaser.uniforms.uLeadBreath.value - fresh.uniforms.uLeadBreath.value) < 1e-6);
+  }
+});
+
 
 
 
