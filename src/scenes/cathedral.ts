@@ -52,6 +52,7 @@ export class CathedralScene implements MvScene {
   private organGlowMaterial: THREE.MeshBasicMaterial;
   private beamMeshes: THREE.Mesh[] = [];
   private beamMaterials: THREE.ShaderMaterial[] = [];
+  private beamBaseRotZ: number[] = [];
   private ambientLight: THREE.AmbientLight;
   private altarLight: THREE.PointLight;
 
@@ -390,6 +391,7 @@ export class CathedralScene implements MvScene {
       transparent: true,
       opacity: 0.55,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.vaultRibsMesh = new THREE.LineSegments(ribGeo, ribMat);
     this.scene.add(this.vaultRibsMesh);
@@ -525,6 +527,7 @@ export class CathedralScene implements MvScene {
 
       this.beamMeshes.push(beamMesh);
       this.beamMaterials.push(beamMat);
+      this.beamBaseRotZ.push(beamMesh.rotation.z);
       this.scene.add(beamMesh);
     }
 
@@ -660,11 +663,9 @@ export class CathedralScene implements MvScene {
       const mat = this.beamMaterials[i];
       mat.uniforms.uIntensity.value = beamBaseIntensity * (0.8 + 0.4 * Math.sin(t * 1.5 + i));
       mat.uniforms.uDropFlash.value = dropFlash;
-      // Drop 时光束轻微外展横扫
-      if (dropFlash > 0.01) {
-        const mesh = this.beamMeshes[i];
-        mesh.rotation.z = Math.sin(t * 3.0 + i) * 0.15 * dropFlash;
-      }
+      // Drop 时光束轻微外展横扫（退出 Drop 时严格恢复构造期基底旋转）
+      const sweep = dropFlash > 0.001 ? Math.sin(t * 3.0 + i) * 0.15 * dropFlash : 0;
+      this.beamMeshes[i].rotation.z = this.beamBaseRotZ[i] + sweep;
     }
 
     // 6. 更新全局着色器 Uniforms

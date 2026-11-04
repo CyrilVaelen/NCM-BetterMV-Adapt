@@ -51,7 +51,6 @@ export class PavilionScene implements MvScene {
   private colorGold: THREE.Color;
   private colorMain: THREE.Color;
   private colorDeep: THREE.Color;
-  private colorJade: THREE.Color;
 
   private uniforms: {
     uTime: { value: number };
@@ -75,12 +74,10 @@ export class PavilionScene implements MvScene {
     const stopMain = tuneCoverStop(tone.mid, tone, 0.45, 0.75, 0.40, 0.90, deltaHue);
     const stopDeep = tuneCoverStop(tone.dark, tone, 0.06, 0.20, 0.20, 0.60, deltaHue);
     const stopGold = tuneCoverStop(tone.highlight, tone, 0.65, 0.95, 0.60, 0.98, deltaHue);
-    const stopJade = tuneCoverStop(tone.bright, tone, 0.50, 0.85, 0.45, 0.90, deltaHue + 12.0);
 
     this.colorMain = colorFromHsl(stopMain.h, stopMain.s, stopMain.l);
     this.colorDeep = colorFromHsl(stopDeep.h, stopDeep.s, stopDeep.l);
     this.colorGold = colorFromHsl(stopGold.h, stopGold.s, stopGold.l);
-    this.colorJade = colorFromHsl(stopJade.h, stopJade.s, stopJade.l);
 
     // 2. 音频事件预烘焙
     const { music } = init;
@@ -269,6 +266,7 @@ export class PavilionScene implements MvScene {
       transparent: true,
       opacity: 0.80,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.firefliesPoints = new THREE.Points(fireflyGeo, fireflyMat);
     this.scene.add(this.firefliesPoints);
@@ -360,9 +358,10 @@ export class PavilionScene implements MvScene {
     roofRing.position.y = 1.55;
     this.pavilionGroup.add(roofRing);
 
-    // 四角鎏金宫灯
+    // 四角鎏金宫灯（与封面色彩联动，mono 模式下保持中性灰阶）
     const lanternGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.6, 6);
-    const lanternMat = new THREE.MeshBasicMaterial({ color: 0xffaa33 });
+    const lanternColor = this.init.palette.mono ? colorFromHsl(0, 0.0, 0.88) : this.colorGold;
+    const lanternMat = new THREE.MeshBasicMaterial({ color: lanternColor });
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.PI * 0.25;
       const lantern = new THREE.Mesh(lanternGeo, lanternMat);

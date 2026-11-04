@@ -74,14 +74,17 @@ export class EclipseScene implements MvScene {
     const seedRand = rng((seed ^ 0x66cc4422) >>> 0);
     const deltaHue = (seedRand() < 0.5 ? -1 : 1) * (6 + 10 * seedRand());
 
+    const isMono = tone.mono || init.palette.mono;
     const stopCorona = tuneCoverStop(tone.highlight, tone, 0.65, 0.96, 0.60, 0.98, deltaHue);
-    const stopMagma = tuneCoverStop(tone.bright, tone, 0.50, 0.85, 0.70, 0.98, deltaHue - 8.0);
+    const stopMagma = tuneCoverStop(tone.bright, tone, 0.50, 0.85, 0.70, 0.98, deltaHue);
     const stopDeep = tuneCoverStop(tone.dark, tone, 0.04, 0.16, 0.15, 0.50, deltaHue);
 
     this.colorCorona = colorFromHsl(stopCorona.h, stopCorona.s, stopCorona.l);
     this.colorMagma = colorFromHsl(stopMagma.h, stopMagma.s, stopMagma.l);
     this.colorObsidian = colorFromHsl(stopDeep.h, stopDeep.s, stopDeep.l);
-    this.colorLightning = colorFromHsl(stopCorona.h + 25.0, 0.45, 0.92);
+    this.colorLightning = isMono
+      ? colorFromHsl(stopCorona.h, 0.0, 0.92)
+      : colorFromHsl(stopCorona.h, 0.45, 0.92);
 
     // 2. 音频事件预烘焙
     const { music } = init;
@@ -303,6 +306,7 @@ export class EclipseScene implements MvScene {
       transparent: true,
       opacity: 0.0,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.lightningLines = new THREE.LineSegments(lightningGeo, this.lightningMaterial);
     this.scene.add(this.lightningLines);
@@ -514,10 +518,8 @@ export class EclipseScene implements MvScene {
     this.lightningMaterial.opacity = clamp01(snareFlash * 1.5);
 
     // 5. 更新 Drop 日冕冲击波环尺度
-    if (dropShock > 0.01) {
-      const shockScale = 1.0 + (1.0 - dropShock) * 22.0;
-      this.shockwaveRingMesh.scale.set(shockScale, shockScale, 1.0);
-    }
+    const shockScale = dropShock > 0.001 ? 1.0 + (1.0 - dropShock) * 22.0 : 1.0;
+    this.shockwaveRingMesh.scale.set(shockScale, shockScale, 1.0);
 
     // 6. 全局 Uniforms
     this.uniforms.uTime.value = t;

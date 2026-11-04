@@ -398,15 +398,136 @@ test('M2 4大新场景：实例化、变体机位、切点平滑连续性与任�
   }
 });
 
-test('M2 4大新场景：黑白封面中性灰保护与同色系微调联动实证', () => {
+test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 0.05)', () => {
   const { init } = buildMockFixture(true); // isMono = true
   const cathedral = new mods.CathedralScene(init, 'pulse');
   const highway = new mods.HighwayScene(init, 'pulse');
   const pavilion = new mods.PavilionScene(init, 'pulse');
   const eclipse = new mods.EclipseScene(init, 'pulse');
 
-  assert.ok(cathedral, 'CathedralScene mono 初始化成功');
-  assert.ok(highway, 'HighwayScene mono 初始化成功');
-  assert.ok(pavilion, 'PavilionScene mono 初始化成功');
-  assert.ok(eclipse, 'EclipseScene mono 初始化成功');
+  const calcSat = (color) => {
+    const srgb = { r: 0, g: 0, b: 0 };
+    color.getRGB(srgb, THREE.SRGBColorSpace);
+    const max = Math.max(srgb.r, srgb.g, srgb.b);
+    const min = Math.min(srgb.r, srgb.g, srgb.b);
+    const d = max - min;
+    const l = (max + min) * 0.5;
+    if (d < 1e-5) return 0;
+    return d / (1 - Math.abs(2 * l - 1) + 1e-6);
+  };
+
+  // 1. Cathedral 关键色彩与圣坛灯光饱和度断言
+  const cathColors = [
+    ['cathedral.colorMain', cathedral.colorMain],
+    ['cathedral.colorAccent', cathedral.colorAccent],
+    ['cathedral.colorBright', cathedral.colorBright],
+    ['cathedral.altarLight.color', cathedral.altarLight.color],
+  ];
+  for (const [name, col] of cathColors) {
+    const s = calcSat(col);
+    assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
+  }
+
+  // 2. Highway 关键色彩与尾灯饱和度断言
+  const highColors = [
+    ['highway.colorMain', highway.colorMain],
+    ['highway.colorAccent', highway.colorAccent],
+    ['highway.colorBright', highway.colorBright],
+    ['highway.tailLightsMesh.color', highway.tailLightsMesh.material.color],
+  ];
+  for (const [name, col] of highColors) {
+    const s = calcSat(col);
+    assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
+  }
+
+  // 3. Pavilion 关键色彩饱和度断言
+  const pavColors = [
+    ['pavilion.colorMain', pavilion.colorMain],
+    ['pavilion.colorGold', pavilion.colorGold],
+    ['pavilion.colorDeep', pavilion.colorDeep],
+  ];
+  for (const [name, col] of pavColors) {
+    const s = calcSat(col);
+    assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
+  }
+
+  // 4. Eclipse 关键色彩（重点检查原先强行染色的 colorLightning 与闪电材质）
+  const eclipColors = [
+    ['eclipse.colorCorona', eclipse.colorCorona],
+    ['eclipse.colorMagma', eclipse.colorMagma],
+    ['eclipse.colorObsidian', eclipse.colorObsidian],
+    ['eclipse.colorLightning', eclipse.colorLightning],
+    ['eclipse.lightningMaterial.color', eclipse.lightningMaterial.color],
+  ];
+  for (const [name, col] of eclipColors) {
+    const s = calcSat(col);
+    assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
+  }
+});
+
+test('M2 4大新场景：Cathedral 光束旋转与 Eclipse 冲击波尺度跨 Drop 与 Seek 严格幂等断言 (误差=0)', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+
+  // 1. Cathedral 光束旋转角退出 Drop 与 Seek 严格幂等断言
+  {
+    const shot = { scene: 'cathedral', start: 40, end: 64, variant: 'sanctuary', seed: 1, section: music.a.sections[3], sectionIndex: 3 };
+    const cDirect = new mods.CathedralScene(init, 'pulse');
+    cDirect.update({ t: 45, dt: 1 / 60, shotT: 5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    const rotDirect = cDirect.beamMeshes[0].rotation.z;
+
+    const cPlayed = new mods.CathedralScene(init, 'pulse');
+    // 在 Drop 峰值时刻更新 (t=40.5, dropFlash 高)
+    cPlayed.update({ t: 40.5, dt: 1 / 60, shotT: 0.5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    // 跨过 Drop 更新到 t=45 (dropFlash 归零)
+    cPlayed.update({ t: 45, dt: 1 / 60, shotT: 5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    const rotPlayed = cPlayed.beamMeshes[0].rotation.z;
+
+    assert.equal(
+      Math.abs(rotDirect - rotPlayed),
+      0,
+      `Cathedral 光束旋转角退出 Drop 后残留误差必须为 0: direct=${rotDirect} vs played=${rotPlayed}`,
+    );
+
+    // Seek 回非 Drop 段落 (t=5s)
+    const introShot = { scene: 'cathedral', start: 0, end: 8, variant: 'aisle', seed: 1, section: music.a.sections[0], sectionIndex: 0 };
+    cPlayed.update({ t: 5, dt: 1 / 60, shotT: 5, shot: introShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    const cIntro = new mods.CathedralScene(init, 'pulse');
+    cIntro.update({ t: 5, dt: 1 / 60, shotT: 5, shot: introShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    assert.equal(
+      Math.abs(cIntro.beamMeshes[0].rotation.z - cPlayed.beamMeshes[0].rotation.z),
+      0,
+      'Cathedral 光束旋转角跳转回 Intro 必须恢复基底角度且误差为 0',
+    );
+  }
+
+  // 2. Eclipse 冲击波尺度退出 Drop 与 Seek 严格幂等断言
+  {
+    const shot = { scene: 'eclipse', start: 40, end: 64, variant: 'canyon', seed: 1, section: music.a.sections[3], sectionIndex: 3 };
+    const eDirect = new mods.EclipseScene(init, 'pulse');
+    eDirect.update({ t: 45, dt: 1 / 60, shotT: 5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    const scaleDirect = eDirect.shockwaveRingMesh.scale.x;
+
+    const ePlayed = new mods.EclipseScene(init, 'pulse');
+    // 在 Drop 冲击波时刻更新 (t=41.5)
+    ePlayed.update({ t: 41.5, dt: 1 / 60, shotT: 1.5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    // 跨过 Drop 更新到 t=45
+    ePlayed.update({ t: 45, dt: 1 / 60, shotT: 5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    const scalePlayed = ePlayed.shockwaveRingMesh.scale.x;
+
+    assert.equal(
+      Math.abs(scaleDirect - scalePlayed),
+      0,
+      `Eclipse 冲击波环尺度退出 Drop 后残留误差必须为 0: direct=${scaleDirect} vs played=${scalePlayed}`,
+    );
+    assert.equal(scalePlayed, 1.0, 'Eclipse 冲击波环尺度在退出 Drop 后必须严格恢复为 1.0');
+
+    // Seek 回非 Drop 段落 (t=5s)
+    const introShot = { scene: 'eclipse', start: 0, end: 8, variant: 'corona', seed: 1, section: music.a.sections[0], sectionIndex: 0 };
+    ePlayed.update({ t: 5, dt: 1 / 60, shotT: 5, shot: introShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+    assert.equal(
+      ePlayed.shockwaveRingMesh.scale.x,
+      1.0,
+      'Eclipse 冲击波环尺度跳转回非 Drop 段落必须严格等于 1.0',
+    );
+  }
 });

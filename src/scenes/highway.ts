@@ -358,11 +358,14 @@ export class HighwayScene implements MvScene {
       1.25, 0.85, -8.0, 1.25, 0.85, -28.0,
     ]);
     tailLinesGeo.setAttribute('position', new THREE.BufferAttribute(tailPositions, 3));
+    const isMono = tone.mono || init.palette.mono;
+    const tailColor = isMono ? colorFromHsl(tone.mainHue, 0.0, 0.85) : new THREE.Color(0xff1844);
     const tailMat = new THREE.LineBasicMaterial({
-      color: 0xff1844,
+      color: tailColor,
       transparent: true,
       opacity: 0.95,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.tailLightsMesh = new THREE.LineSegments(tailLinesGeo, tailMat);
     this.scene.add(this.tailLightsMesh);
@@ -374,6 +377,7 @@ export class HighwayScene implements MvScene {
       transparent: true,
       opacity: 0.65,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.underglowMesh = new THREE.Mesh(underglowGeo, underglowMat);
     this.underglowMesh.rotation.x = -Math.PI / 2;
@@ -388,6 +392,7 @@ export class HighwayScene implements MvScene {
       transparent: true,
       opacity: 0.0,
       blending: THREE.AdditiveBlending,
+      depthWrite: false,
     });
     this.warpStreaksInstanced = new THREE.InstancedMesh(streakGeo, this.warpMaterial, NUM_WARP_STREAKS);
     const streakRand = rng((seed ^ 0x55aa3311) >>> 0);
