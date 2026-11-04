@@ -4,10 +4,10 @@
 //    随底鼓重拍泛起封面同源热惯性余晖，两侧高空激光阵列隐没于深黑空间中直接切穿干冰薄雾；
 // 2. 舞台中央视觉核心与镜面黑金地坪：远景舞台矗立 1:1 巨幅微距 RGB LED 点阵封面主屏与两侧 12 半音全彩频谱灯塔，
 //    下方设重工业超低音炮阵列台座、拉丝黑钛铝折面 DJ 控台与三维骨骼锐舞 DJ；全场铺设湿润黑曜石反光地面，1:1 菲涅尔倒映漫天彩光；
-// 3. 纯封面像素提取 6 槽渐变色板 + 双模式灯光色彩编排（空间平滑渐变 SPATIAL_GRADIENT / 全屏同色瞬切 UNISON_SWITCH）：
-//    - 100% 源自封面真实可见像素区域聚类（零虚构色相、零浅色饱和度夸大、自动剔除微小噪点杂色）；
-//    - 空间平滑渐变模式：同屏多色沿感知最短渐变路径排布，空间相邻的光扇、光束、圆锥与灯塔颜色严格相近渐变；
-//    - 全屏同色瞬切模式：全屏所有激光与舞台灯具锁定同一封面提取色 1，随军鼓/重音瞬时切换至封面提取色 2。
+// 3. 封面临时和谐随机重配色 + 6 槽同步激光色板与双模式色彩编排（SPATIAL_GRADIENT / UNISON_SWITCH）：
+//    - 基于播放随机种子在 OKLCh 感知空间执行保明度圆周平滑微分同胚变换（只改颜色，不改画面内容与明暗轮廓，
+//      原封面上同一大块颜色区域严格映射为单一连贯新色块，绝不分裂为多色碎块，且零污染原始封面纹理）；
+//    - 全场 6 槽激光渐变色板、光幕、光束、圆锥、灯塔、盲眼灯、水面倒影与歌词色调 100% 同步跟随重配色后的新封面变化。
 import * as THREE from 'three';
 import type { FrameCtx, MvScene, SceneInit, Shot } from './types.ts';
 import type { Section } from '../types.ts';
@@ -257,12 +257,17 @@ function orderSwatchesAsSmoothGradient(swatches: ExtractedCoverSwatch[]): Extrac
 
 /**
  * 为模式 B（全屏同色瞬切）构建高辨识度封面色轮换序列：
- * 去重近似色并按感知对比度最大化跳跃排序，保证每次全屏切换都干脆利落且 100% 源自封面。
+ * 优先在内部色槽 [1..4] 中按感知对比度最大化跳跃排序（避开模式 A 空间渐变的端点基槽 0 与 5），
+ * 保证模式 A <-> 模式 B 跨乐句切换及模式 B 内部每句切换时色槽均 100% 干脆跳变、绝不撞槽重复。
  */
 function buildDistinctUnisonOrder(ordered: ExtractedCoverSwatch[]): number[] {
-  let startIdx = 0;
+  const candidates = ordered.length >= 6
+    ? [1, 2, 3, 4]
+    : Array.from({ length: ordered.length }, (_, i) => i);
+
+  let startIdx = candidates[0] ?? 0;
   let bestProm = -1;
-  for (let i = 0; i < ordered.length; i++) {
+  for (const i of candidates) {
     const prom = ordered[i].rawShare * (0.28 + 0.72 * ordered[i].chromaD);
     if (prom > bestProm) {
       bestProm = prom;
@@ -270,35 +275,9 @@ function buildDistinctUnisonOrder(ordered: ExtractedCoverSwatch[]): number[] {
     }
   }
 
-  const distinct: number[] = [startIdx];
-  while (distinct.length < ordered.length) {
-    let nextCand = -1;
-    let bestMinD = -1;
-    for (let i = 0; i < ordered.length; i++) {
-      if (distinct.includes(i)) continue;
-      let minD = Infinity;
-      for (const dIdx of distinct) {
-        const dist = posDist(ordered[i].pos, ordered[dIdx].pos);
-        if (dist < minD) minD = dist;
-      }
-      if (minD > bestMinD) {
-        bestMinD = minD;
-        nextCand = i;
-      }
-    }
-    if (nextCand < 0 || bestMinD < 0.068) break;
-    distinct.push(nextCand);
-  }
-
-  // 保底确保至少有 2 个槽位参与切换（例如极度平涂的单色封面在深浅两档间切换）
-  if (distinct.length < 2 && ordered.length >= 2) {
-    const alt = startIdx === 0 ? ordered.length - 1 : 0;
-    distinct.push(alt);
-  }
-
-  // 贪心最大对比度跳跃排序，使相邻两次瞬切颜色反差最鲜明
-  const seq: number[] = [distinct[0]];
-  const rem = distinct.slice(1);
+  // 贪心最大感知对比度跳跃排序，使相邻两次瞬切颜色反差最鲜明且 4 槽互不重复
+  const seq: number[] = [startIdx];
+  const rem = candidates.filter(i => i !== startIdx);
   while (rem.length > 0) {
     const prev = seq[seq.length - 1];
     let bestK = 0;
@@ -313,6 +292,251 @@ function buildDistinctUnisonOrder(ordered: ExtractedCoverSwatch[]): number[] {
     seq.push(rem.splice(bestK, 1)[0]);
   }
   return seq;
+}
+
+/**
+ * 激光舞台封面临时和谐随机重配色参数（CPU 像素聚类与 GPU 巨幕/水面倒影严格同构）：
+ * - 零空间坐标依赖（纯色彩空间映射），保证原封面上同一色块区域绝不分裂；
+ * - 圆周平滑微分同胚 Φ(h) 满足 |dΦ/dh| ∈ [0.78, 1.22] 且整数阶周期无接缝，严格保持感知明度 L 不变。
+ */
+export interface CoverRecolorScheme {
+  enabled: boolean;
+  /** 原封面为黑白/无彩色时启用单色相和谐晕染，保留纯黑纯白与全部光影轮廓 */
+  monoTint: boolean;
+  /** 原封面主导色相角（OKLab 弧度 [-π, π]） */
+  domHue: number;
+  /** 临时随机目标主导色相角（OKLab 弧度 [-π, π]） */
+  targetHue: number;
+  /** 相对原主导色相的旋转角（角度制，便于测试断言） */
+  hueShiftDeg: number;
+  /** 色轮手性方向（+1 顺向保序旋转，-1 和谐镜像翻转） */
+  chirality: 1 | -1;
+  /** 平滑谐波阶数（1 或 2 严格整数，保证跨 ±π 分支切口 100% 连续无裂纹） */
+  warpOrder: 1 | 2;
+  /** 平滑谐波振幅（|warpOrder * warpAmp| <= 0.22） */
+  warpAmp: number;
+  /** 相对色域饱和度微调增益 [0.94..1.06] */
+  chromaGain: number;
+}
+
+const wrapAnglePi = (rad: number): number => {
+  let a = (rad + Math.PI) % (Math.PI * 2);
+  if (a < 0) a += Math.PI * 2;
+  return a - Math.PI;
+};
+
+const srgbU8ToLinear = (u8: number): number => {
+  const c = clampRange(u8 / 255, 0, 1);
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+};
+
+const linearToSrgbU8 = (lin: number): number => {
+  const x = clampRange(lin, 0, 1);
+  const s = x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+  return Math.round(clampRange(s, 0, 1) * 255);
+};
+
+/**
+ * 在固定 OKLab 感知明度 L 与色相方向 (cosH, sinH) 下，8 步二分精确求解线性 sRGB [0,1]^3 色域最大色度 C_max，
+ * 彻底杜绝色相大幅旋转时亮部通道溢出裁切或产生生硬断层色斑。
+ */
+export function maxLinearChromaInGamut(L: number, cosH: number, sinH: number): number {
+  const ka = 0.3963377774 * cosH + 0.2158037573 * sinH;
+  const kb = -0.1055613458 * cosH - 0.0638541728 * sinH;
+  const kc = -0.0894841775 * cosH - 1.2914855480 * sinH;
+  let lo = 0.0;
+  let hi = 0.37;
+  for (let i = 0; i < 8; i++) {
+    const mid = 0.5 * (lo + hi);
+    const l_ = L + mid * ka;
+    const m_ = L + mid * kb;
+    const s_ = L + mid * kc;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    const r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    const g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    const b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    if (
+      r >= -0.0005 && r <= 1.0005 &&
+      g >= -0.0005 && g <= 1.0005 &&
+      b >= -0.0005 && b <= 1.0005 &&
+      l_ >= 0.0 && m_ >= 0.0 && s_ >= 0.0
+    ) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+/**
+ * 对单个线性光 RGB 像素执行保明度 OKLCh 和谐重配色（与 GLSL 着色器 recolorCoverLinear 逐指令同构）。
+ */
+export function recolorLinearRgb(
+  lr: number,
+  lg: number,
+  lb: number,
+  scheme: CoverRecolorScheme,
+): [number, number, number] {
+  const r0 = clampRange(lr, 0, 1);
+  const g0 = clampRange(lg, 0, 1);
+  const b0 = clampRange(lb, 0, 1);
+  if (!scheme.enabled) return [r0, g0, b0];
+
+  const l = Math.cbrt(0.4122214708 * r0 + 0.5363325363 * g0 + 0.0514459929 * b0);
+  const m = Math.cbrt(0.2119034982 * r0 + 0.6806995451 * g0 + 0.1073969566 * b0);
+  const s = Math.cbrt(0.0883024619 * r0 + 0.2817188376 * g0 + 0.6299787005 * b0);
+  const L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+  const oa = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+  const ob = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+
+  if (L <= 0.004 || L >= 0.996) return [r0, g0, b0];
+
+  const C = Math.hypot(oa, ob);
+  let cosNew: number;
+  let sinNew: number;
+  let cNew: number;
+
+  if (scheme.monoTint) {
+    cosNew = Math.cos(scheme.targetHue);
+    sinNew = Math.sin(scheme.targetHue);
+    const maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+    const midArch = Math.sin(Math.PI * clampRange(L, 0, 1));
+    cNew = Math.min(maxNew * 0.985, maxNew * 0.40 * scheme.chromaGain * midArch);
+  } else {
+    if (C < 1e-5) return [r0, g0, b0];
+    const hOrig = Math.atan2(ob, oa);
+    const delta = hOrig - scheme.domHue;
+    const hNew = scheme.targetHue + scheme.chirality * delta + scheme.warpAmp * Math.sin(scheme.warpOrder * delta);
+    const cosOrig = oa / C;
+    const sinOrig = ob / C;
+    cosNew = Math.cos(hNew);
+    sinNew = Math.sin(hNew);
+    const maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
+    const maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+    const relSat = Math.min(1.0, C / Math.max(1e-4, maxOrig));
+    const blendedC = C * 0.35 + relSat * maxNew * 0.65;
+    const cCapped = Math.min(C * 1.28, blendedC) * scheme.chromaGain;
+    cNew = Math.min(maxNew * 0.985, cCapped);
+  }
+
+  const aNew = cNew * cosNew;
+  const bNew = cNew * sinNew;
+  const l_ = Math.max(0, L + 0.3963377774 * aNew + 0.2158037573 * bNew);
+  const m_ = Math.max(0, L - 0.1055613458 * aNew - 0.0638541728 * bNew);
+  const s_ = Math.max(0, L - 0.0894841775 * aNew - 1.2914855480 * bNew);
+  const l3 = l_ * l_ * l_;
+  const m3 = m_ * m_ * m_;
+  const s3 = s_ * s_ * s_;
+  return [
+    clampRange(4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3, 0, 1),
+    clampRange(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3, 0, 1),
+    clampRange(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3, 0, 1),
+  ];
+}
+
+/**
+ * 基于当次播放随机种子生成临时和谐封面配色方案：
+ * - 同一播放会话（含 Seek 与视频导出）确定性一致，不同次加载生成全新配色；
+ * - 色相偏转角锁定在 ±[52°, 180°] 显著新色区间，并施加平滑谐波张力保证整体配色协调悦目。
+ */
+export function buildHarmonicCoverRecolorScheme(
+  coverPixels: Uint8ClampedArray | undefined,
+  paletteMono: boolean,
+  seed: number,
+): CoverRecolorScheme {
+  let cosSum = 0;
+  let sinSum = 0;
+  const dList: number[] = [];
+
+  if (coverPixels && coverPixels.length >= 16) {
+    const totalPixels = coverPixels.length >>> 2;
+    const stride = Math.max(1, Math.floor(totalPixels / 4096));
+    for (let idx = 0; idx < totalPixels; idx += stride) {
+      const off = idx << 2;
+      if (coverPixels[off + 3] < 64) continue;
+      const r = coverPixels[off] / 255;
+      const g = coverPixels[off + 1] / 255;
+      const b = coverPixels[off + 2] / 255;
+      const v = Math.max(r, g, b);
+      if (v < 0.05) continue;
+      const d = v - Math.min(r, g, b);
+      dList.push(d);
+      if (d > 0.03) {
+        const lab = rgbToLab(r, g, b);
+        const c = Math.hypot(lab[1], lab[2]);
+        if (c > 0.015) {
+          const w = c * (0.35 + 0.65 * v);
+          cosSum += (lab[1] / c) * w;
+          sinSum += (lab[2] / c) * w;
+        }
+      }
+    }
+  }
+
+  dList.sort((a, b) => a - b);
+  const d90 = dList.length > 0 ? dList[Math.min(dList.length - 1, Math.floor(dList.length * 0.90))] : 0;
+  const hasRealColor = !paletteMono && (dList.length === 0 || d90 >= 0.045);
+  const domHue = Math.hypot(cosSum, sinSum) > 1e-5 ? Math.atan2(sinSum, cosSum) : 0.42;
+
+  const rand = rng(((seed ?? 0x9e3779b9) ^ 0x6c8e9cf5) >>> 0);
+  const shiftSign = rand() < 0.5 ? -1 : 1;
+  const shiftMagDeg = 52 + rand() * 128; // [52°, 180°]，确保每次随机配色与原封面明显不同且自然和谐
+  const hueShiftDeg = shiftSign * shiftMagDeg;
+  const targetHue = wrapAnglePi(domHue + (hueShiftDeg * Math.PI) / 180);
+  const chirality: 1 | -1 = rand() < 0.72 ? 1 : -1;
+  const warpOrder: 1 | 2 = rand() < 0.55 ? 1 : 2;
+  const maxAmp = 0.22 / warpOrder;
+  const warpAmp = (rand() * 2 - 1) * maxAmp;
+  const chromaGain = 0.94 + rand() * 0.12;
+
+  return {
+    enabled: true,
+    monoTint: !hasRealColor,
+    domHue,
+    targetHue,
+    hueShiftDeg,
+    chirality,
+    warpOrder,
+    warpAmp,
+    chromaGain,
+  };
+}
+
+/**
+ * 在内存中生成临时重配色后的封面像素副本（绝不就地修改传入的原始 coverPixels 数组）。
+ */
+export function recolorCoverPixels(
+  coverPixels: Uint8ClampedArray | undefined,
+  scheme: CoverRecolorScheme,
+): Uint8ClampedArray | undefined {
+  if (!coverPixels || coverPixels.length < 4) return coverPixels;
+  const out = new Uint8ClampedArray(coverPixels.length);
+  if (!scheme.enabled) {
+    out.set(coverPixels);
+    return out;
+  }
+  for (let off = 0; off < coverPixels.length; off += 4) {
+    const a = coverPixels[off + 3];
+    if (a === 0) {
+      out[off] = coverPixels[off];
+      out[off + 1] = coverPixels[off + 1];
+      out[off + 2] = coverPixels[off + 2];
+      out[off + 3] = 0;
+      continue;
+    }
+    const lr = srgbU8ToLinear(coverPixels[off]);
+    const lg = srgbU8ToLinear(coverPixels[off + 1]);
+    const lb = srgbU8ToLinear(coverPixels[off + 2]);
+    const [nr, ng, nb] = recolorLinearRgb(lr, lg, lb, scheme);
+    out[off] = linearToSrgbU8(nr);
+    out[off + 1] = linearToSrgbU8(ng);
+    out[off + 2] = linearToSrgbU8(nb);
+    out[off + 3] = a;
+  }
+  return out;
 }
 
 export interface CoverLaserPaletteResult {
@@ -333,13 +557,13 @@ export interface CoverLaserPaletteResult {
 }
 
 /**
- * 纯封面可见像素聚类提取 6 槽激光色板（零虚构色相、零浅色饱和度夸大、自动剔除 <2.2% 微小噪点杂色）：
- * - 直接对 init.coverPixels 可见区域执行 3D 感知体素密度滤波与 OKLab K-Means 聚类；
- * - 面积不足 2.2% 的细碎杂色（如建筑角落极细暗红线条、角标噪点）被彻底剔除，由封面大面积主色自然拆分为深浅相近色补齐；
+ * 基于重配色后的封面可见像素聚类提取 6 槽激光色板（全场激光与变换后的新封面色彩 100% 同步）：
+ * - 对临时重配色后的可见区域执行 3D 感知体素密度滤波与 OKLab K-Means 聚类；
+ * - 面积不足 2.2% 的细碎杂色被剔除，由大面积主色自然拆分为深浅相近色补齐；
  * - 最终 6 槽通过 6! 全局最短路径排成丝滑 1D 渐变，并生成高对比度全屏瞬切序列 unisonSlots。
  */
-function buildCoverLaserColors(init: SceneInit): CoverLaserPaletteResult {
-  const px = init.coverPixels;
+function buildCoverLaserColors(init: SceneInit, scheme: CoverRecolorScheme): CoverLaserPaletteResult {
+  const px = recolorCoverPixels(init.coverPixels, scheme);
   const samples: SamplePixel[] = [];
 
   if (px && px.length >= 16) {
@@ -372,10 +596,31 @@ function buildCoverLaserColors(init: SceneInit): CoverLaserPaletteResult {
     }
   }
 
-  // 检测黑白/无彩色封面（90% 分位真实色度差 < 0.045）
+  // 若无有效封面像素采样（如极简无纹理单元测试桩），则基于重配色后的 palette.signal / accent 构建同步激光色
+  if (samples.length < 8 && scheme.enabled) {
+    const sig = init.palette.signal;
+    const acc = init.palette.accent;
+    const [sr, sg, sb] = recolorLinearRgb(sig.r, sig.g, sig.b, scheme);
+    const [ar, ag, ab] = recolorLinearRgb(acc.r, acc.g, acc.b, scheme);
+    for (let k = 0; k < 24; k++) {
+      const u = k / 23;
+      const lr = lerp(sr, ar, u) * (0.55 + 0.45 * ((k % 4) / 3));
+      const lg = lerp(sg, ag, u) * (0.55 + 0.45 * ((k % 4) / 3));
+      const lb = lerp(sb, ab, u) * (0.55 + 0.45 * ((k % 4) / 3));
+      const r = linearToSrgbU8(lr) / 255;
+      const g = linearToSrgbU8(lg) / 255;
+      const b = linearToSrgbU8(lb) / 255;
+      const v = Math.max(r, g, b);
+      const m = Math.min(r, g, b);
+      const lab = rgbToLab(r, g, b);
+      samples.push({ r, g, b, v, d: v - m, p0: lab[0], p1: lab[1] * 2.1, p2: lab[2] * 2.1 });
+    }
+  }
+
+  // 检测重配色后仍为无彩色的退化情形（90% 分位真实色度差 < 0.045）
   const dSorted = samples.map(s => s.d).sort((a, b) => a - b);
   const d90 = dSorted.length > 0 ? dSorted[Math.min(dSorted.length - 1, Math.floor(dSorted.length * 0.90))] : 0;
-  if (init.palette.mono || samples.length < 8 || d90 < 0.045) {
+  if ((!scheme.enabled && init.palette.mono) || samples.length < 8 || d90 < 0.045) {
     const monoVs = [0.68, 0.73, 0.78, 0.83, 0.89, 0.94];
     const swatches = monoVs.map(v => clusterRgbToLaserSwatch(v, v, v, 1 / 6));
     const laserPalette = swatches.map(s => s.col);
@@ -386,7 +631,7 @@ function buildCoverLaserColors(init: SceneInit): CoverLaserPaletteResult {
       lyricSat: 0.04,
       laserPalette,
       laserCores,
-      unisonSlots: [5, 1, 4, 0],
+      unisonSlots: [4, 1, 3, 2],
       laserPrimary: laserPalette[1].clone(),
       laserSecondary: laserPalette[5].clone(),
       laserPrimaryCore: laserCores[1].clone(),
@@ -1107,6 +1352,102 @@ void main() {
 // ============================================================================
 // 2. 远景巨幅微距 LED 点阵封面主屏与两侧 12 半音全彩频谱灯塔着色器 (LED_MONOLITH)
 // ============================================================================
+const GLSL_COVER_RECOLOR_COMMON = /* glsl */ `
+uniform vec4 uRecolorParams; // (domHue, targetHue, warpAmp, chirality)
+uniform vec4 uRecolorExtra;  // (enabled, warpOrder, chromaGain, monoTint)
+
+float maxLinearChromaInGamut(float L, float cosH, float sinH) {
+  float ka = 0.3963377774 * cosH + 0.2158037573 * sinH;
+  float kb = -0.1055613458 * cosH - 0.0638541728 * sinH;
+  float kc = -0.0894841775 * cosH - 1.2914855480 * sinH;
+  float lo = 0.0;
+  float hi = 0.37;
+  for (int i = 0; i < 8; i++) {
+    float mid = 0.5 * (lo + hi);
+    float l_ = L + mid * ka;
+    float m_ = L + mid * kb;
+    float s_ = L + mid * kc;
+    float l = l_ * l_ * l_;
+    float m = m_ * m_ * m_;
+    float s = s_ * s_ * s_;
+    float r =  4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    float g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    float b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    if (
+      r >= -0.0005 && r <= 1.0005 &&
+      g >= -0.0005 && g <= 1.0005 &&
+      b >= -0.0005 && b <= 1.0005 &&
+      l_ >= 0.0 && m_ >= 0.0 && s_ >= 0.0
+    ) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+vec3 recolorCoverLinear(vec3 linRgb) {
+  vec3 c0 = clamp(linRgb, vec3(0.0), vec3(1.0));
+  if (uRecolorExtra.x < 0.5) return c0;
+
+  float l = pow(max(0.4122214708 * c0.r + 0.5363325363 * c0.g + 0.0514459929 * c0.b, 0.0), 1.0 / 3.0);
+  float m = pow(max(0.2119034982 * c0.r + 0.6806995451 * c0.g + 0.1073969566 * c0.b, 0.0), 1.0 / 3.0);
+  float s = pow(max(0.0883024619 * c0.r + 0.2817188376 * c0.g + 0.6299787005 * c0.b, 0.0), 1.0 / 3.0);
+  float L  = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+  float oa = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+  float ob = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+
+  if (L <= 0.004 || L >= 0.996) return c0;
+
+  float C = length(vec2(oa, ob));
+  float cosNew;
+  float sinNew;
+  float cNew;
+
+  if (uRecolorExtra.w > 0.5) {
+    cosNew = cos(uRecolorParams.y);
+    sinNew = sin(uRecolorParams.y);
+    float maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+    float midArch = sin(3.14159265359 * clamp(L, 0.0, 1.0));
+    cNew = min(maxNew * 0.985, maxNew * 0.40 * uRecolorExtra.z * midArch);
+  } else {
+    if (C < 0.00001) return c0;
+    float hOrig = atan(ob, oa);
+    float delta = hOrig - uRecolorParams.x;
+    float hNew = uRecolorParams.y + uRecolorParams.w * delta + uRecolorParams.z * sin(uRecolorExtra.y * delta);
+    float cosOrig = oa / C;
+    float sinOrig = ob / C;
+    cosNew = cos(hNew);
+    sinNew = sin(hNew);
+    float maxOrig = maxLinearChromaInGamut(L, cosOrig, sinOrig);
+    float maxNew = maxLinearChromaInGamut(L, cosNew, sinNew);
+    float relSat = min(1.0, C / max(0.0001, maxOrig));
+    float blendedC = C * 0.35 + relSat * maxNew * 0.65;
+    float cCapped = min(C * 1.28, blendedC) * uRecolorExtra.z;
+    cNew = min(maxNew * 0.985, cCapped);
+  }
+
+  float aNew = cNew * cosNew;
+  float bNew = cNew * sinNew;
+  float l_ = max(0.0, L + 0.3963377774 * aNew + 0.2158037573 * bNew);
+  float m_ = max(0.0, L - 0.1055613458 * aNew - 0.0638541728 * bNew);
+  float s_ = max(0.0, L - 0.0894841775 * aNew - 1.2914855480 * bNew);
+  float l3 = l_ * l_ * l_;
+  float m3 = m_ * m_ * m_;
+  float s3 = s_ * s_ * s_;
+  return clamp(
+    vec3(
+       4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+      -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+      -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
+    ),
+    vec3(0.0),
+    vec3(1.0)
+  );
+}
+`;
+
 const LED_WALL_VERT = /* glsl */ `
 varying vec2 vUv;
 varying vec3 vWorldPos;
@@ -1131,6 +1472,7 @@ uniform vec3 uLaserSecondary;
 uniform vec3 uEnvDark;
 varying vec2 vUv;
 varying vec3 vWorldPos;
+${GLSL_COVER_RECOLOR_COMMON}
 
 void main() {
   // 外围重型压铸黑钛金属边框与克制导光内嵌线（外侧 2.0%）
@@ -1146,15 +1488,18 @@ void main() {
     return;
   }
 
-  // 内部 1:1 完整封面采样：不反向缩放 UV，确保巨幕作为实体钢构屏与整个舞台随底鼓/军鼓同步微震
+  // 内部 1:1 完整封面采样：保持原始高清几何构图，施加保明度平滑和谐重配色，并兼容底鼓微幅 RGB 像素亚色散
   vec2 innerUv = (vUv - 0.018) / 0.964;
   vec2 sampleUv = clamp(innerUv, 0.002, 0.998);
 
   float chromaShift = (0.0008 * uKickPunch + 0.0010 * uSnarePunch) * uDropPower;
-  float r = texture2D(uCover, clamp(sampleUv + vec2(chromaShift, 0.0), 0.002, 0.998)).r;
-  float g = texture2D(uCover, sampleUv).g;
-  float b = texture2D(uCover, clamp(sampleUv - vec2(chromaShift, 0.0), 0.002, 0.998)).b;
-  vec3 texLinear = max(vec3(r, g, b), vec3(0.0));
+  vec3 texMid = recolorCoverLinear(max(texture2D(uCover, sampleUv).rgb, vec3(0.0)));
+  vec3 texLinear = texMid;
+  if (chromaShift > 0.00002) {
+    float r = recolorCoverLinear(max(texture2D(uCover, clamp(sampleUv + vec2(chromaShift, 0.0), 0.002, 0.998)).rgb, vec3(0.0))).r;
+    float b = recolorCoverLinear(max(texture2D(uCover, clamp(sampleUv - vec2(chromaShift, 0.0), 0.002, 0.998)).rgb, vec3(0.0))).b;
+    texLinear = vec3(r, texMid.g, b);
+  }
 
   // 微距 SMD LED 灯珠晶格：近距离呈现细腻点阵颗粒，远距离基于距离平滑收敛防摩尔纹
   float camDist = length(vWorldPos - cameraPosition);
@@ -1249,6 +1594,7 @@ varying vec3 vWorldPos;
 varying vec2 vUv;
 ${GLSL_HAZE_COMMON}
 ${GLSL_PALETTE_COMMON}
+${GLSL_COVER_RECOLOR_COMMON}
 
 void main() {
   vec3 P = vWorldPos;
@@ -1289,9 +1635,9 @@ void main() {
         vec2 cUv0 = clamp(mirrorUv, 0.01, 0.99);
         vec2 cUv1 = clamp(mirrorUv + vec2(0.0, 0.032), 0.01, 0.99);
         vec2 cUv2 = clamp(mirrorUv - vec2(0.0, 0.032), 0.01, 0.99);
-        vec3 s0 = max(texture2D(uCover, cUv0).rgb, vec3(0.0));
-        vec3 s1 = max(texture2D(uCover, cUv1).rgb, vec3(0.0));
-        vec3 s2 = max(texture2D(uCover, cUv2).rgb, vec3(0.0));
+        vec3 s0 = recolorCoverLinear(max(texture2D(uCover, cUv0).rgb, vec3(0.0)));
+        vec3 s1 = recolorCoverLinear(max(texture2D(uCover, cUv1).rgb, vec3(0.0)));
+        vec3 s2 = recolorCoverLinear(max(texture2D(uCover, cUv2).rgb, vec3(0.0)));
         screenRefl = (s0 * 0.54 + (s1 + s2) * 0.23) * inX * inY * (0.56 + 0.30 * uSectionEnergy);
       }
 
@@ -2394,6 +2740,7 @@ function buildCurvedVisorGeometry(matTag = 0): THREE.BufferGeometry {
 export class LaserScene implements MvScene {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
+  readonly recolorScheme: CoverRecolorScheme;
   readonly pal: CoverLaserPaletteResult;
   private readonly rig: LyricRig;
   private readonly soft: boolean;
@@ -2430,15 +2777,37 @@ export class LaserScene implements MvScene {
 
   constructor(init: SceneInit, look: 'pulse' | 'ballad' = 'pulse') {
     this.soft = look === 'ballad';
-    const pal = buildCoverLaserColors(init);
+    const recolorScheme = buildHarmonicCoverRecolorScheme(
+      init.coverPixels,
+      init.palette.mono,
+      init.seed ?? 0x9e3779b9,
+    );
+    this.recolorScheme = recolorScheme;
+    const pal = buildCoverLaserColors(init, recolorScheme);
     this.pal = pal;
     this.scene.background = pal.bgHex;
     this.camera = new THREE.PerspectiveCamera(CAM_FOV, init.aspect, 0.2, 240);
     this.scene.add(this.camera);
 
-    // 1. 初始化全局着色器 Uniforms（动态色彩向量独立 clone，保留 this.pal 作为封面纯正基准）
+    // 1. 初始化全局着色器 Uniforms（动态色彩向量独立 clone，主屏与水面倒影共享临时重配色参数）
     this.uniforms = {
       uCover: { value: init.cover },
+      uRecolorParams: {
+        value: new THREE.Vector4(
+          recolorScheme.domHue,
+          recolorScheme.targetHue,
+          recolorScheme.warpAmp,
+          recolorScheme.chirality,
+        ),
+      },
+      uRecolorExtra: {
+        value: new THREE.Vector4(
+          recolorScheme.enabled ? 1 : 0,
+          recolorScheme.warpOrder,
+          recolorScheme.chromaGain,
+          recolorScheme.monoTint ? 1 : 0,
+        ),
+      },
       uTime: { value: 0 },
       uBeatPos: { value: 0 },
       uSectionEnergy: { value: 0.7 },
@@ -3547,7 +3916,8 @@ export class LaserScene implements MvScene {
     // 3. 灯光师控台 Cue 阵型与双色彩编排模式（纯函数确定性决策）
     // - 模式 A (SPATIAL_GRADIENT)：同屏同时呈现丰富的封面提取色，按三维空间位置平滑映射，相邻激光颜色严格相近，形成丝滑渐变光场；
     // - 模式 B (UNISON_SWITCH)：全屏所有激光、光幕、灯塔、气柱锁定同一封面提取色 1，仅在每句歌词开头时间戳瞬切至另一封面提取色 2。
-    const barsIntoSec = Math.max(0, Math.floor((t - sec.start) / Math.max(0.5, beatDur * music.meter)));
+    const secSpan = Math.max(0, sec.end - sec.start - 1e-4);
+    const barsIntoSec = Math.floor(clampRange(t - sec.start, 0, secSpan) / Math.max(0.5, beatDur * music.meter));
     const cueMode = isDrop || isChorus
       ? (shot.variant === 'tunnel' ? 1 : Math.floor(barsIntoSec / 2) % 4)
       : -1;
@@ -3610,7 +3980,7 @@ export class LaserScene implements MvScene {
         activeUnisonSlot = uRing[fastStep % uRing.length];
       } else {
         // 【纯音乐 / 间奏 / Drop 纯乐段落 Fallback】：按 4 小节乐句下拍稳步推进色槽，杜绝高频抽搐跳色
-        const phraseIdx = Math.max(0, Math.floor(beatInfo.bar / 4));
+        const phraseIdx = Math.max(0, Math.floor(barsIntoSec / 4));
         activeUnisonSlot = uRing[phraseIdx % uRing.length];
       }
       palBase = activeUnisonSlot;

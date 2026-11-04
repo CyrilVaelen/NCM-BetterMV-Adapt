@@ -260,6 +260,8 @@ before(async () => {
     FountainScene: fountainMod.FountainScene,
     StarryScene: starryMod.StarryScene,
     LaserScene: laserMod.LaserScene,
+    buildHarmonicCoverRecolorScheme: laserMod.buildHarmonicCoverRecolorScheme,
+    recolorCoverPixels: laserMod.recolorCoverPixels,
     BlackHoleScene: blackholeMod.BlackHoleScene,
   };
 });
@@ -1824,6 +1826,191 @@ test('花坛喷泉与星空：极限高密度琶音与双踩底鼓下旧涟漪�
       assert.ok(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w) < 1e-6);
     }
   }
+});
+
+test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明度与大色块拓扑连贯（绝不分裂）且全场激光颜色同步变化', () => {
+  const m = mods;
+  const { music, lyrics, palette, init } = buildMockFixture();
+
+  const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+  const srgbToOklab = (r, g, b) => {
+    const lr = toLinear(r);
+    const lg = toLinear(g);
+    const lb = toLinear(b);
+    const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m1 = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l + 0.793617785 * m1 - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m1 + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m1 - 0.808675766 * s,
+    ];
+  };
+  const circHueDiffDeg = (h1, h2) => {
+    let d = ((h1 - h2 + Math.PI) % (Math.PI * 2));
+    if (d < 0) d += Math.PI * 2;
+    return (Math.abs(d - Math.PI) * 180) / Math.PI;
+  };
+
+  // 构造 48x48 复合封面：
+  // 1) 大面积连贯色块 A（深绯红至亮绯红光影渐变 + 细微自然色相起伏，模拟一整块玫瑰背景）
+  // 2) 次级色块 D（横跨 atan2 ±π 分支切口的青绿渐变，严苛检验圆周切口零裂纹）
+  // 3) 银白发丝 / 纯白标题与深炭黑阴影（检验画面无彩色内容不被染花）
+  const W = 48;
+  const H = 48;
+  const srcPixels = new Uint8ClampedArray(W * H * 4);
+  const regionAIndices = [];
+  const regionDIndices = [];
+  const neutralIndices = [];
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const o = idx * 4;
+      const u = x / (W - 1);
+      const v = y / (H - 1);
+      if (y < 28) {
+        // 一大块连贯绯红色区域 A（含明暗光影梯度与轻微色相过渡）
+        const shade = 0.52 + 0.44 * u;
+        srcPixels[o] = Math.round(224 * shade);
+        srcPixels[o + 1] = Math.round((26 + 14 * v) * shade);
+        srcPixels[o + 2] = Math.round((48 - 10 * v) * shade);
+        srcPixels[o + 3] = 255;
+        regionAIndices.push(idx);
+      } else if (y < 40) {
+        // 次级青蓝色块 D（故意横跨 OKLab b≈0, a<0 的 ±π 分支切口）
+        const shade = 0.58 + 0.36 * u;
+        srcPixels[o] = Math.round(18 * shade);
+        srcPixels[o + 1] = Math.round((192 - 16 * v) * shade);
+        srcPixels[o + 2] = Math.round((168 + 26 * v) * shade);
+        srcPixels[o + 3] = 255;
+        regionDIndices.push(idx);
+      } else {
+        // 前景银白发丝、白字与暗部炭黑轮廓
+        const g = x < 16 ? 246 : x < 32 ? 196 : 20;
+        srcPixels[o] = g;
+        srcPixels[o + 1] = g;
+        srcPixels[o + 2] = x < 32 && x >= 16 ? g + 2 : g;
+        srcPixels[o + 3] = 255;
+        neutralIndices.push(idx);
+      }
+    }
+  }
+  const srcSnapshot = new Uint8ClampedArray(srcPixels);
+
+  const origLabs = Array.from({ length: W * H }, (_, idx) => {
+    const o = idx * 4;
+    return srgbToOklab(srcPixels[o] / 255, srcPixels[o + 1] / 255, srcPixels[o + 2] / 255);
+  });
+  const origHueA = Math.atan2(origLabs[regionAIndices[0]][2], origLabs[regionAIndices[0]][1]);
+
+  // 遍历 16 组不同随机播放种子，验证重配色规则
+  const seenPrimaryLasers = [];
+  for (let sIdx = 0; sIdx < 16; sIdx++) {
+    const testSeed = (0x13579bdf + sIdx * 0x9e3779b9) >>> 0;
+    const scheme = m.buildHarmonicCoverRecolorScheme(srcPixels, false, testSeed);
+    assert.equal(scheme.enabled, true);
+    assert.equal(scheme.monoTint, false);
+    assert.ok(Math.abs(scheme.hueShiftDeg) >= 52, `随机色相旋转角应显著偏离原封面 (>=52°)，实测 ${scheme.hueShiftDeg.toFixed(1)}°`);
+
+    const recolored = m.recolorCoverPixels(srcPixels, scheme);
+    // 1. 原始像素缓冲区绝不可被污染
+    assert.deepEqual(srcPixels, srcSnapshot, '重配色必须只生成临时副本，不得就地修改原始 coverPixels');
+
+    // 2. 逐像素验证画面内容明度 L 恒定（只改颜色，不改明暗轮廓）
+    for (let idx = 0; idx < W * H; idx++) {
+      const o = idx * 4;
+      const newLab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
+      const dL = Math.abs(newLab[0] - origLabs[idx][0]);
+      assert.ok(
+        dL < 0.016,
+        `[seed#${sIdx}] 像素 #${idx} 感知明度 L 必须保持不变以保留画面内容: origL=${origLabs[idx][0].toFixed(4)}, newL=${newLab[0].toFixed(4)}`,
+      );
+    }
+
+    // 3. 验证无彩色前景（白发、白字、暗影）保持干净低饱和，不被染成刺眼荧光色
+    for (const idx of neutralIndices) {
+      const o = idx * 4;
+      const newLab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
+      const newC = Math.hypot(newLab[1], newLab[2]);
+      assert.ok(newC < 0.018, `[seed#${sIdx}] 无彩色像素 #${idx} 变换后应保持洁净中性灰白，实测 C=${newC.toFixed(4)}`);
+    }
+
+    // 4. 验证大色块拓扑连贯性：原来一大块 A 颜色区域绝不能分裂成 B 色 + C 色！
+    const calcClusterStats = (indices) => {
+      let cosS = 0;
+      let sinS = 0;
+      const hues = [];
+      for (const idx of indices) {
+        const o = idx * 4;
+        const lab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
+        const h = Math.atan2(lab[2], lab[1]);
+        cosS += Math.cos(h);
+        sinS += Math.sin(h);
+        hues.push(h);
+      }
+      const meanH = Math.atan2(sinS, cosS);
+      let maxSpread = 0;
+      for (const h of hues) {
+        const d = circHueDiffDeg(h, meanH);
+        if (d > maxSpread) maxSpread = d;
+      }
+      return { meanH, maxSpread };
+    };
+
+    const statsA = calcClusterStats(regionAIndices);
+    const statsD = calcClusterStats(regionDIndices);
+    assert.ok(
+      statsA.maxSpread < 14.0,
+      `[seed#${sIdx}] 原封面大面积色块 A 变换后必须保持单一连贯颜色，严禁分裂为多色（最大色相离散度=${statsA.maxSpread.toFixed(2)}°）`,
+    );
+    assert.ok(
+      statsD.maxSpread < 14.0,
+      `[seed#${sIdx}] 跨 ±π 切口的次级色块 D 变换后同样必须保持单一连贯无裂纹（最大色相离散度=${statsD.maxSpread.toFixed(2)}°）`,
+    );
+    assert.ok(
+      circHueDiffDeg(statsA.meanH, origHueA) > 38.0,
+      `[seed#${sIdx}] 色块 A 应实质性变换为全新色相（实测偏移=${circHueDiffDeg(statsA.meanH, origHueA).toFixed(1)}°）`,
+    );
+    assert.ok(
+      circHueDiffDeg(statsA.meanH, statsD.meanH) > 45.0,
+      `[seed#${sIdx}] 原封面上彼此区分的 A、D 两大区域在重配色后仍应保持清晰的和谐对比关系（色相差=${circHueDiffDeg(statsA.meanH, statsD.meanH).toFixed(1)}°）`,
+    );
+
+    // 5. 验证对应激光颜色同步跟随重配色后的封面变化，且着色器 Uniform 完整同步
+    if (sIdx < 6) {
+      const customCover = new THREE.DataTexture(srcPixels, W, H, THREE.RGBAFormat);
+      customCover.needsUpdate = true;
+      const laserScene = new m.LaserScene(
+        { ...init, cover: customCover, coverPixels: srcPixels, music, lyrics, seed: testSeed },
+        'pulse',
+      );
+      assert.equal(laserScene.uniforms.uRecolorExtra.value.x, 1, '主屏与水面倒影重配色开关应激活');
+      assert.ok(Math.abs(laserScene.uniforms.uRecolorParams.value.y - scheme.targetHue) < 1e-6);
+
+      // 提取激光主色在 OKLab 中的色相，确认其必然贴合变换后的新封面色块 A 或 D（而非停留在原封面旧绯红色）
+      const lp = laserScene.pal.laserPrimary;
+      const lpSrgb = [Math.pow(lp.x, 1 / 2.2), Math.pow(lp.y, 1 / 2.2), Math.pow(lp.z, 1 / 2.2)];
+      const lpLab = srgbToOklab(lpSrgb[0], lpSrgb[1], lpSrgb[2]);
+      const lpHue = Math.atan2(lpLab[2], lpLab[1]);
+      const distToNewCover = Math.min(circHueDiffDeg(lpHue, statsA.meanH), circHueDiffDeg(lpHue, statsD.meanH));
+      assert.ok(
+        distToNewCover < 20.0,
+        `[seed#${sIdx}] 激光主色调必须同步跟随变换后的新封面颜色（与新封面主色块色相误差=${distToNewCover.toFixed(1)}°）`,
+      );
+      seenPrimaryLasers.push(lp.clone());
+    }
+  }
+
+  // 确认不同随机种子下激光颜色确实呈现出明显不同的多彩主题变化
+  let maxLaserDiff = 0;
+  for (let i = 0; i < seenPrimaryLasers.length; i++) {
+    for (let j = i + 1; j < seenPrimaryLasers.length; j++) {
+      const d = seenPrimaryLasers[i].distanceTo(seenPrimaryLasers[j]);
+      if (d > maxLaserDiff) maxLaserDiff = d;
+    }
+  }
+  assert.ok(maxLaserDiff > 0.35, `不同随机种子下全场激光颜色应随新封面同步呈现丰富变化，实测最大向量差=${maxLaserDiff.toFixed(3)}`);
 });
 
 
