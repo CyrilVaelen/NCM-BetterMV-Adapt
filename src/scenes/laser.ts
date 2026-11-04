@@ -31,7 +31,7 @@ const STAGE_LIP_Z = -46.8;
 
 /** 四大灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
 const SHEET_EMITTER_COUNT = 12;
-const BEAM_EMITTER_COUNT = 88;
+const BEAM_EMITTER_COUNT = 152;
 const CONE_LAYER_COUNT = 2;
 const CRYO_JET_COUNT = 8;
 const BLINDER_COUNT = 28;
@@ -84,10 +84,12 @@ interface BeamEmitterSpec {
   x: number;
   y: number;
   z: number;
-  /** 0=顶梁24束梳排, 1=台唇20束仰射, 2=左廊12束, 3=右廊12束, 4=灯塔外翼20束竖排, 5=DJ台后16束孔雀皇冠 */
+  /** 0=顶梁42束高密梳排, 1=台唇28束仰射, 2=左廊32束下射折光, 3=右廊32束下射折光, 4=DJ台后18束孔雀皇冠 */
   group: number;
   /** 组内序号 */
   slot: number;
+  /** 组内归一化进度 [0..1] */
+  slotNorm: number;
   /** 归一化横向位置 [-1..1] */
   normX: number;
 }
@@ -1071,38 +1073,44 @@ function buildSheetEmitters(): SheetEmitterSpec[] {
   return list;
 }
 
-/** 构建 88 座严整对称单束激光发射头坐标（左右高空下射走廊各加密至 18 束，共 36 束斜劈水面反射光廊） */
+/** 构建 152 座严整对称高密单束激光发射头坐标（顶冠 42 束 + 台唇 28 束 + 左右高空下射水镜走廊各 32 束共 64 束 + DJ 皇冠 18 束） */
 function buildBeamEmitters(): BeamEmitterSpec[] {
   const list: BeamEmitterSpec[] = [];
-  // Group 0 (24 束): 舞台巨幕顶冠等距高密梳状激光排
-  for (let i = 0; i < 24; i++) {
-    const u = (i / 23) * 2 - 1;
-    list.push({ x: u * 15.6, y: 18.08, z: -51.8, group: 0, slot: i, normX: u });
+  // Group 0 (42 束): 舞台巨幕顶冠高密竖琴梳状激光排（间距约 0.77m）
+  for (let i = 0; i < 42; i++) {
+    const slotNorm = i / 41;
+    const u = slotNorm * 2 - 1;
+    list.push({ x: u * 15.8, y: 18.08, z: -51.8, group: 0, slot: i, slotNorm, normX: u });
   }
-  // Group 1 (16 束): 舞台前缘低位对称仰射激光排（紧贴 Stage Lip）
-  for (let i = 0; i < 16; i++) {
-    const u = (i / 15) * 2 - 1;
-    list.push({ x: u * 14.2, y: STAGE_DECK_H + 0.18, z: STAGE_LIP_Z + 0.25, group: 1, slot: i, normX: u });
+  // Group 1 (28 束): 舞台前缘低位高密对称仰射激光排（紧贴 Stage Lip，间距约 1.06m）
+  for (let i = 0; i < 28; i++) {
+    const slotNorm = i / 27;
+    const u = slotNorm * 2 - 1;
+    list.push({ x: u * 14.4, y: STAGE_DECK_H + 0.18, z: STAGE_LIP_Z + 0.25, group: 1, slot: i, slotNorm, normX: u });
   }
-  // Group 2 (18 束): 走廊左侧高空等距密集下射激光排（间距约 2.47m，斜向下切入水面并激起镜面反射）
+  // Group 2 (32 束): 走廊左侧高空超密等距下射激光排（间距约 1.40m，斜向下切入水面并激起绵密 V 形镜面反射）
+  for (let i = 0; i < 32; i++) {
+    const slotNorm = i / 31;
+    const z = -47.0 + slotNorm * 43.4;
+    list.push({ x: -16.2, y: 14.6, z, group: 2, slot: i, slotNorm, normX: -1 });
+  }
+  // Group 3 (32 束): 走廊右侧高空超密等距下射激光排（与左侧严格镜像对称，共 64 束高密斜射水镜光廊）
+  for (let i = 0; i < 32; i++) {
+    const slotNorm = i / 31;
+    const z = -47.0 + slotNorm * 43.4;
+    list.push({ x: 16.2, y: 14.6, z, group: 3, slot: i, slotNorm, normX: 1 });
+  }
+  // Group 4 (18 束): DJ 控台后沿高密对称孔雀皇冠仰射扇排（由 DJ 身后底座向前上方对称盛开，间距约 0.42m）
   for (let i = 0; i < 18; i++) {
-    const z = -46.5 + (i / 17) * 42.0;
-    list.push({ x: -16.2, y: 14.6, z, group: 2, slot: i, normX: -1 });
-  }
-  // Group 3 (18 束): 走廊右侧高空等距密集下射激光排（与左侧严格对称，共 36 束高密斜射光廊）
-  for (let i = 0; i < 18; i++) {
-    const z = -46.5 + (i / 17) * 42.0;
-    list.push({ x: 16.2, y: 14.6, z, group: 3, slot: i, normX: 1 });
-  }
-  // Group 4 (12 束): DJ 控台后沿对称孔雀皇冠仰射扇排（由 DJ 身后底座向前上方对称盛开）
-  for (let i = 0; i < 12; i++) {
-    const u = (i / 11) * 2 - 1;
+    const slotNorm = i / 17;
+    const u = slotNorm * 2 - 1;
     list.push({
-      x: u * 3.4,
+      x: u * 3.6,
       y: STAGE_DECK_H + 0.52,
       z: -50.55,
       group: 4,
       slot: i,
+      slotNorm,
       normX: u * 0.45,
     });
   }
@@ -2293,16 +2301,16 @@ void main() {
   float u = vSheetUv.x + (vWorldPos.y < 0.0 ? sheetRipple * 0.016 * subDepth : 0.0); // [-1..1]
   float r = vSheetUv.y; // [0..1]
 
-  // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端刀锋般锐利明亮，内部保留通透低底膜
+  // 1. 振镜折返边缘驻留增亮（Galvo Dwell）：扇面左右两端刀锋般锐利明亮，内部保留通透低底膜凸显高密光丝
   float absU = abs(u);
   if (absU > 1.03) discard;
   float edgeOuter = exp(-pow((1.0 - min(1.0, absU)) * 38.0, 2.0)) * 1.24;
-  float interiorFill = (1.0 - smoothstep(0.97, 1.0, absU)) * (0.026 + 0.036 * pow(min(1.0, absU), 2.0));
+  float interiorFill = (1.0 - smoothstep(0.97, 1.0, absU)) * (0.018 + 0.026 * pow(min(1.0, absU), 2.0));
 
-  // 2. 单层纯净等距振镜分束丝（18 根对称锐利光丝，消除双频摩尔干涉杂纹与高频噪点）
+  // 2. 单层高密纯净等距振镜分束丝（每座扇面加密至 34 根对称针尖细丝，消除双频摩尔杂纹同时大幅提升光幕梳齿密度）
   float ionize = smoothstep(0.58, 1.35, vPower);
-  float fingerWave = 0.5 + 0.5 * cos(u * 56.5487);
-  float fingers = pow(fingerWave, 14.0) * (0.72 + 0.50 * ionize);
+  float fingerWave = 0.5 + 0.5 * cos(u * 106.8142);
+  float fingers = pow(fingerWave, 22.0) * (0.78 + 0.54 * ionize);
 
   // 3. 高对比度 3D 干冰烟雾湍流云纹：浓烟处丁达尔散射爆亮，稀薄处深邃通透，拉大空间明暗层次
   vec2 hazeCoord = vWorldPos.xz * 0.088 + vec2(vWorldPos.y * 0.065, -uTime * 0.22);
@@ -2424,10 +2432,10 @@ void main() {
     ? abs(vBeamUv.y + rippleVal * 0.13 * subDepth)
     : abs(vBeamUv.y);
 
-  // 重拍电离跃迁：低功率时呈柔彩细丝，重拍高功率时中心爆发出锐利的电离炽白亮芯
+  // 重拍电离跃迁：高密阵列下收束单束晕圈与针尖亮芯，确保 152 束密集排布时依然根根分明不糊成一片
   float ionBoost = smoothstep(0.55, 1.40, vPower);
-  float core = exp(-d * d * mix(74.0, 120.0, ionBoost));
-  float corona = exp(-d * 4.0) * (0.48 + 0.28 * ionBoost);
+  float core = exp(-d * d * mix(92.0, 148.0, ionBoost));
+  float corona = exp(-d * 5.2) * (0.34 + 0.24 * ionBoost);
 
   // 发射口起点高强星芒 + 触水点（y ≈ 0）激光击中水面激起的璀璨散射亮斑与水波光环！
   float emitterHotspot = exp(-s * 36.0) * exp(-d * d * 20.0) * (0.95 + 0.55 * ionBoost) * (1.0 - vMirror * 0.55);
@@ -2460,7 +2468,7 @@ void main() {
            + vec3(0.20 * ionBoost) * pow(core, 3.2)
            + vec3(0.16) * waterImpact;
 
-  float alpha = (((core * (1.05 + 0.45 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.46) * mediumWeight + waterImpact * 0.52) * vPower * 0.78;
+  float alpha = (((core * (1.08 + 0.46 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.44) * mediumWeight + waterImpact * 0.50) * vPower * 0.74;
   alpha *= (1.0 - 0.88 * uBlackout);
 
   if (alpha < 0.003) discard;
@@ -2534,10 +2542,10 @@ void main() {
   float theta = vConeUv.x * 6.2831853 + uConeSpin * vSpinDir + (vWorldPos.y < 0.0 ? coneRipple * 0.010 * coneSubDepth : 0.0);
   float s = vConeUv.y;
 
-  // Pangolin BEYOND 标志性纯净断线圆锥花式：24 束等距锐利射线 + 舒展丝滑的圆周明暗流转
-  float rayWave = cos(theta * 24.0);
-  float sharpRay = pow(max(0.0, rayWave), 28.0);
-  float softSheet = 0.014 + 0.028 * pow(max(0.0, rayWave), 3.0);
+  // Pangolin BEYOND 标志性纯净高密断线圆锥花式：每环加密至 44 束等距针尖射线（双环反向交织共 88 束）+ 丝滑圆周明暗流转
+  float rayWave = cos(theta * 44.0);
+  float sharpRay = pow(max(0.0, rayWave), 38.0);
+  float softSheet = 0.010 + 0.020 * pow(max(0.0, rayWave), 3.0);
 
   // 圆周宽波流转（Azimuthal Chaser）+ 轴向舒展断线节拍门控
   float azimChase = 0.22 + 1.15 * pow(0.5 + 0.5 * cos(theta * 2.0 - uTime * 3.8 * sign(vSpinDir)), 2.2);
@@ -3376,9 +3384,9 @@ export class LaserScene implements MvScene {
     return { posAttr, stateAttr, coords };
   }
 
-  /** 构建振镜扫描体积光膜网格（横向 36 段细分以呈现丝滑的正弦波浪 Liquid Sky 折痕） */
+  /** 构建振镜扫描体积光膜网格（横向 56 段细分以细腻承载 34 根振镜分束丝与正弦波浪 Liquid Sky 折痕） */
   private buildLaserSheets() {
-    const segX = 36;
+    const segX = 56;
     const segZ = 16;
     const positions: number[] = [];
     const indices: number[] = [];
@@ -3460,7 +3468,7 @@ export class LaserScene implements MvScene {
     return { anglesAttr, styleAttr };
   }
 
-  /** 构建 88 束高锐度单束激光与水面镜面反射几何体（轴向 24 段细分确保触水折返处丝滑衔接） */
+  /** 构建 152 束高锐度密集单束激光与水面镜面反射几何体（轴向 24 段细分确保触水折返处丝滑衔接） */
   private buildLaserBeams() {
     const basePlane = new THREE.PlaneGeometry(1, 1, 24, 1);
     basePlane.translate(0.5, 0, 0);
@@ -3525,9 +3533,9 @@ export class LaserScene implements MvScene {
     return { startAttr, endAttr, styleAttr };
   }
 
-  /** 构建双层反向旋转纯净断线激光锥笼（含地面镜像） */
+  /** 构建双层反向旋转高密断线激光锥笼（圆周 144 段细分承载每层 44 束锐利射线，含地面镜像） */
   private buildLaserCones(): THREE.InstancedBufferAttribute {
-    const baseGrid = new THREE.PlaneGeometry(1, 1, 96, 22);
+    const baseGrid = new THREE.PlaneGeometry(1, 1, 144, 24);
     baseGrid.translate(0.5, 0.5, 0);
 
     const total = CONE_LAYER_COUNT * 2;
@@ -4312,21 +4320,21 @@ export class LaserScene implements MvScene {
       let beamPower = 0;
 
       if (isBreak) {
-        // 间奏空灵段：DJ 皇冠 4 束对称仰望星芒 + 左右侧廊每隔 3 束静谧柔光轻触水面反射
-        if (b.group === 4 && (b.slot === 1 || b.slot === 4 || b.slot === 7 || b.slot === 10)) {
-          const fanU = (b.slot / 11) * 2 - 1;
+        // 间奏空灵段：DJ 皇冠 6 束对称仰望星芒 + 左右侧廊隔束（各 16 束）静谧柔光轻触水面反射
+        if (b.group === 4 && (b.slot === 1 || b.slot === 4 || b.slot === 7 || b.slot === 10 || b.slot === 13 || b.slot === 16)) {
+          const fanU = b.slotNorm * 2 - 1;
           tx = fanU * 14.0;
           ty = 16.5;
           tz = -14.0;
           beamPower = 0.16 + 0.20 * hatSparkle;
-        } else if ((b.group === 2 || b.group === 3) && (b.slot % 3 === 1)) {
+        } else if ((b.group === 2 || b.group === 3) && (b.slot % 2 === 1)) {
           const sideSign = b.group === 2 ? -1 : 1;
           const tgt = setWaterBounceTarget(b, sideSign * 6.4, b.z + 9.0, 0.52);
           tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
           beamPower = 0.14 + 0.16 * hatSparkle;
         }
       } else if (isBuild) {
-        // Build 蓄能爬升：顶冠 24 束与左右高空 36 束对称向水面中心收拢聚光并激起反射光浪
+        // Build 蓄能爬升：顶冠 42 束与左右高空 64 束对称向水面中心收拢聚光并激起绵密反射光浪
         const buildFreq = buildProgress > 0.65 ? 4.0 : 2.0;
         if (b.group === 0) {
           const distCenter = Math.abs(b.normX);
@@ -4338,14 +4346,14 @@ export class LaserScene implements MvScene {
           beamPower = (0.14 + 0.96 * buildProgress) * (0.10 + 1.06 * buildWave);
         } else if (b.group === 2 || b.group === 3) {
           const sideSign = b.group === 2 ? -1 : 1;
-          const bayNorm = b.slot / 17.0;
+          const bayNorm = b.slotNorm;
           const sideWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + (1.0 - bayNorm) * 4.2), 2.2);
           const hx = sideSign * lerp(7.8, 3.6, buildProgress);
           const tgt = setWaterBounceTarget(b, hx, b.z + 9.0, 0.54);
           tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
           beamPower = (0.12 + 0.88 * buildProgress) * (0.14 + 0.96 * sideWave);
         } else if (b.group === 4 && buildProgress > 0.50) {
-          const fanU = (b.slot / 11) * 2 - 1;
+          const fanU = b.slotNorm * 2 - 1;
           const cGain = (buildProgress - 0.50) / 0.50;
           const crownWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * buildFreq + Math.abs(fanU) * 3.2), 2.2);
           tx = lerp(fanU * 22.0, fanU * 6.5, cGain);
@@ -4354,12 +4362,12 @@ export class LaserScene implements MvScene {
           beamPower = cGain * 0.90 * (0.12 + 0.95 * crownWave);
         }
       } else {
-        // Drop / Chorus / Verse 主秀：对称几何秩序 + 饱满 36 束侧廊下射 + 清晰水面折返反射
+        // Drop / Chorus / Verse 主秀：对称几何秩序 + 饱满 64 束侧廊下射 + 清晰水面折返反射
         const beatImpact = Math.max(kickFast, beatPulse * 0.88);
         const burstCore = 0.74 * hitEnv + 0.94 * beatImpact + 0.48 * snareFast;
 
         if (cueMode === 0) {
-          // 【阵型 0：穹顶 24 束 + 左右侧廊 36 束环绕下射水镜画廊 · 双翼乒乓呼吸】—— 仰射组归零留白
+          // 【阵型 0：穹顶 42 束 + 左右侧廊 64 束环绕下射水镜画廊 · 双翼乒乓呼吸】—— 仰射组归零留白
           if (b.group === 0) {
             const isLeft = b.normX < 0;
             const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 1.0 : 0.14;
@@ -4373,18 +4381,18 @@ export class LaserScene implements MvScene {
             const sideSign = b.group === 2 ? -1 : 1;
             const isLeft = sideSign < 0;
             const wingActive = (activeParity > 0 ? isLeft : !isLeft) ? 0.92 : 0.22;
-            const bayNorm = b.slot / 17.0;
+            const bayNorm = b.slotNorm;
             const corridorRibbon = 0.68 + 0.38 * Math.cos((bayNorm - waveSweep01) * Math.PI * 2.0);
             const tgt = setWaterBounceTarget(b, sideSign * 6.8, b.z + 9.2, 0.54);
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
             beamPower = (0.20 + 1.12 * burstCore) * wingActive * Math.max(0.42, corridorRibbon) * dropPower;
           }
         } else if (cueMode === 1) {
-          // 【阵型 1：双环激光锥笼主场 + 左右各 18 束（共 36 束）高密斜射长廊扎入水面并 V 形反射弹起】
+          // 【阵型 1：双环 88 束激光锥笼主场 + 左右各 32 束（共 64 束）超密斜射长廊扎入水面并 V 形反射弹起】
           if (b.group === 2 || b.group === 3) {
             const sideSign = b.group === 2 ? -1 : 1;
-            const bayNorm = b.slot / 17.0; // 0..1 由舞台向观众席等距排开 18 束
-            // 双波峰连绵宽光浪 + 清晰基础骨架（保证两侧整排 18+18 束绵密可见且富有流动明暗层次）
+            const bayNorm = b.slotNorm; // 0..1 由舞台向观众席等距排开 32 束
+            // 双波峰连绵宽光浪 + 清晰基础骨架（保证两侧整排 32+32 束竖琴般绵密可见且富有流动明暗层次）
             const flowWave = 0.5 + 0.5 * Math.cos((bayNorm - waveSweep01) * Math.PI * 4.0);
             const depthSurge = 0.34 + 0.72 * Math.pow(flowWave, 1.6);
             const hx = sideSign * (5.6 + 0.65 * Math.sin(sweepClock * 0.8));
@@ -4393,7 +4401,7 @@ export class LaserScene implements MvScene {
             beamPower = (0.24 + 1.16 * burstCore) * depthSurge * dropPower;
           }
         } else if (cueMode === 2) {
-          // 【阵型 2：天地一问一答 · 正拍 60 束高空齐劈水面激起满池折光 vs 反拍 28 束皇冠向天盛开】
+          // 【阵型 2：天地一问一答 · 正拍 106 束高空齐劈水面激起满池折光 vs 反拍 46 束皇冠向天盛开】
           const downWeight = Math.max(kickFast, beatPulse);
           const upWeight = clamp01(Math.max(snareFast * 1.15, (1.0 - beatPulse) * (0.48 + 0.75 * hitEnv)) * (1.0 - 0.65 * kickFast));
           if (b.group === 0) {
@@ -4408,7 +4416,7 @@ export class LaserScene implements MvScene {
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
             beamPower = (0.04 + 1.26 * downWeight) * dropPower;
           } else if (b.group === 4) {
-            const fanU = (b.slot / 11) * 2 - 1;
+            const fanU = b.slotNorm * 2 - 1;
             const crownSpread = 1.0 + 0.18 * snareFast;
             tx = fanU * 24.5 * crownSpread;
             ty = 13.0 + (1.0 - fanU * fanU * 0.52) * 8.2;
@@ -4421,7 +4429,7 @@ export class LaserScene implements MvScene {
             beamPower = (0.02 + 1.24 * upWeight) * dropPower;
           }
         } else if (cueMode === 3) {
-          // 【阵型 3：中心向外丝滑海啸波 · 顶冠 24 束向左右 36 束水镜侧廊接力推进】
+          // 【阵型 3：中心向外丝滑海啸波 · 顶冠 42 束向左右 64 束水镜侧廊接力推进】
           const distCenter = Math.abs(b.normX);
           const surge = 0.54 + 0.72 * burstCore;
           if (b.group === 0) {
@@ -4433,14 +4441,14 @@ export class LaserScene implements MvScene {
             beamPower = (0.08 + 1.36 * Math.max(waveCrest * surge, burstCore * (distCenter < 0.28 ? 0.95 : 0.0))) * dropPower;
           } else if (b.group === 2 || b.group === 3) {
             const sideSign = b.group === 2 ? -1 : 1;
-            const bayNorm = b.slot / 17.0;
+            const bayNorm = b.slotNorm;
             const sideWave = 0.30 + 0.75 * Math.pow(0.5 + 0.5 * Math.cos((bayNorm - waveSweep01) * Math.PI * 3.0), 1.8);
             const tgt = setWaterBounceTarget(b, sideSign * 6.0, b.z + 9.5, 0.56);
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
             beamPower = (0.14 + 1.08 * sideWave * surge) * dropPower;
           }
         } else {
-          // 【主歌 / 常规过渡段 (cueMode === -1)】：顶冠柔光涟漪 + 左右侧廊舒缓触水反射导引
+          // 【主歌 / 常规过渡段 (cueMode === -1)】：顶冠 42 束柔光涟漪 + 左右侧廊 64 束舒缓触水反射导引
           if (b.group === 0) {
             const distCenter = Math.abs(b.normX);
             const gentleWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - distCenter * 3.0), 2.2);
@@ -4449,7 +4457,7 @@ export class LaserScene implements MvScene {
             beamPower = (0.08 + 0.72 * gentleWave * (0.45 + 0.55 * burstCore)) * dropPower;
           } else if (b.group === 2 || b.group === 3) {
             const sideSign = b.group === 2 ? -1 : 1;
-            const bayNorm = b.slot / 17.0;
+            const bayNorm = b.slotNorm;
             const corridorGentle = 0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - bayNorm * 3.2), 2.0);
             const tgt = setWaterBounceTarget(b, sideSign * 6.5, b.z + 9.0, 0.52);
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
@@ -4464,7 +4472,7 @@ export class LaserScene implements MvScene {
 
       beamPower = Math.min(1.48, beamPower);
       if (isDrop && dropPower < 0.55) {
-        // Drop 能量骤降时（如《Nothing Ever After》3:25），54 束外围与辅机位激光平滑熄灭至 0，中央核心保留微光呼吸
+        // Drop 能量骤降时（如《Nothing Ever After》3:25），外围与辅机位激光平滑熄灭至 0，中央核心保留微光呼吸
         const isCoreBeam = b.group === 0 && Math.abs(b.normX) < 0.42;
         if (!isCoreBeam) {
           const fadeOut = smooth(clamp01((dropPower - 0.35) / 0.20));
@@ -4474,7 +4482,7 @@ export class LaserScene implements MvScene {
         }
       }
 
-      const halfWidth = b.group === 0 ? 0.145 : b.group === 4 ? 0.155 : 0.132;
+      const halfWidth = b.group === 0 ? 0.108 : b.group === 4 ? 0.114 : 0.098;
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * BEAM_EMITTER_COUNT + i) * 4;
         bEnd[slot] = tx;
