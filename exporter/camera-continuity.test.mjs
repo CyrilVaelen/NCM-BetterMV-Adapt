@@ -1972,10 +1972,25 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
       circHueDiffDeg(statsA.meanH, origHueA) > 38.0,
       `[seed#${sIdx}] 色块 A 应实质性变换为全新色相（实测偏移=${circHueDiffDeg(statsA.meanH, origHueA).toFixed(1)}°）`,
     );
+    const sepAD = circHueDiffDeg(statsA.meanH, statsD.meanH);
     assert.ok(
-      circHueDiffDeg(statsA.meanH, statsD.meanH) > 45.0,
-      `[seed#${sIdx}] 原封面上彼此区分的 A、D 两大区域在重配色后仍应保持清晰的和谐对比关系（色相差=${circHueDiffDeg(statsA.meanH, statsD.meanH).toFixed(1)}°）`,
+      sepAD > 38.0 && sepAD < 75.0,
+      `[seed#${sIdx}] A、D 两大区域既要层次分明 (>38°)，又必须收敛在同一和谐邻近色弧段内 (<75°，严禁红配绿撞色)，实测色相差=${sepAD.toFixed(1)}°`,
     );
+
+    // 严禁任何有彩色像素落入 [+80°, +170°] 暗黄橄榄绿 / 荧光草绿撞色禁区
+    for (let idx = 0; idx < W * H; idx++) {
+      const o = idx * 4;
+      const lab = srgbToOklab(recolored[o] / 255, recolored[o + 1] / 255, recolored[o + 2] / 255);
+      const c = Math.hypot(lab[1], lab[2]);
+      if (c > 0.04) {
+        const hDeg = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
+        assert.ok(
+          !(hDeg > 80.0 && hDeg < 170.0),
+          `[seed#${sIdx}] 严禁出现刺眼荧光草绿或浑浊橄榄绿撞色 (palette=${scheme.paletteId}, h=${hDeg.toFixed(1)}°, C=${c.toFixed(3)})`,
+        );
+      }
+    }
 
     // 5. 验证对应激光颜色同步跟随重配色后的封面变化，且着色器 Uniform 完整同步
     if (sIdx < 6) {
@@ -2011,6 +2026,94 @@ test('LaserScene 激光舞台：封面临时和谐随机重配色保持内容明
     }
   }
   assert.ok(maxLaserDiff > 0.35, `不同随机种子下全场激光颜色应随新封面同步呈现丰富变化，实测最大向量差=${maxLaserDiff.toFixed(3)}`);
+
+  // 6. 专项复现回归：《This Is Goodbye》类蓝-青-紫渐变天空 + 中央大面积冰白发光门封面，
+  //    验证 24 组随机种子下绝不出现“红配绿”撞色、高光白门不泛黄、两侧频谱灯塔 6 槽纯净无灰米色
+  const skyCover = new Uint8ClampedArray(W * H * 4);
+  const portalIndices = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      const o = idx * 4;
+      const cx = (x / (W - 1)) - 0.5;
+      const cy = (y / (H - 1)) - 0.55;
+      if (Math.hypot(cx * 1.2, cy) < 0.24) {
+        // 中央微带冰蓝的高光发光白门
+        skyCover[o] = 228;
+        skyCover[o + 1] = 241;
+        skyCover[o + 2] = 254;
+        skyCover[o + 3] = 255;
+        portalIndices.push(idx);
+      } else if (y < 18) {
+        // 顶部深钴蓝-紫罗兰星云
+        skyCover[o] = 68;
+        skyCover[o + 1] = 52;
+        skyCover[o + 2] = 218;
+        skyCover[o + 3] = 255;
+      } else if (y < 34) {
+        // 中部天蓝过渡层
+        skyCover[o] = 36;
+        skyCover[o + 1] = 132;
+        skyCover[o + 2] = 242;
+        skyCover[o + 3] = 255;
+      } else {
+        // 底部冰晶青云雾
+        skyCover[o] = 24;
+        skyCover[o + 1] = 216;
+        skyCover[o + 2] = 236;
+        skyCover[o + 3] = 255;
+      }
+    }
+  }
+
+  for (let k = 0; k < 24; k++) {
+    const seedK = (0x2468ace1 + k * 0x85ebca6b) >>> 0;
+    const sc = m.buildHarmonicCoverRecolorScheme(skyCover, false, seedK);
+    const rec = m.recolorCoverPixels(skyCover, sc);
+
+    // 高光白门保持洁净白光，不泛浑浊黄桃色
+    for (const pIdx of portalIndices) {
+      const o = pIdx * 4;
+      const lab = srgbToOklab(rec[o] / 255, rec[o + 1] / 255, rec[o + 2] / 255);
+      assert.ok(Math.hypot(lab[1], lab[2]) < 0.022, `[sky#${k}] 发光白门必须保持洁净高光白`);
+    }
+
+    // 全图任意两处有彩色像素的最大色相跨度 <= 72°（100% 同色系/邻近色和谐，彻底根除红绿撞色）
+    const activeHues = [];
+    for (let idx = 0; idx < W * H; idx++) {
+      const o = idx * 4;
+      const lab = srgbToOklab(rec[o] / 255, rec[o + 1] / 255, rec[o + 2] / 255);
+      if (Math.hypot(lab[1], lab[2]) > 0.045) {
+        activeHues.push(Math.atan2(lab[2], lab[1]));
+      }
+    }
+    let maxPairHue = 0;
+    for (let i = 0; i < activeHues.length; i += 7) {
+      for (let j = i + 1; j < activeHues.length; j += 7) {
+        const dh = circHueDiffDeg(activeHues[i], activeHues[j]);
+        if (dh > maxPairHue) maxPairHue = dh;
+      }
+    }
+    assert.ok(
+      maxPairHue <= 72.0,
+      `[sky#${k}] 重配色全图色相跨度必须严格收敛于和谐色弧 (<=72°)，实测 ${maxPairHue.toFixed(1)}° (palette=${sc.paletteId})`,
+    );
+
+    if (k < 6) {
+      const skyTex = new THREE.DataTexture(skyCover, W, H, THREE.RGBAFormat);
+      skyTex.needsUpdate = true;
+      const ls = new m.LaserScene({ ...init, cover: skyTex, coverPixels: skyCover, music, lyrics, seed: seedK }, 'pulse');
+      for (let slot = 0; slot < 6; slot++) {
+        const c = ls.pal.laserPalette[slot];
+        const sr = Math.pow(c.x, 1 / 2.2);
+        const sg = Math.pow(c.y, 1 / 2.2);
+        const sb = Math.pow(c.z, 1 / 2.2);
+        const vmax = Math.max(sr, sg, sb);
+        const sat = (vmax - Math.min(sr, sg, sb)) / Math.max(1e-4, vmax);
+        assert.ok(sat >= 0.32, `[sky#${k}] 灯塔与激光槽位 #${slot} 应保持纯净饱满色彩，杜绝灰暗米色过渡格 (sat=${sat.toFixed(2)})`);
+      }
+    }
+  }
 });
 
 
