@@ -8,8 +8,8 @@ import type { ArmillarySpec } from '../sigil/armillary.ts';
 
 export type SceneId = 'relief' | 'shatter' | 'diorama' | 'bokeh' | 'tunnel' | 'drive' | 'kaleido' | 'flip' | 'rings' | 'poster' | 'ridges' | 'halftone' | 'particles' | 'typewall' | 'ink' | 'crystal' | 'cards' | 'debug' | 'subdivide' | 'align' | 'scope' | 'vinyl' | 'clouds' | 'city' | 'aurora' | 'canvas' | 'pillars' | 'ripple' | 'channel' | 'orb' | 'menger' | 'sierpinski' | 'cantor' | 'papercut' | 'rain' | 'lanterns' | 'neon' | 'underwater' | 'sunset' | 'phoenix' | 'velvet' | 'fountain' | 'starry' | 'laser' | 'blackhole';
 
-/** A section redrawn in another medium (src/render/looks.ts): a riso print, Hi-bit pixels, characters on a tube. */
-export type LookId = 'riso' | 'hibit' | 'ascii' | 'vhs';
+/** A section redrawn in another medium (src/render/looks.ts): a riso print, Hi-bit pixels, characters on a tube, stained glass, or blueprint. */
+export type LookId = 'riso' | 'hibit' | 'ascii' | 'vhs' | 'stained' | 'blueprint';
 
 /** One camera setup inside a scene, between two downbeats. */
 export interface Shot {

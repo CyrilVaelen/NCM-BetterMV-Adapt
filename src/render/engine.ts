@@ -65,6 +65,16 @@ export interface Fx {
   crt: number;
   /** The VHS look (looks.ts): the picture played off a tape, 0..1. */
   vhs: number;
+  /** Build 段落铺垫坍缩微缩强度 0..1 */
+  collapse: number;
+  /** Drop 首拍空气折射冲击波扩散进度 0..1 (>=1 为结束) */
+  shockwave: number;
+  /** Drop 首拍空气折射冲击波物理折射振幅 0..1 */
+  shockwaveAmp: number;
+  /** 段落媒介滤镜：彩绘镶嵌玻璃 0..1 */
+  stained: number;
+  /** 段落媒介滤镜：工程蓝图线稿 0..1 */
+  blueprint: number;
   /** The finish (FinishShader: grade, halation, lens, sharpening, film grain), 0..1; 0 = the plain output. */
   film: number;
   /** The lens (src/render/lens.ts) on the shot on screen: depth of field and motion blur, −1 = the plate's own. */
@@ -86,7 +96,8 @@ export interface Fx {
 export const defaultFx = (): Fx => ({
   bloom: 0.35, ca: 0, flash: 0, fade: 0, grain: 0.04, vignette: 0.5, glitch: 0, zoom: 0, barrel: 0,
   echo: 0, duotone: 0, invert: 0, mirror: 0, smearX: 0, smearY: 0, pixel: 0, scan: 0, exposure: 1,
-  remember: false, memory: 0, riso: 0, risoPositive: 0, hibit: 0, ascii: 0, crt: 0, vhs: 0, film: 1,
+  remember: false, memory: 0, riso: 0, risoPositive: 0, hibit: 0, ascii: 0, crt: 0, vhs: 0,
+  collapse: 0, shockwave: 0, shockwaveAmp: 0, stained: 0, blueprint: 0, film: 1,
   aperture: -1, motion: -1, focus: 0, cut: 0, travel: 0,
   impact: 0, impactInvert: 0, letterbox: 0,
 });
@@ -139,6 +150,9 @@ const GradeShader = {
     uInk: { value: new THREE.Color(0x0a0a0b) },
     uSignal: { value: new THREE.Color(0xffffff) },
     uAspect: { value: 16 / 9 },
+    uCollapse: { value: 0 },
+    uShockwaveProgress: { value: 0 },
+    uShockwaveAmp: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -148,10 +162,15 @@ const GradeShader = {
     uniform float uHalation, uWordsOn;
     uniform float uTime, uCA, uFlash, uFade, uGrain, uVignette, uAspect, uGlitch, uZoom, uBarrel;
     uniform float uDuotone, uInvert, uMirror, uPixel, uScan, uExposure, uMemory, uFilm;
+    uniform float uCollapse, uShockwaveProgress, uShockwaveAmp;
     uniform vec2 uSmear, uResolution;
     uniform vec3 uInk, uSignal;
     varying vec2 vUv;
     float hash(vec2 p) { p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
+    // 边界镜像保护，防止外圈取样溢出产生黑框
+    vec2 mirror(vec2 p) {
+      return 1.0 - abs(fract(p * 0.5) * 2.0 - 1.0);
+    }
     // 位级非有限值清洗：绕过 D3D11 HLSL fast-math 对 isnan() 的擦除与 X3577 编译警告，真实拦截 NaN/Inf 黑屏传染
     vec3 sanitizeHdr(vec3 v) {
       uvec3 bits = floatBitsToUint(v);
@@ -177,6 +196,25 @@ const GradeShader = {
         float n = hash(vec2(floor(uv.y * 28.0), floor(uTime * 40.0)));
         uv.x += (n - 0.5) * 0.14 * uGlitch * step(0.55, n);
       }
+      if (uCollapse > 0.001) {
+        vec2 cc = (uv - 0.5) * vec2(uAspect, 1.0);
+        float r2 = dot(cc, cc);
+        uv = 0.5 + (uv - 0.5) * (1.0 + uCollapse * (0.04 + 0.08 * r2));
+      }
+      if (uShockwaveAmp > 0.001 && uShockwaveProgress > 0.0 && uShockwaveProgress < 1.0) {
+        vec2 sc = (uv - 0.5) * vec2(uAspect, 1.0);
+        float dist = length(sc);
+        float rFront = pow(uShockwaveProgress, 0.65) * 1.45;
+        float w = 0.12;
+        float dr = dist - rFront;
+        if (abs(dr) < w) {
+          float x = dr / w;
+          float disp = -sin(3.14159265 * x) * (1.0 - x * x) * uShockwaveAmp * (0.045 / (1.0 + 1.5 * rFront));
+          vec2 dir = dist > 1e-4 ? sc / dist : vec2(0.0, 1.0);
+          uv += (dir / vec2(uAspect, 1.0)) * disp;
+        }
+      }
+      uv = mirror(uv);
       vec2 c = uv - 0.5;
       vec2 off = c * uCA * 0.018 + vec2(uGlitch * 0.012, 0.0);
       vec3 col = vec3(0.0);
@@ -822,6 +860,9 @@ export class Engine {
     u.uPixel.value = fx.pixel;
     u.uScan.value = fx.scan;
     u.uExposure.value = fx.exposure;
+    u.uCollapse.value = fx.collapse;
+    u.uShockwaveProgress.value = fx.shockwave;
+    u.uShockwaveAmp.value = fx.shockwaveAmp;
     if (fx.remember) this.memory.armed = true;
     u.uMemory.value = fx.memory;
     const film = Math.min(1, Math.max(0, fx.film * this.filmScale));
@@ -835,17 +876,17 @@ export class Engine {
     this.shots.letterbox = fx.letterbox;
     // (Halation follows the glow a plate asks for: a light cover shown whole, with its glow cut, keeps its paper clean.)
     u.uHalation.value = this.halation * film * Math.min(1.25, fx.bloom / 0.4);
-    const looking = fx.riso + fx.hibit + fx.ascii + fx.crt + fx.vhs > 0.001;
+    const looking = fx.riso + fx.hibit + fx.ascii + fx.crt + fx.vhs + fx.stained + fx.blueprint > 0.001;
     this.look.enabled = looking;
     // VHS 磁带色度横向拖影同样开启歌词分离叠印；动态模糊/错位转场、闪回采样与 Grade 空间畸变模糊期间亦分离歌词，彻底消除重影
-    const lookSplit = looking && (fx.ascii > 0.001 || fx.riso > 0.001 || fx.hibit > 0.001 || fx.vhs > 0.001);
+    const lookSplit = looking && (fx.ascii > 0.001 || fx.riso > 0.001 || fx.hibit > 0.001 || fx.vhs > 0.001 || fx.stained > 0.001 || fx.blueprint > 0.001);
     const blurTrans = !!transition && (
       transition.kind === TransitionKind.zoom ||
       transition.kind === TransitionKind.whip ||
       transition.kind === TransitionKind.chroma ||
       transition.kind === TransitionKind.spin
     );
-    const gradeGhost = fx.zoom > 0.001 || Math.abs(fx.smearX) + Math.abs(fx.smearY) > 0.0005 || fx.glitch > 0.001 || fx.ca > 0.015 || fx.mirror > 0.5 || fx.memory > 0.001;
+    const gradeGhost = fx.zoom > 0.001 || Math.abs(fx.smearX) + Math.abs(fx.smearY) > 0.0005 || fx.glitch > 0.001 || fx.ca > 0.015 || fx.mirror > 0.5 || fx.memory > 0.001 || fx.collapse > 0.001 || fx.shockwaveAmp > 0.001;
     const cleanSplit = fx.remember || echoOn || blurTrans || gradeGhost;
     this.shots.split = lookSplit || cleanSplit;
     this.wordsOver.enabled = !lookSplit && cleanSplit && !gradeGhost;

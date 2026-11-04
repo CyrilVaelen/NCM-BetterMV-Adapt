@@ -167,7 +167,7 @@ const vertexShader = /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Po
 
 const fragmentShader = /* glsl */ `
   uniform sampler2D tDiffuse, tLyr, tAtlas;
-  uniform float uRiso, uRisoPos, uHibit, uAscii, uCrt, uVhs, uSplit, uFade, uTime, uGlyphs, uGlyphAspect, uBox;
+  uniform float uRiso, uRisoPos, uHibit, uAscii, uCrt, uVhs, uStained, uBlueprint, uSplit, uFade, uTime, uGlyphs, uGlyphAspect, uBox;
   uniform vec3 uBoxInk;
   uniform vec2 uRes;
   uniform vec3 risoPaper, risoInk0, risoInk1, risoInk2, risoDeep, risoSecond;
@@ -292,6 +292,148 @@ const fragmentShader = /* glsl */ `
     return pr;
   }
 
+  // ---- Stained Glass: 彩绘镶嵌玻璃 ----
+  void worleyCell(vec2 p, out float f1, out float f2, out vec2 cellCenter) {
+    vec2 ip = floor(p);
+    vec2 fp = fract(p);
+    f1 = 8.0;
+    f2 = 8.0;
+    cellCenter = vec2(0.0);
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec2 g = vec2(float(i), float(j));
+        vec2 o = vec2(hash12(ip + g), hash12(ip + g + 13.37));
+        o = 0.5 + 0.38 * sin(o * 6.2831853);
+        vec2 r = g + o - fp;
+        float d = dot(r, r);
+        if (d < f1) {
+          f2 = f1;
+          f1 = d;
+          cellCenter = ip + g + o;
+        } else if (d < f2) {
+          f2 = d;
+        }
+      }
+    }
+    f1 = sqrt(f1);
+    f2 = sqrt(f2);
+  }
+
+  vec3 stained(vec2 uv) {
+    float u = unit();
+    float cellSize = max(24.0, 42.0 * u);
+    vec2 p = uv * uRes / cellSize;
+    float f1, f2;
+    vec2 cellCenter;
+    worleyCell(p, f1, f2, cellCenter);
+
+    // 铅条掩码与金属焊锡脊线高光 (H型黑铅条)
+    float cameWidth = 0.085;
+    float edgeDist = f2 - f1;
+    float came = smoothstep(0.0, cameWidth, edgeDist);
+    vec3 cameCol = vec3(0.04, 0.04, 0.05);
+    float ridge = pow(clamp(1.0 - edgeDist / cameWidth, 0.0, 1.0), 3.0) * 0.25;
+    cameCol += vec3(ridge);
+
+    // 刻面立体折射与水纹色散
+    vec2 centerUv = cellCenter * cellSize / uRes;
+    vec2 delta = uv - centerUv;
+    vec2 disp = -delta * (0.014 * (1.0 - smoothstep(0.0, 0.8, f1)));
+    disp += (vec2(vnoise(uv * 120.0), vnoise(uv * 120.0 + 4.5)) - 0.5) * 0.003;
+
+    vec2 uvR = clamp(uv + disp * 1.06, 0.0, 1.0);
+    vec2 uvG = clamp(uv + disp, 0.0, 1.0);
+    vec2 uvB = clamp(uv + disp * 0.94, 0.0, 1.0);
+    vec3 glassSample = vec3(
+      texture2D(tDiffuse, uvR).r,
+      texture2D(tDiffuse, uvG).g,
+      texture2D(tDiffuse, uvB).b
+    );
+    vec3 centerSample = texture2D(tDiffuse, clamp(centerUv, 0.0, 1.0)).rgb;
+    vec3 glassCol = mix(glassSample, centerSample, 0.22);
+
+    // 宝石色泽调色与明度/拓扑保真（R5）
+    float l_src = luma(glassCol);
+    float mx = max(max(glassCol.r, glassCol.g), glassCol.b);
+    float mn = min(min(glassCol.r, glassCol.g), glassCol.b);
+    float sat = (mx - mn) / max(mx, 1e-4);
+
+    // 同色系饱和度提振 + 透光高光暖辉
+    vec3 jewel = mix(vec3(l_src), glassCol, 1.45);
+    jewel += pow(clamp(l_src, 0.0, 1.0), 2.5) * vec3(0.12, 0.10, 0.05);
+
+    // 明度严格归一化保真，杜绝黑白灰中性封面强行染色
+    float l_jewel = luma(jewel);
+    if (l_jewel > 1e-4 && l_src > 1e-4) {
+      jewel = jewel * (l_src / l_jewel);
+    }
+    vec3 finalGlass = mix(vec3(l_src), jewel, smoothstep(0.04, 0.18, sat));
+
+    return mix(cameCol, finalGlass, came);
+  }
+
+  // ---- Blueprint: 工程蓝图线稿 ----
+  vec3 blueprint(vec2 uv) {
+    float u = unit();
+    vec2 px = uv * uRes;
+
+    // 普鲁士蓝底图与纸纹
+    vec3 bg = vec3(0.025, 0.082, 0.215);
+    bg += (vnoise(uv * 400.0) - 0.5) * 0.015 + sin(uv.y * uRes.y * 0.4) * 0.005;
+
+    // 原图低对比度灰阶垫底，保持空间透视感
+    float origLuma = luma(texture2D(tDiffuse, uv).rgb);
+    bg += vec3(0.03, 0.09, 0.18) * origLuma;
+
+    // 主测量网格 (间距 80px) 与次网格 (间距 16px)
+    float majorSpacing = max(32.0, 80.0 * u);
+    vec2 majorGrid = abs(fract(px / majorSpacing) - 0.5);
+    float majorDist = min(majorGrid.x, majorGrid.y) * majorSpacing;
+    float majorLine = 1.0 - smoothstep(0.0, 1.2 * u, majorDist);
+
+    float minorSpacing = max(8.0, 16.0 * u);
+    vec2 minorGrid = abs(fract(px / minorSpacing) - 0.5);
+    float minorDist = min(minorGrid.x, minorGrid.y) * minorSpacing;
+    float minorLine = 1.0 - smoothstep(0.0, 0.9 * u, minorDist);
+
+    // 主网格交叉十字微标
+    vec2 tickDist = abs(px - floor(px / majorSpacing + 0.5) * majorSpacing);
+    float tickLine = step(min(tickDist.x, tickDist.y), 0.75 * u) * step(max(tickDist.x, tickDist.y), 5.0 * u);
+
+    vec3 minorColor = vec3(0.05, 0.16, 0.32);
+    vec3 majorColor = vec3(0.10, 0.30, 0.55);
+    vec3 tickColor = vec3(0.35, 0.65, 0.90);
+    vec3 gridCol = bg + minorColor * (minorLine * 0.45) + majorColor * (majorLine * 0.65) + tickColor * (tickLine * 0.85);
+
+    // Sobel 梯度边缘线稿提取
+    vec2 st = vec2(u * 1.25) / uRes;
+    float s_tl = luma(texture2D(tDiffuse, uv + vec2(-st.x,  st.y)).rgb);
+    float s_t  = luma(texture2D(tDiffuse, uv + vec2( 0.0,   st.y)).rgb);
+    float s_tr = luma(texture2D(tDiffuse, uv + vec2( st.x,  st.y)).rgb);
+    float s_l  = luma(texture2D(tDiffuse, uv + vec2(-st.x,  0.0)).rgb);
+    float s_r  = luma(texture2D(tDiffuse, uv + vec2( st.x,  0.0)).rgb);
+    float s_bl = luma(texture2D(tDiffuse, uv + vec2(-st.x, -st.y)).rgb);
+    float s_b  = luma(texture2D(tDiffuse, uv + vec2( 0.0,  -st.y)).rgb);
+    float s_br = luma(texture2D(tDiffuse, uv + vec2( st.x, -st.y)).rgb);
+    float gx = (s_tr + 2.0 * s_r + s_br) - (s_tl + 2.0 * s_l + s_bl);
+    float gy = (s_bl + 2.0 * s_b + s_br) - (s_tl + 2.0 * s_t + s_tr);
+    float g = sqrt(gx * gx + gy * gy);
+    float edgeMask = smoothstep(0.08, 0.28, g);
+    vec3 edgeCol = vec3(0.85, 0.95, 1.0);
+
+    // 45° 剖面工程排线阴影 (暗部 L < 0.48)
+    float hatchSpacing = max(4.0, 9.0 * u);
+    float hatch1 = step(fract((px.x + px.y) / hatchSpacing), 0.16);
+    float shadowMask1 = smoothstep(0.48, 0.15, origLuma);
+
+    float hatch2 = step(fract((px.x - px.y) / hatchSpacing), 0.16);
+    float shadowMask2 = smoothstep(0.22, 0.05, origLuma);
+
+    vec3 hatchCol = vec3(0.20, 0.45, 0.75) * (hatch1 * shadowMask1 * 0.6 + hatch2 * shadowMask2 * 0.5);
+
+    return mix(gridCol + hatchCol, edgeCol, edgeMask);
+  }
+
   void main() {
     // ---- the tube's glass: barrel curvature ----
     vec2 glass = vUv;
@@ -305,6 +447,8 @@ const fragmentShader = /* glsl */ `
     if (uVhs > 0.0) col = mix(col, vhs(uv), uVhs);
     if (uAscii > 0.0) col = mix(col, ascii(uv), uAscii);
     if (uRiso > 0.0) col = mix(col, riso(glass), uRiso);
+    if (uStained > 0.0) col = mix(col, stained(glass), uStained);
+    if (uBlueprint > 0.0) col = mix(col, blueprint(glass), uBlueprint);
     if (uHibit > 0.0) {
       // Flat colour levels, no dither (dither turned glow haze into speckle), the near-blacks held black, and faint
       // gaps between the blocks.
@@ -356,7 +500,7 @@ const fragmentShader = /* glsl */ `
   }`;
 
 /** The look settings a frame carries (Fx), 0..1 each; the riso inks and the glyphs are per song. */
-export interface LookFx { riso: number; risoPositive: number; hibit: number; ascii: number; crt: number; vhs: number; letterbox: number; fade?: number }
+export interface LookFx { riso: number; risoPositive: number; hibit: number; ascii: number; crt: number; vhs: number; stained: number; blueprint: number; letterbox: number; fade?: number }
 
 export class LookPass extends Pass {
   private quad: FullScreenQuad;
@@ -371,7 +515,7 @@ export class LookPass extends Pass {
       vertexShader, fragmentShader, depthTest: false, depthWrite: false,
       uniforms: {
         tDiffuse: { value: null }, tLyr: { value: null }, tAtlas: { value: null },
-        uRiso: { value: 0 }, uRisoPos: { value: 0 }, uHibit: { value: 0 }, uAscii: { value: 0 }, uCrt: { value: 0 }, uVhs: { value: 0 }, uSplit: { value: 0 }, uFade: { value: 0 }, uTime: { value: 0 },
+        uRiso: { value: 0 }, uRisoPos: { value: 0 }, uHibit: { value: 0 }, uAscii: { value: 0 }, uCrt: { value: 0 }, uVhs: { value: 0 }, uStained: { value: 0 }, uBlueprint: { value: 0 }, uSplit: { value: 0 }, uFade: { value: 0 }, uTime: { value: 0 },
         uGlyphs: { value: 2 }, uGlyphAspect: { value: 1 }, uRes: { value: new THREE.Vector2(1920, 1080) },
         risoPaper: { value: new THREE.Vector3(1, 1, 1) }, risoDeep: { value: new THREE.Vector3() }, risoSecond: { value: new THREE.Vector3() }, risoInk0: { value: new THREE.Vector3() }, risoInk1: { value: new THREE.Vector3() }, risoInk2: { value: new THREE.Vector3() },
         risoM: { value: new THREE.Matrix3() }, risoN: { value: 0 },
@@ -422,6 +566,8 @@ export class LookPass extends Pass {
     u.uAscii.value = this.atlas ? fx.ascii : 0;
     u.uCrt.value = fx.crt;
     u.uVhs.value = fx.vhs;
+    u.uStained.value = fx.stained;
+    u.uBlueprint.value = fx.blueprint;
     u.uBox.value = 0.128 * fx.letterbox;
     u.uFade.value = fx.fade ?? 0;
     u.uTime.value = t;

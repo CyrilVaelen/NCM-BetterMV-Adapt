@@ -477,17 +477,17 @@ export function planLooks(sections: Section[], style: Style, songSeed: number, o
     let options: LookId[] = [], chance = 0;
     switch (s.label) {
       case 'intro': options = ['hibit', 'ascii', 'vhs']; chance = i === 0 ? 0.45 : 0; break;
-      case 'verse': options = ['riso', 'hibit']; chance = nth >= 1 ? 0.85 : 0; break;
-      case 'chorus': options = ['hibit', 'riso']; chance = nth >= 1 ? 0.6 : 0; break;
-      case 'bridge': case 'break': options = ['ascii', 'riso', 'vhs']; chance = 0.85; break;
-      case 'build': case 'pre': options = ['ascii']; chance = nth >= 1 ? 0.5 : 0; break;
-      case 'outro': options = ['riso', 'vhs']; chance = 0.35; break;
+      case 'verse': options = ['riso', 'hibit', 'stained', 'blueprint']; chance = nth >= 1 ? 0.85 : 0; break;
+      case 'chorus': options = ['hibit', 'riso', 'stained']; chance = nth >= 1 ? 0.6 : 0; break;
+      case 'bridge': case 'break': options = ['ascii', 'riso', 'vhs', 'stained', 'blueprint']; chance = 0.85; break;
+      case 'build': case 'pre': options = ['ascii', 'blueprint']; chance = nth >= 1 ? 0.5 : 0; break;
+      case 'outro': options = ['riso', 'vhs', 'stained']; chance = 0.35; break;
     }
-    // (A ballad: only the print and the tape, the tape for its openings, bridges and endings.)
+    // (A ballad: only the print and the tape, the tape for its openings, bridges and endings; stained glass for church/ballad atmosphere.)
     if (style.id === 'velvet') {
-      options = s.label === 'bridge' || s.label === 'break' || s.label === 'outro' ? options.filter(o => o === 'riso' || o === 'vhs') : [];
+      options = s.label === 'bridge' || s.label === 'break' || s.label === 'outro' ? options.filter(o => o === 'riso' || o === 'vhs' || o === 'stained') : [];
       chance *= 0.35;
-    } else if (ballad) { options = options.filter(o => o === 'riso' || o === 'vhs'); chance *= 0.7; }
+    } else if (ballad) { options = options.filter(o => o === 'riso' || o === 'vhs' || o === 'stained'); chance *= 0.7; }
     options = options.filter(o => !off.has(o) && o !== prev && (count.get(o) ?? 0) < 2);
     const roll = random(), pick = random();
     const look = options.length && roll < chance ? options[Math.floor(pick * options.length)] : null;
@@ -825,8 +825,9 @@ export class Director {
       // A printed/CRT build must release its display treatment with the pictures, rather than snapping it off
       // on the final frame of an otherwise smooth blend. Drops use the unfiltered picture and normal finish.
       const blend = smooth(clamp01(transition.progress)), retain = 1 - blend;
-      const hasLook = fx.riso + fx.hibit + fx.ascii + fx.crt + fx.vhs > 0;
+      const hasLook = fx.riso + fx.hibit + fx.ascii + fx.crt + fx.vhs + fx.stained + fx.blueprint > 0;
       fx.riso *= retain; fx.hibit *= retain; fx.ascii *= retain; fx.crt *= retain; fx.vhs *= retain;
+      fx.stained *= retain; fx.blueprint *= retain;
       fx.scan *= retain;
       fx.exposure = 1 + (fx.exposure - 1) * retain;
       if (hasLook) fx.film = Math.max(fx.film, blend);
@@ -847,6 +848,8 @@ export class Director {
     if (look === 'riso') { fx.riso = 1; fx.bloom *= 0.5; }
     else if (look === 'hibit') { fx.hibit = 1; }
     else if (look === 'vhs') { fx.vhs = 1; }
+    else if (look === 'stained') { fx.stained = 1; fx.bloom *= 0.7; }
+    else if (look === 'blueprint') { fx.blueprint = 1; fx.bloom *= 0.4; }
     else { fx.crt = 1; if (!NO_CHARACTERS.has(shot.scene)) fx.ascii = 1; }
     fx.echo = Math.min(fx.echo, look === 'hibit' ? 0.5 : 0);
     fx.duotone = 0;
@@ -889,6 +892,12 @@ export class Director {
     switch (sec.label) {
       case 'drop': {
         if (sparse && random() < 0.7) fx.echo = Math.max(fx.echo, 0.78);
+        const shockDuration = beat * 1.25;
+        if (intoSec >= 0 && intoSec < shockDuration) {
+          const p = clamp01(intoSec / shockDuration);
+          fx.shockwave = p;
+          fx.shockwaveAmp = Math.pow(1 - p, 1.8);
+        }
         // A mirror would turn the words backwards: only while no line is on screen.
         // Dropping/reappearing lyrics used to toggle the whole picture into a mirror mid-shot. Keep the Drop's
         // spatial layout stable; foreground sound still drives its existing geometry and light response.
@@ -897,11 +906,22 @@ export class Director {
         // the words into blocks; decided once for the beat, so it never switches off halfway).
         const pushedIn = this.shots.some(s => s.scene === 'crystal' && s.variant === 'orbit' && Math.abs(s.end - sec.start) < 0.05);
         const sungOver = this.lyrics.visible(sec.start + beat * 0.5).some(s => s.exit < 0.5);
-        if (intoSec < beat && !pushedIn && !sungOver && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.pixel = Math.max(fx.pixel, 48 * Math.pow(1 - intoSec / beat, 2));
+        if (intoSec < beat && !pushedIn && !sungOver && shot.scene !== 'laser' && shot.scene !== 'blackhole') {
+          const basePixel = 48 * Math.pow(1 - intoSec / beat, 2);
+          const pixelDamp = fx.shockwaveAmp > 0.01 ? 0 : 1;
+          if (pixelDamp > 0) fx.pixel = Math.max(fx.pixel, basePixel);
+        }
         // No phrase-triggered whole-frame negatives during a Drop: keep timbre accents inside the scene.
         break;
       }
       case 'build': case 'pre': {
+        const barLen = beat * m.meter;
+        const remain = sec.end - t;
+        if (remain > 0 && remain <= barLen * 2) {
+          const p = clamp01(1 - remain / (barLen * 2));
+          fx.collapse = Math.max(fx.collapse, Math.pow(p, 1.8));
+          fx.ca = Math.max(fx.ca, p * 0.85);
+        }
         if (next && next.energy > sec.energy + 0.08 && sec.end - t < beat * m.meter && shot.scene !== 'crystal') {
           const eighth = info.pos * 2 - Math.floor(info.pos * 2);
           fx.exposure *= 1 + 0.1 * Math.cos(eighth * Math.PI * 2);
