@@ -84,7 +84,7 @@ function cutTimes(music: Music, style: Style, section: Section, next: Section | 
 const CONTINUOUS_WORLD_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'velvet', 'sunset', 'phoenix', 'fountain', 'underwater', 'starry', 'blackhole', 'laser',
   'clouds', 'city', 'aurora', 'lanterns', 'pillars', 'ridges', 'channel', 'neon', 'rain',
-  'canvas', 'menger', 'sierpinski', 'cantor', 'drive', 'tunnel',
+  'canvas', 'menger', 'sierpinski', 'cantor', 'drive', 'tunnel', 'cathedral', 'highway', 'pavilion', 'eclipse',
 ]);
 
 /** 仅靠平面版式切页/横甩切换构图的场景，保留同场景切点处的轻微动态拖影 */
@@ -546,6 +546,10 @@ const MOTION: Record<SceneId, TransitionKind[]> = {
   starry: [zoom, TransitionKind.matte],
   laser: [zoom, TransitionKind.matte],
   blackhole: [zoom, TransitionKind.matte],
+  cathedral: [zoom, TransitionKind.matte],
+  highway: [zoom, TransitionKind.matte],
+  pavilion: [zoom, TransitionKind.matte],
+  eclipse: [zoom, TransitionKind.matte],
 };
 const SOFT: TransitionKind[] = [zoom, TransitionKind.matte, TransitionKind.iris, spin];
 

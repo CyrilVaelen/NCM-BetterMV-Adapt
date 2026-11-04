@@ -106,6 +106,7 @@ function withPulseVibePlates(base: Plate[], s: Section, song: SongTraits): Plate
   const extras: Plate[] = [];
   if (preset === 'urban') {
     extras.push(
+      H(2.2, 2.5, 'highway', 'cockpit', 'chase', 'bridge', 'warp'),
       H(2.1, 2.4, 'velvet', 'lounge', 'skim', 'platter', 'gallery'),
       W(1.5, 'fountain', 'courtyard', 'orbit', 'skim'),
       W(1.5, 'neon', 'walk', 'low', 'up'),
@@ -114,6 +115,7 @@ function withPulseVibePlates(base: Plate[], s: Section, song: SongTraits): Plate
     );
   } else if (preset === 'oriental') {
     extras.push(
+      H(2.3, 2.6, 'pavilion', 'pavilion', 'water', 'eaves', 'zenith'),
       H(2.2, 2.5, 'ink', 'bloom', 'scroll', 'mist'),
       H(1.9, 2.1, 'papercut', 'bloom', 'turn'),
       H(1.9, 2.1, 'lanterns', 'shore', 'rise', 'wide'),
@@ -122,6 +124,7 @@ function withPulseVibePlates(base: Plate[], s: Section, song: SongTraits): Plate
     );
   } else if (preset === 'acoustic') {
     extras.push(
+      H(2.0, 2.3, 'cathedral', 'sanctuary', 'aisle', 'organ'),
       H(2.0, 2.3, 'rain', 'pane', 'close', 'clear'),
       H(2.0, 2.3, 'lanterns', 'shore', 'rise', 'wide'),
       H(1.9, 2.1, 'fountain', 'courtyard', 'orbit', 'skim'),
@@ -187,6 +190,10 @@ function pulsePool(s: Section): Plate[] {
       H(1.95, 2.25, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
       H(2.0, 2.3, 'blackhole', 'observatory', 'glide', 'horizon', 'astrolabe'),
       H(1.85, 2.05, 'laser', 'arena', 'rig', 'booth', 'tunnel'),
+      H(1.95, 2.25, 'cathedral', 'sanctuary', 'aisle', 'organ', 'soar'),
+      H(2.0, 2.3, 'highway', 'cockpit', 'chase', 'bridge', 'warp'),
+      H(1.9, 2.2, 'pavilion', 'pavilion', 'water', 'eaves', 'zenith'),
+      H(1.95, 2.25, 'eclipse', 'canyon', 'corona', 'ridge', 'abyss'),
       H(1.8, 2.0, 'fountain', 'courtyard', 'orbit', 'skim', 'crown'),
       H(1.75, 1.9, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
       H(1.7, 1.8, 'underwater', 'canyon', 'dive', 'orbit'),
@@ -211,6 +218,10 @@ function pulsePool(s: Section): Plate[] {
     case 'drop': return [
       H(2.2, 2.5, 'drive', 'push', 'roll'),
       H(2.25, 2.55, 'laser', 'arena', 'tunnel', 'booth', 'rig'),
+      H(2.1, 2.4, 'cathedral', 'sanctuary', 'soar', 'organ'),
+      H(2.25, 2.55, 'highway', 'warp', 'cockpit', 'chase'),
+      H(2.1, 2.4, 'pavilion', 'zenith', 'water', 'pavilion'),
+      H(2.2, 2.5, 'eclipse', 'corona', 'canyon', 'abyss'),
       H(1.85, 2.0, 'channel', 'axis', 'roll', 'wall'),
       H(1.9, 2.1, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
       H(1.9, 2.1, 'underwater', 'dive', 'canyon', 'orbit', 'abyss'),
@@ -314,7 +325,7 @@ function velvetPool(s: Section): Plate[] {
     ];
     case 'chorus': return [
       H(3.2, 3.8, 'velvet', 'lounge', 'platter', 'gallery', 'skim'), H(2.0, 2.2, 'sunset', 'horizon', 'drift', 'halo'),
-      H(1.85, 2.0, 'fountain', 'courtyard', 'orbit', 'skim', 'crown'), H(1.8, 1.9, 'city', 'glide', 'horizon', 'high'), H(1.6, 1.6, 'vinyl', 'groove', 'tilt', 'top'),
+      H(1.85, 2.0, 'fountain', 'courtyard', 'orbit', 'skim', 'crown'), H(1.8, 1.9, 'city', 'glide', 'horizon', 'high'), H(1.8, 2.0, 'highway', 'cockpit', 'chase', 'bridge'), H(1.6, 1.6, 'vinyl', 'groove', 'tilt', 'top'),
       W(1.4, 'underwater', 'canyon', 'orbit'), W(1.2, 'pillars', 'orbit', 'low'),
       W(1.15, 'aurora', 'lake', 'wide'), W(1.05, 'bokeh', 'focus', 'orbit'), W(0.9, 'ripple', 'tilt', 'face'),
     ];
@@ -369,6 +380,8 @@ function balladPool(s: Section, song: SongTraits): Plate[] {
       H(2.2, 2.5, 'aurora', 'up', 'wide'),
       H(2.2, 2.5, 'lanterns', 'shore', 'rise', 'wide'),
       H(2.0, 2.3, 'sunset', 'horizon', 'beam', 'drift', 'halo'),
+      H(2.0, 2.3, 'cathedral', 'sanctuary', 'aisle', 'organ'),
+      H(1.95, 2.2, 'pavilion', 'pavilion', 'water', 'eaves', 'zenith'),
       H(2.05, 2.35, 'starry', 'mirror', 'glide', 'zenith', 'astrolabe'),
       H(2.05, 2.35, 'blackhole', 'observatory', 'glide', 'horizon', 'astrolabe'),
       H(1.95, 2.2, 'fountain', 'courtyard', 'orbit', 'crown', 'skim'),
@@ -538,6 +551,7 @@ function inkPool(s: Section, song: SongTraits): Plate[] {
     case 'chorus': case 'drop': return [
       H(3.0, 3.5, 'ink', 'bloom', 'scroll'),
       H(2.3, 2.6, 'clouds', 'rise', 'over', 'skim'),
+      H(2.2, 2.5, 'pavilion', 'pavilion', 'water', 'eaves', 'zenith'),
       H(2.0, 2.2, 'papercut', 'bloom', 'turn'),
       H(1.9, 2.0, 'canvas', 'high', 'chase', 'side'),
       W(1.0, 'bokeh', 'focus', 'orbit'),

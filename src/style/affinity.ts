@@ -493,6 +493,10 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
   starry:     [ 1.38,  0.22,  0.45, -0.45,  0.82,  0.45,  0.10],
   laser:      [ 1.15,  1.48,  0.45, -0.25, -1.15, -0.75, -0.20],
   blackhole:  [ 1.42,  0.45,  0.35,  0.22,  0.55,  0.35,  0.05],
+  cathedral:  [ 1.45, -0.55,  0.20, -0.20,  0.75,  0.10,  0.40],
+  highway:    [-0.10,  0.85,  1.45,  0.25, -0.85, -0.40,  0.15],
+  pavilion:   [ 1.25,  0.25,  0.10,  0.05,  0.65,  1.48,  0.45],
+  eclipse:    [ 0.45,  1.30,  0.10,  1.45, -0.85, -0.40,  0.15],
   // 音乐可视化
   ripple:     [ 0.40,  0.45,  0.35,  0.20,  0.05,  0.00,  0.00],
   channel:    [-0.30,  1.30,  0.15,  0.15, -0.65, -0.25,  0.00],
@@ -514,13 +518,13 @@ const SCENE_PROFILE: Record<SceneId, readonly [number, number, number, number, n
 };
 
 const SPECTACLE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'phoenix', 'drive', 'laser', 'blackhole', 'sunset', 'fountain', 'starry', 'underwater', 'city', 'channel', 'shatter', 'aurora',
+  'phoenix', 'drive', 'laser', 'blackhole', 'sunset', 'fountain', 'starry', 'underwater', 'city', 'channel', 'shatter', 'aurora', 'cathedral', 'highway', 'pavilion', 'eclipse',
 ]);
 const VOCAL_STAGE_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'poster', 'typewall', 'neon', 'rain', 'lanterns', 'city', 'shatter', 'vinyl',
+  'poster', 'typewall', 'neon', 'rain', 'lanterns', 'city', 'shatter', 'vinyl', 'cathedral', 'pavilion',
 ]);
 const INSTRUMENTAL_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
-  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'laser', 'blackhole', 'aurora', 'starry', 'clouds', 'underwater', 'pillars',
+  'menger', 'sierpinski', 'cantor', 'channel', 'orb', 'scope', 'laser', 'blackhole', 'aurora', 'starry', 'clouds', 'underwater', 'pillars', 'highway', 'eclipse',
 ]);
 const GRAPHIC_COVER_PLATES: ReadonlySet<SceneId> = new Set<SceneId>([
   'diorama', 'papercut', 'poster', 'halftone',

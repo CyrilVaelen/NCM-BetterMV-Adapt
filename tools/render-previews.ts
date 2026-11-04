@@ -65,6 +65,10 @@ const PLAN: Record<SceneId, { style: string; variants: string; in: SectionLabel;
   starry: { style: 'pulse', variants: 'mirror', in: 'drop', at: 0.25 },
   laser: { style: 'pulse', variants: 'arena', in: 'drop', at: 0.08 },
   blackhole: { style: 'pulse', variants: 'observatory', in: 'drop', at: 0.25 },
+  cathedral: { style: 'pulse', variants: 'sanctuary', in: 'drop', at: 0.25 },
+  highway: { style: 'pulse', variants: 'cockpit', in: 'drop', at: 0.25 },
+  pavilion: { style: 'pulse', variants: 'pavilion', in: 'drop', at: 0.25 },
+  eclipse: { style: 'pulse', variants: 'canyon', in: 'drop', at: 0.25 },
 };
 
 /** The looks: a plate drawn in each. */
