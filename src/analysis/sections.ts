@@ -7,7 +7,7 @@
 // Labels come from energy (relative to the loudest section and to the verses), trend, vocals, repeated lyrics and drum
 // drive (a drop needs a driving percussive beat); groups join sections with the same label and similar audio or
 // shared lyric lines.
-import type { Hit, LyricLine, Section, SectionLabel } from '../types.ts';
+import type { Hit, LyricLine, LyricWord, Section, SectionLabel } from '../types.ts';
 import { N_MFCC, type BeatFeatures } from './features.ts';
 import { lowerBound, quantile } from './util.ts';
 import { refineDropEntries, refineDropPreparations } from './entries.ts';
@@ -117,6 +117,55 @@ function barData(f: BeatFeatures, bars: Bars, beats: number[], lyrics: LyricLine
   return { nb, dim, vec, db, density, drums };
 }
 
+const CLAUSE_PUNCT = /[,，;；.。!！?？…—]+$/u;
+const CJK_SCRIPT = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/;
+
+/** 估算单词音节数，用于逐字歌词单字时长合理性上界与标点吸收静音剥离。 */
+function estSyllables(word: string): number {
+  if (CJK_SCRIPT.test(word)) return 1;
+  const g = word.toLowerCase().replace(/[^a-z]/g, '').replace(/e$/, '').match(/[aeiouy]+/g);
+  return Math.max(1, g ? g.length : 1);
+}
+
+/** 单词有效发声结束时间：限制逐字歌词未闭合尾词的异常超长拖尾（避免跨数十秒遮蔽后续纯器乐段落）。 */
+function voicedWordEnd(w: LyricWord, timed: boolean): number {
+  if (!timed) return w.end;
+  return Math.min(w.end, w.start + Math.max(3.5, estSyllables(w.text) * 1.8));
+}
+
+/** 获取歌词行的有效起止发声边界。 */
+function lineSpan(l: LyricLine): [number, number] {
+  if (!l.words.length) return [l.start, l.end];
+  const last = l.words[l.words.length - 1];
+  return [l.words[0].start, voicedWordEnd(last, !!l.timedWords)];
+}
+
+/** 计算歌词行与区间 [from, to] 的有效演唱重叠时长，在逐字歌词中剔除 > 0.35s 的行内器乐留白。 */
+function lineOverlap(l: LyricLine, from: number, to: number): number {
+  if (!l.timedWords || l.words.length === 0) {
+    const [ws, we] = lineSpan(l);
+    return Math.max(0, Math.min(we, to) - Math.max(ws, from));
+  }
+  let total = 0;
+  let segStart = l.words[0].start;
+  let segEnd = voicedWordEnd(l.words[0], true);
+  for (let i = 1; i < l.words.length; i++) {
+    const w = l.words[i];
+    const we = voicedWordEnd(w, true);
+    if (w.start - segEnd <= 0.35) {
+      segEnd = Math.max(segEnd, we);
+    } else {
+      const o = Math.min(segEnd, to) - Math.max(segStart, from);
+      if (o > 0) total += o;
+      segStart = w.start;
+      segEnd = we;
+    }
+  }
+  const o = Math.min(segEnd, to) - Math.max(segStart, from);
+  if (o > 0) total += o;
+  return total;
+}
+
 /**
  * The lead vocal: sung lines minus vocal chops, the hook cut up over a drop — a repeated line between copies of
  * itself (however long it is held), or a short one (a bar or less) standing more than a bar away from other lines.
@@ -125,8 +174,8 @@ function barData(f: BeatFeatures, bars: Bars, beats: number[], lyrics: LyricLine
 function leadLines(lyrics: LyricLine[], barLen: number): LyricLine[] {
   const counts = new Map<string, number>();
   for (const l of lyrics) counts.set(norm(l.text), (counts.get(norm(l.text)) || 0) + 1);
-  const begin = (l: LyricLine) => (l.words.length ? l.words[0].start : l.start);
-  const finish = (l: LyricLine) => (l.words.length ? l.words[l.words.length - 1].end : l.end);
+  const begin = (l: LyricLine) => lineSpan(l)[0];
+  const finish = (l: LyricLine) => lineSpan(l)[1];
   const sorted = lyrics.slice().sort((a, b) => begin(a) - begin(b));
   const same = (i: number, j: number) => j < 0 || j >= sorted.length || norm(sorted[j].text) === norm(sorted[i].text);
   return sorted.filter((l, i) => {
@@ -135,7 +184,10 @@ function leadLines(lyrics: LyricLine[], barLen: number): LyricLine[] {
     const prevGap = i > 0 ? begin(l) - finish(sorted[i - 1]) : Infinity;
     const nextGap = i + 1 < sorted.length ? begin(sorted[i + 1]) - finish(l) : Infinity;
     const far = (j: number, gap: number) => same(i, j) || gap >= 1.25 * barLen;
-    return !(finish(l) - begin(l) <= 1.2 * barLen && far(i - 1, prevGap) && far(i + 1, nextGap));
+    const dur = finish(l) - begin(l);
+    // 两侧均有 >= 1.5 小节器乐留白、且与相邻句同词的孤立复唱钩子（<= 2.2 小节），视为 Drop 内的点缀回声而非连贯主唱
+    const isolatedEcho = (same(i, i - 1) || same(i, i + 1)) && prevGap >= 1.5 * barLen && nextGap >= 1.5 * barLen && dur <= 2.2 * barLen;
+    return !(isolatedEcho || (dur <= 1.2 * barLen && far(i - 1, prevGap) && far(i + 1, nextGap)));
   });
 }
 
@@ -145,11 +197,7 @@ function sungShare(lyrics: LyricLine[], bars: Bars, nb: number): Float64Array {
   for (let j = 0; j < nb; j++) {
     const t0 = bars.time[j], t1 = j + 1 < nb ? bars.time[j + 1] : bars.end;
     let c = 0;
-    for (const l of lyrics) {
-      const ws = l.words.length ? l.words[0].start : l.start, we = l.words.length ? l.words[l.words.length - 1].end : l.end;
-      const o = Math.min(we, t1) - Math.max(ws, t0);
-      if (o > 0) c += o;
-    }
+    for (const l of lyrics) c += lineOverlap(l, t0, t1);
     cov[j] = Math.min(1, c / Math.max(1e-6, t1 - t0));
   }
   return cov;
@@ -612,7 +660,7 @@ function lyricCues(lyrics: LyricLine[], bars: Bars, nb: number, barLen: number, 
   const cue = new Float64Array(nb + 1);
   if (!lyrics.length) return cue;
   const sung = lyrics
-    .map(l => ({ s: l.words.length ? l.words[0].start : l.start, e: l.words.length ? l.words[l.words.length - 1].end : l.end, k: norm(l.text) }))
+    .map(l => { const [s, e] = lineSpan(l); return { s, e, k: norm(l.text) }; })
     .filter(l => l.k)
     .sort((a, b) => a.s - b.s);
   const counts = new Map<string, number>();
@@ -807,13 +855,76 @@ interface LyricInfo {
 const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
 /**
+ * 逐字歌词（YRC）常将跨越器乐 Drop 的多次人声切片合并在同一行，并把逗号后的数秒间奏休止吞入下一子句首词的起唱时间。
+ * 对子句首词剥离被吞入的前导静音；当存在 >= 1.5s 静音间隔且子句含重复短语（或间隔 >= 4.5s）时拆分为独立短句参与结构识别，
+ * 同时保留普通慢唱异文分句不拆分以免破坏全曲副歌整句匹配。
+ */
+function splitTimedSubphrases(line: LyricLine, knownNorms: Set<string>): LyricLine[] {
+  if (!line.timedWords || line.words.length < 2) return [line];
+  const words = line.words.map(w => ({ ...w }));
+  let trimmed = false;
+  for (let i = 1; i + 1 < words.length; i++) {
+    const prev = words[i - 1], cur = words[i], next = words[i + 1];
+    const prevEnd = voicedWordEnd(prev, true);
+    if (!CLAUSE_PUNCT.test(prev.text) || next.start - cur.end >= 0.35) continue;
+    const sCur = estSyllables(cur.text), sNext = estSyllables(next.text);
+    const nextPace = Math.max(0.05, (voicedWordEnd(next, true) - next.start) / sNext);
+    const dur = cur.end - cur.start;
+    if (dur > Math.max(1.8, sCur * Math.max(0.9, nextPace * 3))) {
+      const nextStart = Math.max(prevEnd, cur.end - sCur * Math.min(0.8, Math.max(0.35, nextPace * 1.2)));
+      if (nextStart > cur.start) {
+        cur.start = nextStart;
+        trimmed = true;
+      }
+    }
+  }
+  const chunks: LyricWord[][] = [[words[0]]];
+  let maxGap = 0;
+  for (let i = 1; i < words.length; i++) {
+    const gap = words[i].start - voicedWordEnd(words[i - 1], true);
+    if (gap >= 1.5) {
+      chunks.push([words[i]]);
+      if (gap > maxGap) maxGap = gap;
+    } else {
+      chunks[chunks.length - 1].push(words[i]);
+    }
+  }
+  if (chunks.length > 1) {
+    const joiner = CJK_SCRIPT.test(line.text) ? '' : ' ';
+    const chunkTexts = chunks.map(ws => ws.map(w => w.text).join(joiner));
+    const chunkNorms = chunkTexts.map(norm);
+    const seen = new Set<string>();
+    let hasInternalRepeat = false, matchesKnown = false;
+    for (const cn of chunkNorms) {
+      if (!cn) continue;
+      if (seen.has(cn)) hasInternalRepeat = true;
+      seen.add(cn);
+      if (knownNorms.has(cn)) matchesKnown = true;
+    }
+    if (hasInternalRepeat || matchesKnown || maxGap >= 4.5) {
+      return chunks
+        .map((ws, idx) => ({
+          ...line,
+          start: ws[0].start,
+          end: voicedWordEnd(ws[ws.length - 1], true),
+          text: chunkTexts[idx],
+          words: ws,
+        }))
+        .filter(sub => norm(sub.text).length > 0);
+    }
+  }
+  if (!trimmed) return [line];
+  return [{ ...line, start: words[0].start, words }];
+}
+
+/**
  * Sung lines only. A short speaker tag before a colon ("男：…", "女:", "合：", "Rap:", a singer's name — duets mark
  * their lines so) is taken off and the line kept; any other line with a colon is a credit the lyric parser didn't know
  * ("鸣谢：…") and is dropped, with a line continuing it within 1.5 s (only a credit line itself extends that). Bare
  * punctuation is dropped.
  */
 export function sungLines(lyrics: LyricLine[]): LyricLine[] {
-  const out: LyricLine[] = [];
+  const candidates: LyricLine[] = [];
   let creditAt = -Infinity;
   for (const l of lyrics) {
     const tag = SPEAKER.exec(l.text);
@@ -825,7 +936,13 @@ export function sungLines(lyrics: LyricLine[]): LyricLine[] {
     // A line sung wholly in brackets is backing vocals or a vocal chop ("（ And I need you like … ）"), not the lead.
     if (l.backing) continue;
     const line = tag ? { ...l, text: l.text.slice(tag[0].length) } : l;
-    if (norm(line.text).length > 0) out.push(line);
+    if (norm(line.text).length > 0) candidates.push(line);
+  }
+  const knownNorms = new Set<string>();
+  for (const c of candidates) knownNorms.add(norm(c.text));
+  const out: LyricLine[] = [];
+  for (const c of candidates) {
+    for (const sub of splitTimedSubphrases(c, knownNorms)) out.push(sub);
   }
   return out;
 }
@@ -860,13 +977,13 @@ function lyricInfo(secs: Section[], lyrics: LyricLine[], lead: Set<LyricLine>, c
     for (const l of lyrics) {
       const k = norm(l.text);
       if (!k) continue;
-      const ws = l.words.length ? l.words[0].start : l.start;
-      const we = l.words.length ? l.words[l.words.length - 1].end : l.end;
-      const o = Math.min(we, s.end) - Math.max(ws, s.start);
+      const [ws, we] = lineSpan(l);
+      const o = lineOverlap(l, s.start, s.end);
       if (o <= 0) continue;
       sung += o;
       if (lead.has(l)) leadSung += o;
-      if (o >= 0.5 * (we - ws) || o >= 1) {
+      const voicedLen = lineOverlap(l, ws, we);
+      if (o >= 0.5 * Math.max(0.2, voicedLen) || o >= 1) {
         n++;
         hook += Math.min(1, ((counts.get(k) || 1) - 1) / 3);
         if ((counts.get(k) || 0) >= 2) rep++;
@@ -1113,6 +1230,10 @@ function labelSections(
       info[k].lines.forEach(x => { if (chorusLines.has(x)) inChorus++; });
       if (inChorus >= 0.6 * info[k].lines.size && E[k] >= 0.6 * chorusE) labels[k] = 'chorus';
     }
+  }
+  // 若前一段在 chorusHint 或副歌行传播后刚被升格为 chorus，而紧随其后的高能重鼓段落能量跃升显著且人声未加密，补标为 drop
+  for (let k = 1; k < n; k++) {
+    if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) labels[k] = 'drop';
   }
   secs.forEach((s, k) => (s.label = labels[k] || 'verse'));
 }

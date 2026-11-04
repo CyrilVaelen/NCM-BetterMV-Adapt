@@ -19,7 +19,7 @@ import { analyzeTimbreSteps } from './timbre.ts';
 import { alignDropBars } from './entries.ts';
 import { Slicer, attackRelease, movingAverage, normalizeQuantile, quantile, std } from './util.ts';
 
-export const ANALYSIS_VERSION = 10;
+export const ANALYSIS_VERSION = 11;
 /** Latency (s) of the beat novelty peak against the attack it marks (measured on kick-on-the-beat music). */
 export const BEAT_LATENCY = 0.009;
 

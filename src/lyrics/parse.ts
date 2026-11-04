@@ -98,6 +98,7 @@ function unwrap(text: string): { text: string; backing: boolean } {
 
 /** A line's text tidied: strips any inline word timestamps, removes space before punctuation or after an opening bracket. */
 const tidy = (text: string) => text
+  .replace(/\uFEFF/g, '')
   .replace(INLINE_WORD_STAMP, ' ')
   .replace(/\s+([,.!?;:，。！？；：、)）\]】])/g, '$1')
   .replace(/([(（[【])\s+/g, '$1')
@@ -150,10 +151,11 @@ function fromYrc(doc: NeteaseLyric, trans: Map<number, string>): LyricLine[] {
     const words: LyricWord[] = [];
     let open = false;
     for (const p of pieces) {
-      const body = p.text.trim(), last = words[words.length - 1];
+      const body = p.text.replace(/\uFEFF/g, '').trim(), last = words[words.length - 1];
       if (body && open && last && !/^\s/.test(p.text) && !SPACELESS.test(last.text.slice(-1)) && !SPACELESS.test(body[0])) {
         last.text += body;
-        last.end = p.end;
+        // 独立标点时间槽（如 `, ` 吞入数秒器乐间奏）不延长前词发音结束时间，与 joinPunctuation 语义保持一致
+        if (!PUNCT.test(body)) last.end = p.end;
       } else if (body) words.push({ text: body, start: p.start, end: p.end });
       open = !!body && !/\s$/.test(p.text);
     }
