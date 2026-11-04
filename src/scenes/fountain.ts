@@ -17,8 +17,12 @@ import { lastIndex, type Music } from '../director/music.ts';
 import type { Palette } from '../render/palette.ts';
 import { colorFromHsl, extractCoverTone, linearVec3FromHsl, tuneCoverStop } from './coverTone.ts';
 
-/** 池面最大并发落水涟漪数量（纯解析求值 + uZero 屏障，保障 D3D11 秒级编译与高帧率） */
-const MAX_RIPPLES = 14;
+/** 池面最大并发落水涟漪数量（按旋律最小间隔 85ms 与底鼓最小间隔 220ms 的抽屉原理严格上界扩容，配合 uRippleCount 动态上界与 uZero 屏障保障零挤出与高帧率） */
+const MAX_RIPPLES = 72;
+/** 单个池面涟漪最长生命周期上界（秒），用于历史事件二分扫描快速截止 */
+const MAX_RIPPLE_LIFE = 4.8;
+/** 花坛双层花海最大并发底鼓环形绽放光浪数量（覆盖 1.72s 寿命内全部 220ms 间隔底鼓） */
+const MAX_KICK_WAVES = 8;
 /** 抛物线水拱单次脉冲飞行时长（秒），水包到达终点瞬间在池面落点激起涟漪 */
 const ARC_FLIGHT = 0.56;
 /** 水池水面半径与池底琉璃封面半径（世界单位） */
@@ -46,12 +50,14 @@ interface SplashRippleEvent {
   z: number;
   /** 最大扩散半径 */
   maxRadius: number;
-  /** 振幅 */
+  /** 振幅（已烘焙激发时刻段落情绪增益，生命周期内恒定不跳变） */
   amp: number;
   /** 衰减时间常数 */
   tau: number;
   /** 空间波数 */
   freq: number;
+  /** 完整平滑消隐寿命（秒），到达时包络严格连续归零 */
+  life: number;
 }
 
 /** 计算专辑封面整体感知明度（0..1），使天幕、庭院环境光与石材明暗完全贴合封面气质 */
@@ -72,16 +78,31 @@ function computeCoverLuminance(pixels: Uint8ClampedArray, fallbackLight: boolean
   return count > 0 ? sum / count : 0.35;
 }
 
-/** 预提取全曲抛物线水拱发射事件与落水涟漪时间轴（100% 确定性纯函数） */
+/** 预提取全曲抛物线水拱发射事件、落水涟漪与花坛底鼓光浪时间轴（100% 确定性纯函数） */
 function buildFountainEvents(music: Music, seed: number): {
   arcEvents: ArcLaunchEvent[];
   arcTimes: Float64Array;
   ripples: SplashRippleEvent[];
   rippleTimes: Float64Array;
+  kickWaveTimes: Float64Array;
 } {
   const random = rng((seed ^ 0x5f09a41c) >>> 0);
   const arcEvents: ArcLaunchEvent[] = [];
   const ripples: SplashRippleEvent[] = [];
+  const kickWaves: number[] = [];
+
+  const sectionGainAt = (eventT: number): number => {
+    const clampedT = Math.max(0, Math.min(Math.max(0, music.duration - 1e-3), eventT));
+    const sec = music.section(clampedT);
+    const label = sec?.label ?? 'verse';
+    const secDrive = label === 'drop' ? 1.0
+      : label === 'chorus' ? 0.90
+      : label === 'build' || label === 'pre' ? 0.68
+      : label === 'intro' || label === 'break' || label === 'outro' ? 0.32
+      : 0.48;
+    const secEnergy = clamp01(secDrive * 0.65 + (sec?.energy ?? 0.5) * 0.35);
+    return 0.72 + 0.35 * secEnergy;
+  };
 
   const leadHits = music.roleHits('lead', 0, music.duration);
   const synthHits = music.roleHits('synthStab', 0, music.duration);
@@ -114,30 +135,36 @@ function buildFountainEvents(music: Music, seed: number): {
     const baseAngle = (note / 12) * Math.PI * 2 + (ring === 0 ? 0 : Math.PI / 12);
     const landAngle = baseAngle + (ring === 0 ? 0.52 : -0.44);
     const landR = ring === 0 ? 1.92 : 6.72;
+    const landT = item.t + ARC_FLIGHT;
+    const tau = 0.78 + 0.24 * random();
     ripples.push({
-      t: item.t + ARC_FLIGHT,
+      t: landT,
       x: Math.cos(landAngle) * landR,
       z: Math.sin(landAngle) * landR,
       maxRadius: 2.5 + 1.5 * item.s + 0.4 * random(),
-      amp: 0.44 + 0.42 * item.s,
-      tau: 0.78 + 0.24 * random(),
+      amp: (0.44 + 0.42 * item.s) * sectionGainAt(landT),
+      tau,
       freq: 5.6 + 1.8 * random(),
+      life: tau * 3.8,
     });
   }
 
-  // 底鼓在池心主水柱基座激起宽幅扩张重力波
+  // 底鼓在池心主水柱基座激起宽幅扩张重力波，并同步触发双层花坛环形绽放光浪
   let lastKickRipple = -1;
   for (const [t, s] of music.a.hits.kick ?? []) {
     if (s < 0.26 || t - lastKickRipple < 0.22) continue;
     lastKickRipple = t;
+    kickWaves.push(t);
+    const tau = 1.08;
     ripples.push({
       t,
       x: (random() - 0.5) * 0.35,
       z: (random() - 0.5) * 0.35,
       maxRadius: 7.8,
-      amp: 0.56 + 0.36 * s,
-      tau: 1.08,
+      amp: (0.56 + 0.36 * s) * sectionGainAt(t),
+      tau,
       freq: 3.6,
+      life: tau * 4.2,
     });
   }
 
@@ -147,6 +174,7 @@ function buildFountainEvents(music: Music, seed: number): {
     arcTimes: Float64Array.from(arcEvents, e => e.t),
     ripples,
     rippleTimes: Float64Array.from(ripples, r => r.t),
+    kickWaveTimes: Float64Array.from(kickWaves),
   };
 }
 
@@ -582,7 +610,8 @@ uniform vec3 uWaterGlow;
 uniform vec3 uPetalBright;
 uniform float uTime;
 uniform float uKickPunch;
-uniform float uKickWaveAge;
+uniform vec4 uKickWaves0;
+uniform vec4 uKickWaves1;
 uniform float uSidechain;
 uniform vec4 uChroma0;
 uniform vec4 uChroma1;
@@ -592,6 +621,26 @@ varying vec3 vNormal;
 varying vec2 vUv;
 varying float vZone;
 ${GLSL_NOISE}
+
+float evalKickRing(float r, float age, float invWidth, float decay) {
+  if (age <= 0.0 || age >= 1.72) return 0.0;
+  float waveR = 8.4 + age * 6.5;
+  float dR = (r - waveR) * invWidth;
+  float env = smoothstep(0.0, 0.025, age) * (1.0 - smoothstep(1.25, 1.72, age));
+  return exp(-dR * dR) * exp(-age * decay) * env;
+}
+
+float evalKickWaves(float r, vec4 w0, vec4 w1, float invWidth, float decay) {
+  float sum = evalKickRing(r, w0.x, invWidth, decay)
+            + evalKickRing(r, w0.y, invWidth, decay)
+            + evalKickRing(r, w0.z, invWidth, decay)
+            + evalKickRing(r, w0.w, invWidth, decay)
+            + evalKickRing(r, w1.x, invWidth, decay)
+            + evalKickRing(r, w1.y, invWidth, decay)
+            + evalKickRing(r, w1.z, invWidth, decay)
+            + evalKickRing(r, w1.w, invWidth, decay);
+  return min(sum, 1.35);
+}
 
 float chromaAtIdx(int idx) {
   if (idx < 4) return idx == 0 ? uChroma0.x : idx == 1 ? uChroma0.y : idx == 2 ? uChroma0.z : uChroma0.w;
@@ -656,12 +705,9 @@ void main() {
   baseCol += ledCol * coveMask * (0.48 + 0.50 * chromaVal + 0.40 * uKickPunch) * uSidechain;
   baseCol += ledCol * radialSlot * (0.18 + 0.55 * chromaVal) * (1.0 - clamp(abs(vZone - 1.0), 0.0, 1.0));
 
-  // 底鼓向外扩散的环形流光波掠过双层石砌花坛
-  if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
-    float waveR = 8.4 + uKickWaveAge * 6.5;
-    float ringGlow = exp(-safePow(abs(r - waveR) / 0.85, 2.0)) * exp(-uKickWaveAge * 1.35);
-    baseCol += uPetalBright * ringGlow * 0.34;
-  }
+  // 底鼓向外扩散的多重环形流光波掠过双层石砌花坛（8 槽并发，新底鼓绝不截断旧光浪）
+  float ringGlow = evalKickWaves(r, uKickWaves0, uKickWaves1, 1.0 / 0.85, 1.35);
+  baseCol += uPetalBright * ringGlow * 0.34;
 
   gl_FragColor = vec4(clamp(baseCol, vec3(0.0), vec3(10.0)), 1.0);
 }
@@ -680,6 +726,7 @@ void main() {
 const BASIN_FRAG = /* glsl */ `
 uniform sampler2D uCover;
 uniform int uZero;
+uniform int uRippleCount;
 uniform float uTime;
 uniform float uFlow;
 uniform float uKickPunch;
@@ -698,7 +745,7 @@ uniform vec3 uFoamWhite;
 uniform vec3 uPetalPrimary;
 uniform vec3 uPetalBright;
 uniform vec4 uRippleA[${MAX_RIPPLES}]; // x, z, age, amp
-uniform vec4 uRippleB[${MAX_RIPPLES}]; // maxRadius, freq, tau, unused
+uniform vec4 uRippleB[${MAX_RIPPLES}]; // maxRadius, freq, tau, life
 uniform vec4 uChroma0;
 uniform vec4 uChroma1;
 uniform vec4 uChroma2;
@@ -762,23 +809,30 @@ void main() {
   float waveCurvature = 0.0;
 
   for (int i = uZero; i < ${MAX_RIPPLES}; i++) {
+    if (i >= uRippleCount) break;
     vec4 ra = uRippleA[i];
-    if (ra.w <= 0.001) continue;
+    if (ra.w <= 0.0005) continue;
     vec4 rb = uRippleB[i];
+    float life = max(rb.w, 0.5);
+    if (ra.z <= 0.0 || ra.z >= life) continue;
+
     vec2 dVec = xz - ra.xy;
     float dist = length(dVec);
-    if (dist > rb.x + 0.75) continue;
+    if (dist > rb.x + 0.85) continue;
 
-    // 真实扩散波前包络：圆润的 2~3 圈同心水波凹凸
+    // 真实扩散波前包络：圆润的 2~3 圈同心水波凹凸，寿命尾段平滑归零以彻底杜绝截断瞬灭
     float rad = rb.x * (1.0 - exp(-ra.z / max(0.25, rb.z * 0.95)));
     float packetW = 0.34 + 0.26 * (rad / max(rb.x, 0.5));
     float dFront = dist - rad;
-    float env = ra.w * exp(-(dFront * dFront) / (packetW * packetW))
-              * exp(-ra.z / (rb.z * 1.45))
-              * smoothstep(0.0, 0.03, ra.z)
-              * smoothstep(0.0, 0.14, dist);
 
-    if (env > 0.0004) {
+    if (abs(dFront) < packetW * 3.35) {
+      float tailFade = 1.0 - smoothstep(0.68, 1.0, clamp(ra.z / life, 0.0, 1.0));
+      float env = ra.w * exp(-(dFront * dFront) / (packetW * packetW))
+                * exp(-ra.z / (rb.z * 1.45))
+                * tailFade
+                * smoothstep(0.0, 0.03, ra.z)
+                * smoothstep(0.0, 0.14, dist);
+
       float phase = dFront * rb.y * 1.25;
       float waveCos = cos(phase);
       float waveSin = sin(phase);
@@ -788,9 +842,10 @@ void main() {
       waveCurvature += waveSin * env;
     }
 
-    // 仅在水柱刚落入池面的极小核心点 (dist < 0.22m, age < 0.24s) 产生转瞬即逝的清透水花微沫
+    // 仅在水柱刚落入池面的极小核心点 (dist < 0.26m, age < 0.26s) 产生转瞬即逝的清透水花微沫
     if (ra.z < 0.26 && dist < 0.26) {
-      float dropSplash = (1.0 - smoothstep(0.04, 0.24, dist)) * exp(-ra.z * 11.0) * ra.w;
+      float splashFade = 1.0 - smoothstep(0.18, 0.26, ra.z);
+      float dropSplash = (1.0 - smoothstep(0.04, 0.24, dist)) * exp(-ra.z * 11.0) * splashFade * ra.w;
       splashFoam += dropSplash * 0.55;
     }
   }
@@ -951,24 +1006,40 @@ attribute vec4 aInstPos;    // xyz: 花朵世界坐标, w: 尺寸缩放
 attribute vec4 aInstStyle;  // x: 朝向角, y: 色彩混合权重, z: 微风相位, w: 径向归一化层级
 uniform float uTime;
 uniform float uKickPunch;
-uniform float uKickWaveAge;
+uniform vec4 uKickWaves0;
+uniform vec4 uKickWaves1;
 uniform float uSectionEnergy;
 varying vec3 vPetal;
 varying vec3 vNormalW;
 varying vec3 vWorldPos;
 varying vec2 vColorSeed;
 
+float evalFlowerKickRing(float r, float age) {
+  if (age <= 0.0 || age >= 1.72) return 0.0;
+  float waveR = 8.4 + age * 6.5;
+  float dR = (r - waveR) / 0.95;
+  float env = smoothstep(0.0, 0.025, age) * (1.0 - smoothstep(1.25, 1.72, age));
+  return exp(-dR * dR) * exp(-age * 1.25) * env;
+}
+
+float evalFlowerKickWaves(float r, vec4 w0, vec4 w1) {
+  float sum = evalFlowerKickRing(r, w0.x)
+            + evalFlowerKickRing(r, w0.y)
+            + evalFlowerKickRing(r, w0.z)
+            + evalFlowerKickRing(r, w0.w)
+            + evalFlowerKickRing(r, w1.x)
+            + evalFlowerKickRing(r, w1.y)
+            + evalFlowerKickRing(r, w1.z)
+            + evalFlowerKickRing(r, w1.w);
+  return min(sum, 1.35);
+}
+
 void main() {
   vPetal = aPetal;
   vColorSeed = vec2(aInstStyle.y, aInstStyle.w);
 
   float r = length(aInstPos.xz);
-  float waveBloom = 0.0;
-  if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
-    float waveR = 8.4 + uKickWaveAge * 6.5;
-    float dR = (r - waveR) / 0.95;
-    waveBloom = exp(-dR * dR) * exp(-uKickWaveAge * 1.25);
-  }
+  float waveBloom = evalFlowerKickWaves(r, uKickWaves0, uKickWaves1);
 
   vec3 lp = position;
   if (aPetal.z < 1.5) {
@@ -1001,7 +1072,8 @@ uniform vec3 uPetalPrimary;
 uniform vec3 uPetalBright;
 uniform vec3 uPetalAccent;
 uniform vec3 uWaterGlow;
-uniform float uKickWaveAge;
+uniform vec4 uKickWaves0;
+uniform vec4 uKickWaves1;
 uniform float uHatSparkle;
 uniform float uSidechain;
 uniform float uSectionEnergy;
@@ -1010,6 +1082,26 @@ varying vec3 vNormalW;
 varying vec3 vWorldPos;
 varying vec2 vColorSeed;
 ${GLSL_NOISE}
+
+float evalPetalKickRing(float r, float age) {
+  if (age <= 0.0 || age >= 1.72) return 0.0;
+  float waveR = 8.4 + age * 6.5;
+  float dR = (r - waveR) / 0.95;
+  float env = smoothstep(0.0, 0.025, age) * (1.0 - smoothstep(1.25, 1.72, age));
+  return exp(-dR * dR) * exp(-age * 1.25) * env;
+}
+
+float evalPetalKickWaves(float r, vec4 w0, vec4 w1) {
+  float sum = evalPetalKickRing(r, w0.x)
+            + evalPetalKickRing(r, w0.y)
+            + evalPetalKickRing(r, w0.z)
+            + evalPetalKickRing(r, w0.w)
+            + evalPetalKickRing(r, w1.x)
+            + evalPetalKickRing(r, w1.y)
+            + evalPetalKickRing(r, w1.z)
+            + evalPetalKickRing(r, w1.w);
+  return min(sum, 1.35);
+}
 
 void main() {
   float u = vPetal.x;
@@ -1022,11 +1114,7 @@ void main() {
   vec3 L = safeNorm(toCenter);
 
   float r = length(vWorldPos.xz);
-  float waveGlow = 0.0;
-  if (uKickWaveAge >= 0.0 && uKickWaveAge < 1.8) {
-    float waveR = 8.4 + uKickWaveAge * 6.5;
-    waveGlow = exp(-safePow(abs(r - waveR) / 0.95, 2.0)) * exp(-uKickWaveAge * 1.25);
-  }
+  float waveGlow = evalPetalKickWaves(r, uKickWaves0, uKickWaves1);
 
   vec3 col;
   if (layer > 1.5) {
@@ -1486,6 +1574,8 @@ export class FountainScene implements MvScene {
   private readonly arcTimes: Float64Array;
   private readonly ripples: SplashRippleEvent[];
   private readonly rippleTimes: Float64Array;
+  private readonly kickWaveTimes: Float64Array;
+  private readonly kickWaveSlotBuf = new Float32Array(MAX_KICK_WAVES);
   private readonly rippleA = Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector4());
   private readonly rippleB = Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector4());
 
@@ -1552,6 +1642,7 @@ export class FountainScene implements MvScene {
     this.arcTimes = ev.arcTimes;
     this.ripples = ev.ripples;
     this.rippleTimes = ev.rippleTimes;
+    this.kickWaveTimes = ev.kickWaveTimes;
 
     const kicks = music.a.hits.kick ?? [];
     this.rawKickTimes = Float64Array.from(kicks, h => h[0]);
@@ -1568,10 +1659,12 @@ export class FountainScene implements MvScene {
     this.uniforms = {
       uCover: { value: init.cover },
       uZero: { value: 0 },
+      uRippleCount: { value: 0 },
       uTime: { value: 0 },
       uFlow: { value: 0 },
       uKickPunch: { value: 0 },
-      uKickWaveAge: { value: 10 },
+      uKickWaves0: { value: new THREE.Vector4(-1, -1, -1, -1) },
+      uKickWaves1: { value: new THREE.Vector4(-1, -1, -1, -1) },
       uHatSparkle: { value: 0 },
       uCenterSurge: { value: 0.3 },
       uSectionEnergy: { value: 0.5 },
@@ -1959,14 +2052,14 @@ export class FountainScene implements MvScene {
     const snarePulse = this.evalPulse(this.rawSnareTimes, this.rawSnareVals, t, 0.20);
     const hatPulse = this.evalPulse(this.rawHatTimes, this.rawHatVals, t, 0.14);
 
-    // 最近一次强底鼓距今的时间（驱动池畔双层花坛由内向外扩散的绽放光浪）
-    const lastKickIdx = lastIndex(this.rawKickTimes, t);
-    let kickWaveAge = 10;
-    for (let k = lastKickIdx; k >= 0 && k > lastKickIdx - 6; k--) {
-      if ((this.rawKickVals[k] ?? 0) >= 0.26) {
-        kickWaveAge = t - this.rawKickTimes[k];
-        break;
-      }
+    // 收集最近 MAX_KICK_WAVES 次强底鼓距今的时间（驱动双层花坛并发扩散绽放光浪，新底鼓绝不截断旧光浪）
+    this.kickWaveSlotBuf.fill(-1);
+    let kwCount = 0;
+    for (let k = lastIndex(this.kickWaveTimes, t); k >= 0 && kwCount < MAX_KICK_WAVES; k--) {
+      const age = t - this.kickWaveTimes[k];
+      if (age <= 0) continue;
+      if (age >= 1.72) break;
+      this.kickWaveSlotBuf[kwCount++] = age;
     }
 
     // 段落情绪基准：主歌/间奏静谧涌泉，铺垫逐级蓄势，副歌/Drop 盛大音乐喷泉全开
@@ -2077,17 +2170,16 @@ export class FountainScene implements MvScene {
     }
     this.arcStateAttr.needsUpdate = true;
 
-    // 4. 填充池面活跃落水同心涟漪
+    // 4. 填充池面活跃落水同心涟漪（全生命周期连续保留，寿命尾段由 Shader 平滑归零后再回收，绝无挤出瞬灭）
     let rCount = 0;
     for (let i = lastIndex(this.rippleTimes, t); i >= 0 && rCount < MAX_RIPPLES; i--) {
       const rp = this.ripples[i];
       const age = t - rp.t;
-      if (age < 0) continue;
-      if (age > 3.2) break;
-      const effAmp = rp.amp * (0.72 + 0.35 * energy);
-      if (effAmp * Math.exp(-age / rp.tau) < 0.02 && age > 0.8) continue;
-      this.rippleA[rCount].set(rp.x, rp.z, age, effAmp);
-      this.rippleB[rCount].set(rp.maxRadius, rp.freq, rp.tau, 0);
+      if (age <= 0) continue;
+      if (age >= MAX_RIPPLE_LIFE) break;
+      if (age >= rp.life) continue;
+      this.rippleA[rCount].set(rp.x, rp.z, age, rp.amp);
+      this.rippleB[rCount].set(rp.maxRadius, rp.freq, rp.tau, rp.life);
       rCount++;
     }
     for (let i = rCount; i < MAX_RIPPLES; i++) {
@@ -2097,10 +2189,13 @@ export class FountainScene implements MvScene {
 
     // 5. 同步全局着色器 Uniforms
     const u = this.uniforms;
+    u.uRippleCount.value = rCount;
     u.uTime.value = t;
     u.uFlow.value = t * 0.85 + music.foregroundMotion(t, 0.25) * 0.22;
     u.uKickPunch.value = clamp01(kickPulse);
-    u.uKickWaveAge.value = kickWaveAge;
+    const kw = this.kickWaveSlotBuf;
+    (u.uKickWaves0.value as THREE.Vector4).set(kw[0], kw[1], kw[2], kw[3]);
+    (u.uKickWaves1.value as THREE.Vector4).set(kw[4], kw[5], kw[6], kw[7]);
     u.uHatSparkle.value = hatSparkle;
     u.uCenterSurge.value = centerSurge;
     u.uSectionEnergy.value = energy;

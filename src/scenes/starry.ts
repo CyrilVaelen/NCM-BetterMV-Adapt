@@ -19,8 +19,10 @@ import type { Palette } from '../render/palette.ts';
 import { colorFromHsl, extractCoverTone, linearVec3FromHsl } from './coverTone.ts';
 import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
-/** 水面最大并发确定性涟漪波包数（配合 uZero 屏障保障 D3D11 秒级着色器编译） */
-const MAX_RIPPLES = 14;
+/** 水面最大并发确定性涟漪波包数（按琶音最小间隔 82ms 与底鼓最小间隔 420ms 的抽屉原理严格上界扩容，配合 uRippleCount 动态上界与 uZero 屏障保障零挤出与秒级编译） */
+const MAX_RIPPLES = 72;
+/** 单个水面涟漪最长生命周期上界（秒），用于历史事件二分扫描快速截止 */
+const MAX_RIPPLE_LIFE = 4.6;
 /** 苍穹最大并发超新星日冕冲击波数 */
 const MAX_SUPERNOVA_WAVES = 4;
 /** 天球星座锚点恒星总数（3 大星官天区 × 12 半音色度） */
@@ -90,9 +92,12 @@ interface WaterRippleEvent {
   x: number;
   z: number;
   maxRadius: number;
+  /** 振幅（已烘焙激发时刻段落情绪增益，生命周期内恒定不跳变） */
   amp: number;
   tau: number;
   freq: number;
+  /** 完整平滑消隐寿命（秒），到达时包络严格连续归零 */
+  life: number;
 }
 
 interface SupernovaWaveEvent {
@@ -179,6 +184,21 @@ function buildStarryEvents(music: Music, anchors: readonly StarAnchor[], seed: n
   const ripples: WaterRippleEvent[] = [];
   const novas: SupernovaWaveEvent[] = [];
 
+  const sectionGainAt = (eventT: number): number => {
+    const clampedT = Math.max(0, Math.min(Math.max(0, music.duration - 1e-3), eventT));
+    const curSec = music.section(clampedT);
+    const label = curSec?.label ?? 'verse';
+    const secDur = Math.max(0.5, (curSec?.end ?? clampedT + 1) - (curSec?.start ?? clampedT));
+    const secProg = clamp01((clampedT - (curSec?.start ?? clampedT)) / secDur);
+    const secDrive = label === 'drop' ? 1.0
+      : label === 'chorus' ? 0.86
+      : label === 'build' || label === 'pre' ? 0.45 + 0.50 * secProg
+      : label === 'break' || label === 'bridge' ? 0.30
+      : 0.46;
+    const secEnergy = clamp01(secDrive * 0.65 + (curSec?.energy ?? 0.5) * 0.35);
+    return 0.68 + 0.36 * secEnergy;
+  };
+
   // 1. 提取合成器拨弦琶音 (synthStab)、主旋律 (lead) 与键盘和弦 (keys) 起音
   const synthHits = music.roleHits('synthStab', 0, music.duration);
   const leadHits = music.roleHits('lead', 0, music.duration);
@@ -236,14 +256,17 @@ function buildStarryEvents(music: Music, anchors: readonly StarAnchor[], seed: n
     // 琶音星光同步在水下星盘十二宫外环对应方位激起清透涟漪
     const ringAng = (note / 12) * Math.PI * 2 + (random() - 0.5) * 0.14;
     const ringR = ASTROLABE_OUTER_R - 0.65 + (random() - 0.5) * 0.8;
+    const maxRadius = 2.6 + 1.6 * item.s;
+    const tau = 1.05 + 0.35 * random();
     ripples.push({
       t: item.t,
       x: Math.cos(ringAng) * ringR,
       z: Math.sin(ringAng) * ringR,
-      maxRadius: 2.6 + 1.6 * item.s,
-      amp: 0.45 + 0.55 * item.s,
-      tau: 1.05 + 0.35 * random(),
+      maxRadius,
+      amp: (0.45 + 0.55 * item.s) * sectionGainAt(item.t),
+      tau,
       freq: 8.2 + 2.2 * random(),
+      life: Math.min(3.8, tau * 1.32 * (1.0 + 2.05 / maxRadius)),
     });
 
     lastArpT = item.t;
@@ -256,14 +279,17 @@ function buildStarryEvents(music: Music, anchors: readonly StarAnchor[], seed: n
   for (const [kt, ks] of music.a.hits.kick ?? []) {
     if (ks < 0.32 || kt - lastKickRippleT < 0.42) continue;
     lastKickRippleT = kt;
+    const maxRadius = 11.2 + 3.2 * ks;
+    const tau = 1.45;
     ripples.push({
       t: kt,
       x: (random() - 0.5) * 0.35,
       z: (random() - 0.5) * 0.35,
-      maxRadius: 11.2 + 3.2 * ks,
-      amp: 0.58 + 0.52 * ks,
-      tau: 1.45,
+      maxRadius,
+      amp: (0.58 + 0.52 * ks) * sectionGainAt(kt),
+      tau,
       freq: 5.2,
+      life: Math.min(4.2, tau * 1.32 * (1.0 + 2.2 / maxRadius) + 0.25),
     });
   }
   ripples.sort((a, b) => a.t - b.t);
@@ -656,6 +682,7 @@ void main() {
 const SALAR_FRAG = /* glsl */ `
 uniform sampler2D uCover;
 uniform int uZero;
+uniform int uRippleCount;
 uniform float uTime;
 uniform float uFlow;
 uniform float uSectionEnergy;
@@ -675,7 +702,7 @@ uniform vec3 uStarCool;
 uniform vec3 uSalarDeep;
 uniform vec4 uNovaWaves[${MAX_SUPERNOVA_WAVES}];
 uniform vec4 uRippleA[${MAX_RIPPLES}]; // x, z, age, amp
-uniform vec4 uRippleB[${MAX_RIPPLES}]; // maxRadius, freq, tau, unused
+uniform vec4 uRippleB[${MAX_RIPPLES}]; // maxRadius, freq, tau, life
 uniform vec4 uChroma0;
 uniform vec4 uChroma1;
 uniform vec4 uChroma2;
@@ -741,15 +768,28 @@ void main() {
 
   float rippleCaustic = 0.0;
   for (int i = uZero; i < ${MAX_RIPPLES}; i++) {
+    if (i >= uRippleCount) break;
     vec4 ra = uRippleA[i];
-    if (ra.w <= 0.001) continue;
+    if (ra.w <= 0.0005) continue;
     vec4 rb = uRippleB[i];
+    float life = max(rb.w, 0.5);
+    if (ra.z <= 0.0 || ra.z >= life) continue;
+
     vec2 dVec = xz - ra.xy;
     float dist = length(dVec) + 1e-4;
-    if (dist > rb.x + 0.8) continue;
+    if (dist >= rb.x) continue;
 
     float front = ra.z * (rb.x / max(0.35, rb.z * 1.32));
-    float env = exp(-ra.z / rb.z) * exp(-pow((dist - front) / 0.65, 2.0)) * (1.0 - smoothstep(rb.x * 0.78, rb.x, dist));
+    float dFront = dist - front;
+    if (abs(dFront) > 2.2) continue;
+
+    float birthFade = smoothstep(0.0, 0.03, ra.z);
+    float tailFade = 1.0 - smoothstep(0.74, 1.0, clamp(ra.z / life, 0.0, 1.0));
+    float env = exp(-ra.z / rb.z)
+              * exp(-pow(dFront / 0.65, 2.0))
+              * (1.0 - smoothstep(rb.x * 0.78, rb.x, dist))
+              * birthFade
+              * tailFade;
     float phase = dist * rb.y - ra.z * 10.8;
     float c = cos(phase);
     float amp = ra.w * 0.024 * env * (0.45 + 0.55 * calmScale);
@@ -1397,7 +1437,7 @@ export class StarryScene implements MvScene {
   private readonly novaVecs: THREE.Vector4[] = [];
   private readonly rippleA: THREE.Vector4[] = [];
   private readonly rippleB: THREE.Vector4[] = [];
-  private readonly uniforms: Record<string, THREE.IUniform>;
+  readonly uniforms: Record<string, THREE.IUniform>;
 
   constructor(init: SceneInit, look: 'pulse' | 'ballad' = 'pulse') {
     const { music, palette } = init;
@@ -1459,6 +1499,7 @@ export class StarryScene implements MvScene {
     this.uniforms = {
       uCover: { value: init.cover },
       uZero: { value: 0 },
+      uRippleCount: { value: 0 },
       uTime: { value: 0 },
       uFlow: { value: 0 },
       uPixelRatio: { value: 1 },
@@ -1819,12 +1860,14 @@ export class StarryScene implements MvScene {
     const secProg = clamp01((t - (curSec?.start ?? shot.start)) / secDur);
 
     // 三段式星象叙事核心状态量（纯时间函数计算，任意 seek 严格一致）
-    // 1) Breakdown 反重力失重度
+    // 1) Breakdown 反重力失重度（包含 intro/outro 边界平滑衔接，避免切段瞬间水面平静度跳变）
     let zeroGravity = 0;
     if (label === 'break' || label === 'bridge') {
       zeroGravity = smooth(Math.min(1, (t - curSec.start) / 0.8)) * smooth(Math.min(1, (curSec.end - t) / 0.8));
-    } else if (label === 'intro' || label === 'outro') {
-      zeroGravity = 0.55;
+    } else if (label === 'intro') {
+      zeroGravity = 0.55 * smooth(Math.min(1, (curSec.end - t) / 0.8));
+    } else if (label === 'outro') {
+      zeroGravity = 0.55 * smooth(Math.min(1, (t - curSec.start) / 0.8));
     }
 
     // 2) Build-up 星轨旋转聚能度（随段落推进由 0 平滑爬升至 1，衔接 Drop 释放）
@@ -2022,12 +2065,11 @@ export class StarryScene implements MvScene {
     for (let i = lastIndex(this.rippleTimes, t); i >= 0 && rCount < MAX_RIPPLES; i--) {
       const rp = this.ripples[i];
       const age = t - rp.t;
-      if (age < 0) continue;
-      if (age > 3.2) break;
-      const effAmp = rp.amp * (0.68 + 0.36 * energy);
-      if (effAmp * Math.exp(-age / rp.tau) < 0.02 && age > 0.8) continue;
-      this.rippleA[rCount].set(rp.x, rp.z, age, effAmp);
-      this.rippleB[rCount].set(rp.maxRadius, rp.freq, rp.tau, 0);
+      if (age <= 0) continue;
+      if (age >= MAX_RIPPLE_LIFE) break;
+      if (age >= rp.life) continue;
+      this.rippleA[rCount].set(rp.x, rp.z, age, rp.amp);
+      this.rippleB[rCount].set(rp.maxRadius, rp.freq, rp.tau, rp.life);
       rCount++;
     }
     for (let i = rCount; i < MAX_RIPPLES; i++) {
@@ -2037,6 +2079,7 @@ export class StarryScene implements MvScene {
 
     // 7. 同步全局着色器 Uniforms
     const u = this.uniforms;
+    u.uRippleCount.value = rCount;
     u.uTime.value = t;
     u.uFlow.value = t * 0.78 + music.foregroundMotion(t, 0.25) * 0.20;
     u.uSectionEnergy.value = energy;

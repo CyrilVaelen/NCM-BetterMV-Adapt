@@ -1576,5 +1576,255 @@ test('Challenger 2 对抗实证：100次随机跨越 Seek 幂等性、无歌词 
   assert.equal(corridorBounceCount, 36, `圆锥隧道段左右两侧应有全部 36 束 (18+18) 下射激光激活并触发水面镜面反射，实测 ${corridorBounceCount} 束`);
 });
 
+test('花坛喷泉与星空：极限高密度琶音与双踩底鼓下旧涟漪绝不因新涟漪产生而瞬灭及跨段连续性验证', () => {
+  const m = mods;
+  const fixture = buildMockFixture();
+  const { lyrics, palette, init } = fixture;
+
+  // 构造极限压力音频：每 50ms 触发一次强主旋律/琶音（持续打满 82ms/85ms 冷却下限），每 220ms 触发一次满强度底鼓，并在 t=10s 处发生 drop -> break 段落骤降切换
+  const dur = 16;
+  const bpm = 138;
+  const beatLen = 60 / bpm;
+  const beats = [];
+  const downbeats = [];
+  for (let i = 0; i * beatLen <= dur; i++) {
+    const bt = +(i * beatLen).toFixed(4);
+    beats.push(bt);
+    if (i % 4 === 0) downbeats.push(bt);
+  }
+
+  const denseLead = [];
+  const denseSynth = [];
+  for (let t = 0.2; t <= 12.5; t += 0.05) {
+    const ts = +t.toFixed(4);
+    denseLead.push([ts, 0.95]);
+    denseSynth.push([+(ts + 0.025).toFixed(4), 0.92]);
+  }
+  const denseKicks = [];
+  for (let t = 0.2; t <= 12.5; t += 0.22) {
+    denseKicks.push([+t.toFixed(4), 0.96]);
+  }
+
+  const denseSections = [
+    { start: 0, end: 10, label: 'drop', energy: 0.96, group: 0, vocal: false },
+    { start: 10, end: dur, label: 'break', energy: 0.24, group: 1, vocal: false },
+  ];
+  const envFrames = dur * 30;
+  const pitchNotes = new Float32Array(envFrames);
+  for (let i = 0; i < envFrames; i++) pitchNotes[i] = 60 + (i % 12);
+
+  const denseMusic = new m.Music({
+    ...fixture.music.a,
+    duration: dur,
+    bpm,
+    namedBpm: bpm,
+    meter: 4,
+    beats,
+    beatInBar: beats.map((_, i) => i % 4),
+    tempo: beats.map(() => bpm),
+    downbeats,
+    sections: denseSections,
+    hits: {
+      ...fixture.music.a.hits,
+      kick: denseKicks,
+      keys: denseLead,
+      accent: denseLead,
+    },
+    roles: {
+      ...fixture.music.a.roles,
+      kick: denseKicks,
+      lead: denseLead,
+      synthStab: denseSynth,
+    },
+  });
+
+  const smoothstepGlsl = (e0, e1, x) => {
+    const u = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+    return u * u * (3 - 2 * u);
+  };
+
+  const verifySceneRipples = (sceneName, sceneInst, tailStartNorm) => {
+    const dt = 1 / 60;
+    // 追踪所有曾经出现过的涟漪：key -> { birthT, life, amp, lastAge, retired }
+    const tracked = new Map();
+    let peakConcurrent = 0;
+
+    for (let step = 12; step <= Math.floor(15.5 / dt); step++) {
+      const t = +(step * dt).toFixed(6);
+      const secIdx = t < 10 ? 0 : 1;
+      const sec = denseSections[secIdx];
+      const shot = {
+        index: secIdx,
+        start: sec.start,
+        end: sec.end,
+        scene: sceneName,
+        variant: sceneName === 'fountain' ? 'courtyard' : 'mirror',
+        section: sec,
+        sectionIndex: secIdx,
+        seed: 20261104,
+        short: false,
+      };
+      sceneInst.update({
+        t,
+        dt,
+        shotT: t - sec.start,
+        shot,
+        music: denseMusic,
+        lyrics,
+        palette,
+        fx: m.defaultFx(),
+        aspect: 16 / 9,
+      });
+
+      const rCount = sceneInst.uniforms.uRippleCount.value;
+      const rA = sceneInst.uniforms.uRippleA.value;
+      const rB = sceneInst.uniforms.uRippleB.value;
+      if (rCount > peakConcurrent) peakConcurrent = rCount;
+
+      const presentKeys = new Set();
+      for (let i = 0; i < rCount; i++) {
+        const x = rA[i].x;
+        const z = rA[i].y;
+        const age = rA[i].z;
+        const amp = rA[i].w;
+        const life = rB[i].w;
+        assert.ok(age > 0 && age < life, `[${sceneName}] 活跃槽位 #${i} age=${age} 必须处于 (0, ${life}) 内`);
+        const birthT = Math.round((t - age) * 1000);
+        const key = `${birthT}:${x.toFixed(3)}:${z.toFixed(3)}`;
+        presentKeys.add(key);
+
+        const prev = tracked.get(key);
+        if (!prev) {
+          tracked.set(key, { birthT: t - age, life, amp, lastAge: age, retired: false });
+        } else {
+          assert.ok(!prev.retired, `[${sceneName}] 已自然消散的涟漪 ${key} 不应再次闪现`);
+          assert.ok(
+            Math.abs(amp - prev.amp) < 1e-6,
+            `[${sceneName}] t=${t.toFixed(3)}s 涟漪 ${key} 基础振幅不应随新涟漪或切段跳变 (${prev.amp} -> ${amp})`,
+          );
+          prev.lastAge = age;
+        }
+      }
+
+      // 检查上一帧仍存活、本帧消失的涟漪：必须是自然走完寿命且尾段包络已平滑归零，绝不能因新涟漪挤出而中途瞬灭
+      for (const [key, info] of tracked.entries()) {
+        if (!info.retired && !presentKeys.has(key)) {
+          const expectedAgeNow = t - info.birthT;
+          assert.ok(
+            expectedAgeNow >= info.life - 2e-3,
+            `[${sceneName}] 旧涟漪 ${key} 在 t=${t.toFixed(3)}s 被提前挤出瞬灭！当前年龄 ${expectedAgeNow.toFixed(3)}s < 寿命 ${info.life.toFixed(3)}s (并发=${rCount})`,
+          );
+          const prevTail = 1.0 - smoothstepGlsl(tailStartNorm, 1.0, info.lastAge / info.life);
+          assert.ok(
+            prevTail < 0.01,
+            `[${sceneName}] 涟漪 ${key} 回收前一帧的尾段淡出权重必须趋近 0 (实测 ${prevTail.toFixed(5)})`,
+          );
+          info.retired = true;
+        }
+      }
+    }
+
+    assert.ok(
+      peakConcurrent > 20,
+      `[${sceneName}] 高密度压测应激发超过旧上限(14)的并发涟漪数，实测峰值并发=${peakConcurrent}`,
+    );
+  };
+
+  const fountain = new m.FountainScene({ ...init, music: denseMusic, lyrics }, 'pulse');
+  verifySceneRipples('fountain', fountain, 0.68);
+
+  const starry = new m.StarryScene({ ...init, music: denseMusic, lyrics }, 'pulse');
+  verifySceneRipples('starry', starry, 0.74);
+
+  // 验证花坛喷泉的双层花海底鼓环形绽放光浪同样支持多波并发且平滑走完 1.72s 寿命，不因 0.22s 新底鼓而瞬灭
+  const trackedKickWaves = new Map();
+  const dt = 1 / 60;
+  for (let step = 12; step <= Math.floor(6.0 / dt); step++) {
+    const t = +(step * dt).toFixed(6);
+    const shot = {
+      index: 0,
+      start: 0,
+      end: 10,
+      scene: 'fountain',
+      variant: 'courtyard',
+      section: denseSections[0],
+      sectionIndex: 0,
+      seed: 20261104,
+      short: false,
+    };
+    fountain.update({
+      t,
+      dt,
+      shotT: t,
+      shot,
+      music: denseMusic,
+      lyrics,
+      palette,
+      fx: m.defaultFx(),
+      aspect: 16 / 9,
+    });
+    const w0 = fountain.uniforms.uKickWaves0.value;
+    const w1 = fountain.uniforms.uKickWaves1.value;
+    const ages = [w0.x, w0.y, w0.z, w0.w, w1.x, w1.y, w1.z, w1.w].filter((a) => a > 0);
+    const activeWaveKeys = new Set();
+    for (const age of ages) {
+      const kKey = Math.round((t - age) * 100);
+      activeWaveKeys.add(kKey);
+      trackedKickWaves.set(kKey, { birthT: t - age, lastAge: age, retired: false });
+    }
+    for (const [kKey, info] of trackedKickWaves.entries()) {
+      if (!info.retired && !activeWaveKeys.has(kKey)) {
+        const nowAge = t - info.birthT;
+        assert.ok(
+          nowAge >= 1.72 - 2e-3,
+          `[fountain] 花坛底鼓光浪 ${kKey} 在 age=${nowAge.toFixed(3)}s 被提前截断消失（寿命应为 1.72s）`,
+        );
+        info.retired = true;
+      }
+    }
+  }
+
+  // 随机跨越 Seek 幂等性验证
+  for (const checkT of [1.35, 4.82, 8.95, 10.02, 13.4]) {
+    const secIdx = checkT < 10 ? 0 : 1;
+    const sec = denseSections[secIdx];
+    const mkShot = (scName) => ({
+      index: secIdx,
+      start: sec.start,
+      end: sec.end,
+      scene: scName,
+      variant: scName === 'fountain' ? 'orbit' : 'glide',
+      section: sec,
+      sectionIndex: secIdx,
+      seed: 7788,
+      short: false,
+    });
+
+    const freshF = new m.FountainScene({ ...init, music: denseMusic, lyrics }, 'pulse');
+    freshF.update({ t: checkT, dt: 0.05, shotT: checkT - sec.start, shot: mkShot('fountain'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    fountain.update({ t: 14.8, dt: 0.05, shotT: 4.8, shot: mkShot('fountain'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    fountain.update({ t: 0.05, dt: 0.05, shotT: 0.05, shot: mkShot('fountain'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    fountain.update({ t: checkT, dt: 0.05, shotT: checkT - sec.start, shot: mkShot('fountain'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    assert.equal(fountain.uniforms.uRippleCount.value, freshF.uniforms.uRippleCount.value, `Fountain Seek 幂等性 rCount @ t=${checkT}`);
+    for (let i = 0; i < freshF.uniforms.uRippleCount.value; i++) {
+      const a = fountain.uniforms.uRippleA.value[i];
+      const b = freshF.uniforms.uRippleA.value[i];
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w) < 1e-6);
+    }
+
+    const freshS = new m.StarryScene({ ...init, music: denseMusic, lyrics }, 'pulse');
+    freshS.update({ t: checkT, dt: 0.05, shotT: checkT - sec.start, shot: mkShot('starry'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    starry.update({ t: 15.2, dt: 0.05, shotT: 5.2, shot: mkShot('starry'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    starry.update({ t: 0.1, dt: 0.05, shotT: 0.1, shot: mkShot('starry'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    starry.update({ t: checkT, dt: 0.05, shotT: checkT - sec.start, shot: mkShot('starry'), music: denseMusic, lyrics, palette, fx: m.defaultFx(), aspect: 16 / 9 });
+    assert.equal(starry.uniforms.uRippleCount.value, freshS.uniforms.uRippleCount.value, `Starry Seek 幂等性 rCount @ t=${checkT}`);
+    for (let i = 0; i < freshS.uniforms.uRippleCount.value; i++) {
+      const a = starry.uniforms.uRippleA.value[i];
+      const b = freshS.uniforms.uRippleA.value[i];
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w) < 1e-6);
+    }
+  }
+});
+
 
 
