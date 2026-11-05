@@ -451,11 +451,13 @@ test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 
     assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
   }
 
-  // 4. Eclipse 关键色彩（重点检查原先强行染色的 colorLightning 与闪电材质）
+  // 4. Eclipse 关键色彩（重点检查原先强行染色的 colorLightning、闪电材质及新增多层火山岩色阶）
   const eclipColors = [
     ['eclipse.colorCorona', eclipse.colorCorona],
     ['eclipse.colorMagma', eclipse.colorMagma],
     ['eclipse.colorObsidian', eclipse.colorObsidian],
+    ['eclipse.colorRockMid', eclipse.colorRockMid],
+    ['eclipse.colorRockLight', eclipse.colorRockLight],
     ['eclipse.colorLightning', eclipse.colorLightning],
     ['eclipse.lightningMaterial.color', eclipse.lightningMaterial.color],
   ];
@@ -671,4 +673,54 @@ test('HighwayScene：夜空专辑封面明月（moonMesh）跨全机位、鼓点
     if (refRadiusY === null) refRadiusY = ry;
     assert.ok(Math.abs(ry - refRadiusY) < 1e-7, `明月视觉半径在 t=${t} 发生漂移或后退缩放: ${ry} vs ${refRadiusY}`);
   }
+});
+
+test('EclipseScene：火山柱状玄武岩与黑曜石断崖立体几何、内向法线朝向与着色器多尺度岩层纹理校验', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const eclipse = new mods.EclipseScene(init, 'pulse');
+
+  // 1. 校验峡谷群组包含左右高精度雕刻断崖 + 至少 22 座凸出玄武岩柱与峡门巨峰（彻底告别平板 BoxGeometry）
+  assert.ok(
+    eclipse.canyonGroup.children.length >= 24,
+    `canyonGroup 必须包含左右连续断崖与至少 22 座凸出玄武岩柱，实测=${eclipse.canyonGroup.children.length}`,
+  );
+  const leftWall = eclipse.canyonGroup.children[0];
+  const rightWall = eclipse.canyonGroup.children[1];
+  const leftPos = leftWall.geometry.attributes.position;
+  const leftNorm = leftWall.geometry.attributes.normal;
+  const rightNorm = rightWall.geometry.attributes.normal;
+
+  assert.ok(leftPos.count >= 4000, `单侧雕刻峡谷地形顶点数必须足够精细 (>=4000)，实测=${leftPos.count}`);
+
+  // 统计主断崖段（iu = 10..28）的平均法线 X/Y 分量，确保正面严格朝向峡谷内部与上方（杜绝背面剔除隐身或光照反向）
+  let leftSumNx = 0;
+  let leftSumNy = 0;
+  let rightSumNx = 0;
+  let rightSumNy = 0;
+  const stride = 43; // uSegs(42) + 1
+  for (let iz = 10; iz < 90; iz += 4) {
+    for (let iu = 10; iu <= 28; iu += 2) {
+      const idx = iz * stride + iu;
+      leftSumNx += leftNorm.getX(idx);
+      leftSumNy += leftNorm.getY(idx);
+      rightSumNx += rightNorm.getX(idx);
+      rightSumNy += rightNorm.getY(idx);
+    }
+  }
+  assert.ok(leftSumNx > 0 && leftSumNy > 0, `左壁断崖法线必须朝向峡谷内侧 (+X) 与上方 (+Y): nx=${leftSumNx.toFixed(2)}, ny=${leftSumNy.toFixed(2)}`);
+  assert.ok(rightSumNx < 0 && rightSumNy > 0, `右壁断崖法线必须朝向峡谷内侧 (-X) 与上方 (+Y): nx=${rightSumNx.toFixed(2)}, ny=${rightSumNy.toFixed(2)}`);
+
+  // 2. 校验着色器包含 3D 有限差分微法线、柱状玄武岩节理、熔岩河仰射暖光与日冕黑曜石高光，且 uCamPos 随帧实时同步
+  const frag = eclipse.canyonMaterial.fragmentShader;
+  assert.ok(frag.includes('volcanicRockField') && frag.includes('fbm3D'), '峡谷着色器必须包含 3D 多尺度火山玄武岩高度场');
+  assert.ok(frag.includes('magmaBounce') && frag.includes('obsidianSpec'), '峡谷着色器必须包含熔岩仰射暖光与黑曜石高光照明');
+
+  const ridgeShot = { scene: 'eclipse', start: 16, end: 24, variant: 'ridge', seed: 3, section: music.a.sections[1], sectionIndex: 1 };
+  eclipse.update({ t: 18.5, dt: 1 / 60, shotT: 2.5, shot: ridgeShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.ok(
+    eclipse.canyonMaterial.uniforms.uCamPos.value.distanceTo(eclipse.camera.position) < 1e-9,
+    'canyonMaterial.uniforms.uCamPos 必须与相机世界坐标实时精确同步',
+  );
+  // 校验 ridge 机位处于峡谷净空内（|x| < 10.5m），绝不穿入两侧岩体
+  assert.ok(Math.abs(eclipse.camera.position.x) < 10.5, `ridge 机位不得穿入峡谷岩体: x=${eclipse.camera.position.x.toFixed(3)}`);
 });
