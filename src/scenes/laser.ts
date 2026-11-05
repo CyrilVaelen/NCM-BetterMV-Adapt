@@ -171,6 +171,39 @@ export function evalLeadExponentialBreath(leadIntensity: number): number {
   return Math.exp(LEAD_EXP_SLOPE * (iClamped - LEAD_EXP_REF));
 }
 
+/**
+ * C1 连续有理软膝点限幅器（Soft-Knee Limiter）：
+ * - 当 x <= knee 时严格 1:1 线性透传（完整保留低中区间的指数呼吸动态）；
+ * - 当 x > knee 时平滑渐近收敛至 limit（一阶导在 x=knee 处连续等于 1，彻底消除硬截断与高光过曝）。
+ */
+export function softKneeLimit(x: number, knee: number, limit: number): number {
+  const v = Math.max(0, Number.isFinite(x) ? x : 0);
+  if (v <= knee) return v;
+  const span = Math.max(1e-5, limit - knee);
+  const over = v - knee;
+  return knee + span * (over / (over + span));
+}
+
+/**
+ * 保色相等比 HDR 峰值辐射软限幅（与 GLSL limitLaserRadiance 严格同构）：
+ * 按 RGB 最大通道压缩超限能量，100% 保持原色彩比例与色相不退化泛白。
+ */
+export function evalLaserRadianceLimit(
+  r: number,
+  g: number,
+  b: number,
+  knee: number,
+  limit: number,
+): [number, number, number] {
+  const cr = Math.max(0, r);
+  const cg = Math.max(0, g);
+  const cb = Math.max(0, b);
+  const peak = Math.max(cr, cg, cb);
+  if (peak <= knee || peak < 1e-6) return [cr, cg, cb];
+  const scale = softKneeLimit(peak, knee, limit) / peak;
+  return [cr * scale, cg * scale, cb * scale];
+}
+
 /** 激光强度瞬切归零门控函数（~20ms 利落切零、~16ms 瞬开释放；仅作用于激光功率，绝不硬黑专辑封面、两侧频谱台与舞台环境） */
 function snapBlackoutWindow(x: number, start: number, end: number, edgeIn = 0.020, edgeOut = 0.016): number {
   if (x <= start || x >= end) return 0;
@@ -1573,6 +1606,23 @@ void sampleLaserPalette(float slotPos, out vec3 col, out vec3 core) {
 void sampleStageGradient(float norm01, out vec3 col, out vec3 core) {
   sampleLaserPalette(uPalBase + clamp(norm01, 0.0, 1.0) * uPalSpan, col, core);
 }
+
+// C1 连续有理软膝点标量压缩：knee 以下 1:1 无损保留呼吸对比，knee 以上平滑渐近至 limit 防过曝
+float softKneeScalar(float x, float knee, float limit) {
+  float v = max(0.0, x);
+  if (v <= knee) return v;
+  float span = max(1e-4, limit - knee);
+  float over = v - knee;
+  return knee + span * (over / (over + span));
+}
+
+// 保色相等比 HDR 辐射软限幅：按最大通道等比收敛峰值，杜绝各通道独立溢出退化成惨白过曝块
+vec3 limitLaserRadiance(vec3 rgb, float knee, float limit) {
+  vec3 c = max(rgb, vec3(0.0));
+  float peak = max(c.r, max(c.g, c.b));
+  if (peak <= knee) return c;
+  return c * (softKneeScalar(peak, knee, limit) / max(1e-5, peak));
+}
 `;
 
 // ============================================================================
@@ -1626,8 +1676,9 @@ void main() {
 
   vec3 col = base;
   col += uCoverGlow * pow(stageAlign, 20.0) * (0.042 + 0.045 * uSectionEnergy) * hazeDensity;
-  // 激光归零瞬间仅消退天穹中的激光大气散射，保持暗场底色、封面背晕与盲眼灯余晖自然连续（绝不硬黑画面）
-  col += laserHaze * (stageHalo + skyScatter) * (0.32 + 0.68 * uLeadBreath) * (1.0 - uBlackout) * hazeDensity;
+  // 激光归零瞬间仅消退天穹中的激光大气散射，保持暗场底色、封面背晕与盲眼灯余晖自然连续（软限幅防天穹泛白）
+  float skyBreath = softKneeScalar(uLeadBreath, 1.15, 1.55);
+  col += laserHaze * (stageHalo + skyScatter) * (0.30 + 0.56 * skyBreath) * (1.0 - uBlackout) * hazeDensity;
 
   // 舞台盲眼灯触发时在舞台上空勾勒封面同源余晖
   float blinderScatter = pow(stageAlign, 5.0) * smoothstep(-0.05, 0.55, up) * uBlinderGlow;
@@ -2383,15 +2434,21 @@ void main() {
   float streak = exp(-abs(vQuad.y) * 30.0) * pow(max(0.0, 1.0 - abs(vQuad.x)), 2.2) * 0.62;
 
   // 自适应封面色温热惯性：起音瞬间为封面同色系炽亮核，余晖尾部沉淀为浓郁 uBlinderWarm（黑白封面自动呈铂银白）
-  vec3 hotCore = mix(uLaserPrimaryCore, vec3(1.0), 0.38);
+  vec3 hotCore = mix(uLaserPrimaryCore, vec3(1.0), 0.28);
   vec3 filamentCol = mix(hotCore, uBlinderWarm, clamp(vCool, 0.0, 1.0));
-  vec3 col = mix(filamentCol, mix(uLaserPrimaryCore, vec3(1.0), 0.62), clamp(pod * (1.0 - vCool * 0.75), 0.0, 0.72));
+  vec3 col = mix(filamentCol, mix(uLaserPrimaryCore, vec3(1.0), 0.48), clamp(pod * (1.0 - vCool * 0.75), 0.0, 0.64));
 
-  float intensity = (pod * 1.15 + halo + streak * (1.0 - 0.45 * vCool)) * vPower * 0.62;
-  if (vMirror > 0.5) intensity *= 0.32;
+  float intensity = (pod * 1.08 + halo + streak * (1.0 - 0.45 * vCool)) * vPower * 0.54;
+  if (vMirror > 0.5) intensity *= 0.30;
 
   if (intensity < 0.003) discard;
-  gl_FragColor = vec4(col * intensity, 1.0);
+  vec3 outRgb = col * intensity;
+  float peak = max(outRgb.r, max(outRgb.g, outRgb.b));
+  if (peak > 0.42) {
+    float over = peak - 0.42;
+    outRgb *= (0.42 + 0.34 * (over / (over + 0.34))) / peak;
+  }
+  gl_FragColor = vec4(outRgb, 1.0);
 }
 `;
 
@@ -2509,21 +2566,21 @@ void main() {
   // 模式 A 下 vColorMix 按发射器空间坐标平滑映射且扇面内部柔和过渡 (uSheetSpread)；模式 B 下 uSheetSpread = 0 全扇纯色统一！
   vec3 baseLaser, baseCore;
   sampleLaserPalette(vColorMix + u * uSheetSpread, baseLaser, baseCore);
-  float density = (interiorFill + fingers + edgeOuter) * smokeDensity * distAtten * mieBoost + originBoost * 0.28;
-  float hotCoreMix = clamp((edgeOuter * 0.62 + fingers * 0.44 * ionize + originBoost * 0.50), 0.0, 0.90);
+  float density = (interiorFill + fingers + edgeOuter) * smokeDensity * distAtten * mieBoost + originBoost * 0.24;
+  float hotCoreMix = clamp((edgeOuter * 0.52 + fingers * 0.36 * ionize + originBoost * 0.40), 0.0, 0.80);
   vec3 col = mix(baseLaser, baseCore, hotCoreMix)
-           + vec3(0.14 * ionize) * clamp(edgeOuter * 0.5 + fingers * 0.35 + originBoost * 0.35, 0.0, 0.28);
+           + vec3(0.05 * ionize) * clamp(edgeOuter * 0.45 + fingers * 0.30 + originBoost * 0.30, 0.0, 0.22);
 
   float rippleGain = 0.50 + 0.14 * sheetRipple;
   float mediumWeight = vMirror < 0.5
     ? mix(0.26 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
-    : mix(rippleGain, 0.60 * exp(-max(0.0, vWorldPos.y) * 0.20), smoothstep(-0.04, 0.06, vWorldPos.y));
+    : mix(rippleGain, 0.56 * exp(-max(0.0, vWorldPos.y) * 0.20), smoothstep(-0.04, 0.06, vWorldPos.y));
 
-  float alpha = density * vPower * 0.180 * mediumWeight;
-  alpha *= (1.0 - uBlackout);
+  float rawAlpha = density * vPower * 0.155 * mediumWeight * (1.0 - uBlackout);
+  float alpha = softKneeScalar(rawAlpha, 0.20, 0.38);
 
   if (alpha < 0.002) discard;
-  gl_FragColor = vec4(col * alpha, 1.0);
+  gl_FragColor = vec4(limitLaserRadiance(col * alpha, 0.26, 0.46), 1.0);
 }
 `;
 
@@ -2572,8 +2629,8 @@ void main() {
   float sideLen = length(side);
   side = sideLen > 1e-4 ? side / sideLen : vec3(1.0, 0.0, 0.0);
 
-  // 锐利刀锋激光截面：随 Lead 指数功率在低谷纤细内敛、峰值张开丁达尔电离晕圈
-  float halfW = aBeamEnd.w * (1.0 + 0.44 * uv.x) * (0.68 + 0.54 * min(2.25, vPower));
+  // 锐利刀锋激光截面：随 Lead 指数功率适度舒展同时限制最大横向膨胀，防止密集排束在高潮粘连成白墙
+  float halfW = aBeamEnd.w * (1.0 + 0.36 * uv.x) * (0.66 + 0.28 * min(1.80, vPower));
   vec3 wp = spine + side * (vBeamUv.y * halfW);
   vWorldPos = wp;
 
@@ -2643,16 +2700,16 @@ void main() {
 
   vec3 tint, tintCore;
   sampleLaserPalette(vColorMix, tint, tintCore);
-  float coreMixFactor = clamp(core * (0.55 + 0.40 * ionBoost) + (emitterHotspot + waterImpact) * 0.52, 0.0, 0.95);
+  float coreMixFactor = clamp(core * (0.48 + 0.32 * ionBoost) + (emitterHotspot + waterImpact) * 0.42, 0.0, 0.84);
   vec3 col = mix(tint, tintCore, coreMixFactor)
-           + vec3(0.20 * ionBoost) * pow(core, 3.2)
-           + vec3(0.16) * waterImpact;
+           + vec3(0.07 * ionBoost) * pow(core, 3.6)
+           + vec3(0.06) * waterImpact;
 
-  float alpha = (((core * (1.06 + 0.50 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.44) * mediumWeight + waterImpact * 0.50) * vPower * 0.72;
-  alpha *= (1.0 - uBlackout);
+  float rawAlpha = (((core * (0.98 + 0.38 * ionBoost) + corona) * (1.0 + packet) * mist * endFade + emitterHotspot * 0.38) * mediumWeight + waterImpact * 0.42) * vPower * 0.58;
+  float alpha = softKneeScalar(rawAlpha * (1.0 - uBlackout), 0.46, 0.88);
 
   if (alpha < 0.003) discard;
-  gl_FragColor = vec4(col * alpha, 1.0);
+  gl_FragColor = vec4(limitLaserRadiance(col * alpha, 0.54, 0.94), 1.0);
 }
 `;
 
@@ -2732,13 +2789,13 @@ void main() {
   float axialPulse = 0.24 + 0.92 * smoothstep(-0.15, 0.45, sin(s * 22.0 - uTime * 10.5 + vSpinDir * 1.2));
   float mist = 0.24 + 1.04 * pow(hazeFbm(vWorldPos.xz * 0.09 + vec2(vWorldPos.y * 0.08, -uTime * 0.22)), 1.35);
 
-  float ringOrigin = 0.042 * exp(-s * 16.0) * (1.0 - vMirror * 0.6);
-  float distFade = (1.0 - smoothstep(0.72, 1.0, s)) * smoothstep(0.008, 0.055, s);
+  float ringOrigin = 0.026 * exp(-s * 16.0) * (1.0 - vMirror * 0.6);
+  float distFade = (1.0 - smoothstep(0.72, 1.0, s)) * smoothstep(0.016, 0.082, s);
 
   // 圆锥底部射线触水点星斑与向上镜面反射衰减（反射束在 0~7m 低空清晰弹出 V 形折线后柔和融入雾气，不遮挡上方专辑封面）
   float coneWaterImpact = sharpRay * (underStageBox ? 0.0 : 1.0) * exp(-abs(vWorldPos.y) * 11.0) * (0.75 + 0.35 * coneRipple) * distFade;
   float coneSubWeight = 0.54 + 0.16 * coneRipple;
-  float coneBounceWeight = 0.72 * exp(-max(0.0, vWorldPos.y) * 0.14);
+  float coneBounceWeight = 0.66 * exp(-max(0.0, vWorldPos.y) * 0.15);
   float mediumWeight = vMirror < 0.5
     ? mix(0.24 + 0.08 * coneRipple, 1.0, smoothstep(-0.05, 0.04, vWorldPos.y))
     : mix(coneSubWeight, coneBounceWeight, smoothstep(-0.04, 0.05, vWorldPos.y));
@@ -2747,14 +2804,14 @@ void main() {
   vec3 tint, tintCore;
   sampleStageGradient(0.5 + 0.5 * cos(theta), tint, tintCore);
   float coneIon = smoothstep(0.48, 2.15, vConePower);
-  vec3 col = mix(tint, tintCore, clamp(sharpRay * (0.70 + 0.26 * coneIon) + coneWaterImpact * 0.5, 0.0, 0.96))
-           + vec3(0.16 * coneIon) * pow(sharpRay, 2.2);
+  vec3 col = mix(tint, tintCore, clamp(sharpRay * (0.58 + 0.24 * coneIon) + coneWaterImpact * 0.42, 0.0, 0.85))
+           + vec3(0.06 * coneIon) * pow(sharpRay, 2.6);
 
-  float alpha = (((sharpRay * 1.85 + softSheet) * azimChase * axialPulse * mist * distFade + ringOrigin) * mediumWeight + coneWaterImpact * 0.85) * vConePower * 0.28;
-  alpha *= (1.0 - uBlackout);
+  float rawAlpha = (((sharpRay * 1.68 + softSheet) * azimChase * axialPulse * mist * distFade + ringOrigin) * mediumWeight + coneWaterImpact * 0.72) * vConePower * 0.24;
+  float alpha = softKneeScalar(rawAlpha * (1.0 - uBlackout), 0.36, 0.72);
 
   if (alpha < 0.002) discard;
-  gl_FragColor = vec4(col * alpha, 1.0);
+  gl_FragColor = vec4(limitLaserRadiance(col * alpha, 0.44, 0.82), 1.0);
 }
 `;
 
@@ -2837,24 +2894,24 @@ void main() {
   float radial = max(0.0, 1.0 - abs(x) - (1.0 - billow) * 0.48 * smoothstep(0.05, 0.65, y));
   radial = smoothstep(0.0, 0.55, radial);
 
-  // 喷嘴根部超音速高压白芯 + 随年龄底部先断气、顶部云团升空消散
+  // 喷嘴根部超音速高压白芯 + 随年龄底部先断气、顶部云团升空消散（控制高光峰值防遮白封面）
   float cutoffBottom = smoothstep(max(0.0, (vAge - 0.32) * 1.15), max(0.08, (vAge - 0.32) * 1.15 + 0.28), y);
   float topSoft = 1.0 - smoothstep(0.68, 1.0, y);
-  float nozzleCore = exp(-y * 10.0) * exp(-x * x * 8.0) * (1.0 - smoothstep(0.28, 0.52, vAge)) * 1.8;
+  float nozzleCore = exp(-y * 10.0) * exp(-x * x * 8.0) * (1.0 - smoothstep(0.28, 0.52, vAge)) * 1.28;
 
   float lifeFade = (1.0 - smoothstep(0.45, 1.0, vAge));
-  float density = (radial * billow * cutoffBottom * topSoft * 1.35 + nozzleCore) * vStrength * lifeFade;
+  float density = (radial * billow * cutoffBottom * topSoft * 1.18 + nozzleCore) * vStrength * lifeFade;
 
   // 8 座低温白雾气柱按横向空间坐标实时吸收上方激光照射（激光切零时仅隐去激光染光，保留白雾与盲眼灯暖辉）
   vec3 laserMix, coreDummy;
   sampleStageGradient((vWorldPos.x + 15.0) / 30.0, laserMix, coreDummy);
-  vec3 steamBase = vec3(0.86, 0.88, 0.91);
-  vec3 litColor = steamBase * 0.30 + laserMix * 0.92 * (1.0 - uBlackout) + uBlinderWarm * uBlinderGlow * 0.34;
-  vec3 col = mix(litColor, mix(laserMix, vec3(1.0), 0.72), clamp(nozzleCore * 0.52 * (1.0 - 0.65 * uBlackout), 0.0, 0.72));
+  vec3 steamBase = vec3(0.84, 0.86, 0.89);
+  vec3 litColor = steamBase * 0.26 + laserMix * 0.78 * (1.0 - uBlackout) + uBlinderWarm * uBlinderGlow * 0.26;
+  vec3 col = mix(litColor, mix(laserMix, vec3(1.0), 0.56), clamp(nozzleCore * 0.45 * (1.0 - 0.65 * uBlackout), 0.0, 0.62));
 
-  float alpha = density * (vMirror > 0.5 ? 0.20 : 0.46);
+  float alpha = density * (vMirror > 0.5 ? 0.18 : 0.40);
   if (alpha < 0.003) discard;
-  gl_FragColor = vec4(col * alpha, 1.0);
+  gl_FragColor = vec4(limitLaserRadiance(col * alpha, 0.36, 0.66), 1.0);
 }
 `;
 
@@ -2961,17 +3018,17 @@ void main() {
   float waterWave = 0.78 + 0.22 * sin(vWorldPos.z * 2.6 - uTime * 4.8 + vWorldPos.x * 1.3);
   float mirrorScale = vMirror > 0.5 ? 0.30 * waterWave : 1.0;
 
-  // 严格采样微调后的专辑封面 6 槽同源渐变色板（氛围灯在激光归零切光时保持常亮呼吸，绝不硬黑）
+  // 严格采样微调后的专辑封面 6 槽同源渐变色板（氛围灯保持常亮呼吸，同时施加保色软限幅防止多灯云团叠加泛白）
   vec3 washTint, washCore;
   sampleLaserPalette(colorMix, washTint, washCore);
-  vec3 hotWhite = mix(washCore, vec3(1.0), 0.74);
+  vec3 hotWhite = mix(washCore, vec3(1.0), 0.50);
 
-  float lampDrive = (0.48 * power + 1.15 * strobe) * mirrorScale;
+  float lampDrive = (0.44 * power + 0.98 * strobe) * mirrorScale;
   float mistDrive = power * mirrorScale;
 
-  vec3 lampPart = (hotWhite * fixtureCore * 1.18 + mix(washTint, washCore, 0.46) * fixtureHalo) * lampDrive;
-  vec3 mistPart = mix(washTint, washCore, 0.18 * billow) * smokeDensity * mistDrive;
-  vec3 totalLight = lampPart + mistPart;
+  vec3 lampPart = (hotWhite * fixtureCore * 1.05 + mix(washTint, washCore, 0.42) * fixtureHalo) * lampDrive;
+  vec3 mistPart = mix(washTint, washCore, 0.16 * billow) * smokeDensity * mistDrive;
+  vec3 totalLight = limitLaserRadiance(lampPart + mistPart, 0.40, 0.72);
 
   if (max(totalLight.r, max(totalLight.g, totalLight.b)) < 0.002) discard;
   gl_FragColor = vec4(totalLight, 1.0);
@@ -3065,57 +3122,62 @@ void main() {
   // 1. 世界米制恒定锐度双外边界振镜驻留光束（从扇尖顶点星芒一路笔直延伸至远端，高亮度勾勒大三角形轮廓）
   float spanHalfMeters = max(0.18, r * vLength * vSpread);
   float edgeMeters = (1.0 - min(1.0, absU)) * spanHalfMeters;
-  float ionize = smoothstep(0.35, 2.10, vPower);
-  float boundaryCore = exp(-(edgeMeters * edgeMeters) / mix(0.019, 0.011, ionize)) * (2.25 + 0.72 * ionize);
-  float boundaryGlow = exp(-edgeMeters * 2.75) * (0.84 + 0.38 * ionize);
+  float ionize = smoothstep(0.42, 2.25, vPower);
+  float boundaryCore = exp(-(edgeMeters * edgeMeters) / mix(0.019, 0.012, ionize)) * (2.05 + 0.52 * ionize);
+  float boundaryGlow = exp(-edgeMeters * 2.85) * (0.72 + 0.28 * ionize);
 
   // 2. 扇面内部 2 道几何折面棱线射线（还原图二高速多边形振镜折点射线，绝无密集梳齿条纹）
   float cDist1 = abs(u - vCrease) * spanHalfMeters;
   float cDist2 = abs(u + vCrease * 0.58) * spanHalfMeters;
-  float creaseRay = (exp(-(cDist1 * cDist1) / 0.016) * 0.96 + exp(-cDist1 * 3.6) * 0.32
-                   + exp(-(cDist2 * cDist2) / 0.022) * 0.52 + exp(-cDist2 * 4.2) * 0.18)
+  float creaseRay = (exp(-(cDist1 * cDist1) / 0.016) * 0.86 + exp(-cDist1 * 3.8) * 0.26
+                   + exp(-(cDist2 * cDist2) / 0.022) * 0.46 + exp(-cDist2 * 4.4) * 0.15)
                   * smoothstep(0.012, 0.085, r);
 
-  // 3. 连续丝滑半透明琉璃激光扇面内腔（边缘振镜驻留自然聚光 + 扫描流光呼吸，多扇交叠切出晶莹几何菱形）
-  float galvoDwell = 1.0 / sqrt(max(0.14, 1.03 - u * u));
-  float fanShimmer = 0.84 + 0.28 * cos((u - vSweepPhase) * 3.1415926);
-  float glassVeil = (1.0 - smoothstep(0.988, 1.008, absU)) * (0.148 + 0.112 * galvoDwell) * fanShimmer;
+  // 3. 连续丝滑半透明琉璃激光扇面内腔（独立控制雾膜软上限：单扇透亮丝滑，3~4 扇交叠切出晶莹菱形且绝不冲破泛光阈值糊白封面）
+  float galvoDwell = 1.0 / sqrt(max(0.20, 1.03 - u * u));
+  float fanShimmer = 0.85 + 0.24 * cos((u - vSweepPhase) * 3.1415926);
+  float glassVeil = (1.0 - smoothstep(0.988, 1.008, absU)) * (0.128 + 0.092 * galvoDwell) * fanShimmer;
 
-  // 4. 物理掠射角光程增亮（视线与扇面夹角越小，穿过的激光雾膜光程越长、扇面越透亮）+ 三维空气烟雾质感
+  // 4. 物理掠射角光程增亮（收敛最大掠射倍率，防止正对视线扫过瞬间整屏爆白）+ 三维空气烟雾质感
   vec3 viewDir = normalize(cameraPosition - vWorldPos);
   float cosInc = abs(dot(normalize(vPlaneNormal), viewDir));
-  float slabBoost = 1.0 + 1.15 * pow(1.0 - clamp(cosInc, 0.0, 1.0), 2.0) * (1.0 - vMirror * 0.5);
+  float slabBoost = 1.0 + 0.72 * pow(1.0 - clamp(cosInc, 0.0, 1.0), 2.0) * (1.0 - vMirror * 0.5);
 
   vec2 hazeCoord = vWorldPos.xz * 0.068 + vec2(vWorldPos.y * 0.052, -uTime * 0.18);
   float h1 = hazeFbm(hazeCoord);
   float h2 = hazeFbm(hazeCoord * 2.1 + vec2(uTime * 0.12, 3.1));
-  float smokeMedium = 0.58 + 0.82 * pow(h1 * 0.65 + h2 * 0.35, 1.18);
+  float smokeMedium = 0.56 + 0.74 * pow(h1 * 0.65 + h2 * 0.35, 1.18);
 
   // 5. 扇尖发射源璀璨星芒核 (✦)
   float dOrigin = length(vWorldPos - vOrigin);
-  float apexStar = (exp(-dOrigin * 0.92) * exp(-absU * 2.0) * 2.55 + exp(-dOrigin * 2.5) * 1.75)
-                 * (1.0 + 0.45 * ionize) * (1.0 - vMirror * 0.52);
+  float apexStar = (exp(-dOrigin * 0.96) * exp(-absU * 2.1) * 2.15 + exp(-dOrigin * 2.6) * 1.45)
+                 * (1.0 + 0.30 * ionize) * (1.0 - vMirror * 0.52);
   float distAtten = (1.0 - smoothstep(0.72, 1.0, r)) * smoothstep(0.0, 0.005, r);
 
   vec3 baseLaser, baseCore;
   sampleLaserPalette(vColorMix + u * uSheetSpread * 0.50, baseLaser, baseCore);
 
-  float beamHighlight = boundaryCore + boundaryGlow + creaseRay;
-  float density = (glassVeil * smokeMedium * slabBoost + beamHighlight * (0.72 + 0.28 * smokeMedium)) * distAtten + apexStar * 0.42;
-  float coreMixFactor = clamp(boundaryCore * 0.72 + creaseRay * 0.48 + apexStar * 0.65 + ionize * 0.16, 0.0, 0.96);
-  vec3 col = mix(baseLaser, baseCore, coreMixFactor)
-           + vec3(0.22 * ionize) * clamp(boundaryCore * 0.58 + apexStar * 0.45, 0.0, 0.42);
-
   float rippleGain = 0.52 + 0.15 * waterRipple;
   float mediumWeight = vMirror < 0.5
     ? mix(0.28 * rippleGain, 1.0, smoothstep(-0.06, 0.04, vWorldPos.y))
-    : mix(rippleGain, 0.64 * exp(-max(0.0, vWorldPos.y) * 0.16), smoothstep(-0.04, 0.06, vWorldPos.y));
+    : mix(rippleGain, 0.58 * exp(-max(0.0, vWorldPos.y) * 0.16), smoothstep(-0.04, 0.06, vWorldPos.y));
 
-  float alpha = density * vPower * 0.38 * mediumWeight;
-  alpha *= (1.0 - uBlackout);
+  float gateGain = vPower * 0.34 * mediumWeight * (1.0 - uBlackout);
+  // 内腔雾膜与外沿锐利射线双通道独立软限幅：内腔保持琉璃半透明感（<=0.22），外沿与星点保持锋利亮线（<=0.86）
+  float veilRaw = glassVeil * smokeMedium * slabBoost * distAtten * gateGain;
+  float veilAlpha = softKneeScalar(veilRaw, 0.11, 0.21);
+
+  float beamHighlight = (boundaryCore + boundaryGlow + creaseRay) * (0.72 + 0.28 * smokeMedium) * distAtten + apexStar * 0.38;
+  float edgeAlpha = softKneeScalar(beamHighlight * gateGain, 0.46, 0.86);
+  float alpha = veilAlpha + edgeAlpha;
 
   if (alpha < 0.002) discard;
-  gl_FragColor = vec4(col * alpha, 1.0);
+
+  float coreMixFactor = clamp(boundaryCore * 0.62 + creaseRay * 0.40 + apexStar * 0.52 + ionize * 0.10, 0.0, 0.84);
+  vec3 col = mix(baseLaser, baseCore, coreMixFactor)
+           + vec3(0.07 * ionize) * clamp(boundaryCore * 0.48 + apexStar * 0.38, 0.0, 0.30);
+
+  gl_FragColor = vec4(limitLaserRadiance(col * alpha, 0.54, 0.94), 1.0);
 }
 `;
 
@@ -4873,7 +4935,7 @@ export class LaserScene implements MvScene {
         const buildStrobe = Math.pow(0.5 + 0.5 * Math.cos(t * (22.0 + 28.0 * buildProgress) + i * 1.7), 3.0);
         power = Math.max(power, buildStrobe * buildProgress * 0.82);
       }
-      power = Math.min(1.15, power);
+      power = softKneeLimit(power, 0.72, 0.94);
       const cool = clamp01(1.0 - power * 0.92);
       totalBlinderEnergy += power;
 
@@ -4905,10 +4967,11 @@ export class LaserScene implements MvScene {
     const activeParity = latestHit ? latestHit.parity : ((barsIntoSec % 2 === 0) ? 1 : -1);
     const pulseTravel = clamp01(hitAge / 0.20);
 
-    // 5b. 更新 24 组图一风格舞台体积烟雾氛围灯（台唇双管频闪染光条 + 两翼/顶冠摇头浓烟染色灯，激光切零时依然常亮呼吸）
+    // 5b. 更新 24 组图一风格舞台体积烟雾氛围灯（台唇双管频闪染光条 + 两翼/顶冠摇头浓烟染色灯；激光切零时常亮，激光高能峰值时轻柔退避防过曝）
     const wSpec = this.washSpecAttr.array as Float32Array;
     const wState = this.washStateAttr.array as Float32Array;
-    const washBreathEnv = 0.72 + 0.28 * Math.min(1.8, leadBreath);
+    const washBreathEnv = 0.72 + 0.24 * Math.min(1.65, leadBreath);
+    const washHeadroomDuck = 1.0 - 0.18 * clamp01((leadBreath - 1.10) / 1.15) * laserGate;
     for (let i = 0; i < WASH_FIXTURE_COUNT; i++) {
       const w = this.washSpecs[i];
       const washWave = Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI - w.groupIdx * 0.85), 1.8);
@@ -4931,17 +4994,19 @@ export class LaserScene implements MvScene {
         const buildSwirl = 0.45 + 0.55 * Math.pow(0.5 + 0.5 * Math.cos(beatInfo.pos * Math.PI * 2.0 - w.groupIdx * 0.7), 2.0);
         washPower = (0.56 + 0.58 * buildProgress) * buildSwirl;
         washStrobe = w.kind === 1
-          ? (0.30 + 1.05 * buildProgress * buildSwirl)
-          : (0.32 + 0.68 * buildProgress * washWave);
+          ? (0.30 + 0.92 * buildProgress * buildSwirl)
+          : (0.32 + 0.62 * buildProgress * washWave);
       } else if (isDrop || isChorus) {
-        washPower = (w.kind === 0 ? 0.84 : 0.68) * (0.55 + 0.58 * dropPower) * (0.62 + 0.38 * washWave) * washBreathEnv;
+        washPower = (w.kind === 0 ? 0.80 : 0.65) * (0.55 + 0.52 * dropPower) * (0.62 + 0.38 * washWave) * washBreathEnv;
         washStrobe = w.kind === 1
-          ? (0.34 + 0.92 * Math.max(kickFast, downbeatFlash * 0.85) * washWave + 0.34 * snareFast) * dropPower
-          : (0.36 + 0.66 * Math.max(kickPunch * 0.75, beatPulse * 0.65) * washWave) * (0.45 + 0.55 * dropPower);
+          ? (0.32 + 0.82 * Math.max(kickFast, downbeatFlash * 0.85) * washWave + 0.28 * snareFast) * dropPower
+          : (0.34 + 0.58 * Math.max(kickPunch * 0.75, beatPulse * 0.65) * washWave) * (0.45 + 0.55 * dropPower);
       } else {
         washPower = (w.kind === 0 ? 0.72 : 0.56) * (0.76 + 0.24 * washWave);
         washStrobe = (0.26 + 0.44 * kickPunch * washWave);
       }
+      washPower = softKneeLimit(washPower * washHeadroomDuck, 0.76, 0.96);
+      washStrobe = softKneeLimit(washStrobe * washHeadroomDuck, 0.68, 0.92);
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * WASH_FIXTURE_COUNT + i) * 4;
@@ -4962,8 +5027,8 @@ export class LaserScene implements MvScene {
     const sAngles = this.sheetAnglesAttr.array as Float32Array;
     const sStyle = this.sheetStyleAttr.array as Float32Array;
     const sweepClock = t * 0.85 + leadMotion * 0.22;
-    const sidechainSheet = 0.28 + 0.78 * kickFast + 0.34 * beatPulse + 0.30 * hitEnv;
-    const sheetModeScale = (isDrop || isChorus) ? 0.28 : 0.36;
+    const sidechainSheet = softKneeLimit(0.28 + 0.78 * kickFast + 0.34 * beatPulse + 0.30 * hitEnv, 1.08, 1.38);
+    const sheetModeScale = (isDrop || isChorus) ? 0.26 : 0.34;
 
     for (let i = 0; i < SHEET_EMITTER_COUNT; i++) {
       const sp = this.sheetSpecs[i];
@@ -5052,7 +5117,7 @@ export class LaserScene implements MvScene {
         }
       }
 
-      power = Math.min(4.20, power * sheetModeScale * leadBreath) * laserGate;
+      power = Math.min(3.80, power * sheetModeScale * leadBreath) * laserGate;
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * SHEET_EMITTER_COUNT + i) * 4;
@@ -5075,7 +5140,7 @@ export class LaserScene implements MvScene {
     const scWing = this.scanWingAttr.array as Float32Array;
     const scStyle = this.scanStyleAttr.array as Float32Array;
     const scanClock = t * (isDrop || isChorus ? 1.05 : isBuild ? (0.70 + 0.65 * buildProgress) : 0.58) + leadMotion * 0.28;
-    const sidechainScan = 0.46 + 0.76 * kickFast + 0.36 * snareFast + 0.30 * beatPulse + 0.28 * hitEnv;
+    const sidechainScan = softKneeLimit(0.44 + 0.70 * kickFast + 0.30 * snareFast + 0.26 * beatPulse + 0.24 * hitEnv, 1.10, 1.40);
 
     const evalScanColorSlot = (x: number, group: number): number => {
       if (isUnisonMode) return activeUnisonSlot;
@@ -5163,10 +5228,10 @@ export class LaserScene implements MvScene {
         scanPower = (0.58 + 0.88 * buildProgress) * (0.48 + 0.52 * scanChase) * groupGate;
       } else if (isDrop || isChorus) {
         const cueScale = cueMode === 1
-          ? (sc.group === 0 || sc.group === 2 ? 0.68 : 0.28)
+          ? (sc.group === 0 || sc.group === 2 ? 0.62 : 0.26)
           : cueMode === 0
-            ? (sc.group <= 1 ? 1.24 : 0.96)
-            : (sc.group <= 2 ? 1.12 : 0.84);
+            ? (sc.group <= 1 ? 1.12 : 0.88)
+            : (sc.group <= 2 ? 1.02 : 0.80);
         scanPower = cueScale * sidechainScan * (0.52 + 0.48 * scanChase) * dropPower;
         if (isDrop && dropPower < 0.55) {
           const scanFade = smooth(clamp01((dropPower - 0.35) / 0.20));
@@ -5174,11 +5239,11 @@ export class LaserScene implements MvScene {
         }
       } else {
         // 主歌 / 常规段落：底角交叉扇 + 顶冠扇 + 灯塔中腰扇从容横扫呼吸
-        scanPower = (sc.group <= 1 ? 0.92 : sc.group === 2 ? 0.62 : 0.38) * (0.55 + 0.45 * sidechainScan) * Math.max(0.58, dropPower);
+        scanPower = (sc.group <= 1 ? 0.88 : sc.group === 2 ? 0.58 : 0.36) * (0.55 + 0.45 * sidechainScan) * Math.max(0.58, dropPower);
       }
 
       const scanColorSlot = evalScanColorSlot(sc.x, sc.group);
-      scanPower = Math.min(4.40, scanPower * leadBreath) * laserGate;
+      scanPower = Math.min(3.60, scanPower * leadBreath) * laserGate;
 
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * SCAN_LASER_COUNT + i) * 4;
@@ -5265,9 +5330,9 @@ export class LaserScene implements MvScene {
           beamPower = cGain * 0.90 * (0.12 + 0.95 * crownWave);
         }
       } else {
-        // Drop / Chorus / Verse 主秀：对称几何秩序 + 饱满 64 束侧廊下射 + 清晰水面折返反射
+        // Drop / Chorus / Verse 主秀：对称几何秩序 + 饱满 64 束侧廊下射 + 清晰水面折返反射（多鼓点重合瞬态软限幅防过曝）
         const beatImpact = Math.max(kickFast, beatPulse * 0.88);
-        const burstCore = 0.74 * hitEnv + 0.94 * beatImpact + 0.48 * snareFast;
+        const burstCore = softKneeLimit(0.74 * hitEnv + 0.94 * beatImpact + 0.48 * snareFast, 1.00, 1.30);
 
         if (cueMode === 0) {
           // 【阵型 0：图二交叉几何扇形扫描激光主场 + 外翼侧廊水镜护航】—— 中轴单束主动让位以凸显巨幅交叉琉璃扇面
@@ -5312,24 +5377,24 @@ export class LaserScene implements MvScene {
             const hz = -17.5 + (1.0 - b.normX * b.normX) * 9.5;
             const tgt = setWaterBounceTarget(b, hx, hz, 0.48);
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
-            beamPower = (0.04 + 1.40 * downWeight) * dropPower;
+            beamPower = (0.04 + 1.22 * downWeight) * dropPower;
           } else if (b.group === 2 || b.group === 3) {
             const sideSign = b.group === 2 ? -1 : 1;
             const tgt = setWaterBounceTarget(b, sideSign * 6.2, b.z + 9.0, 0.54);
             tx = tgt.tx; ty = tgt.ty; tz = tgt.tz;
-            beamPower = (0.04 + 1.26 * downWeight) * dropPower;
+            beamPower = (0.04 + 1.12 * downWeight) * dropPower;
           } else if (b.group === 4) {
             const fanU = b.slotNorm * 2 - 1;
             const crownSpread = 1.0 + 0.18 * snareFast;
             tx = fanU * 24.5 * crownSpread;
             ty = 13.0 + (1.0 - fanU * fanU * 0.52) * 8.2;
             tz = 8.0 + (1.0 - Math.abs(fanU)) * 8.0;
-            beamPower = (0.03 + 1.38 * upWeight) * dropPower;
+            beamPower = (0.03 + 1.20 * upWeight) * dropPower;
           } else if (b.group === 1) {
             tx = b.normX * 22.5;
             ty = 15.2 + (1.0 - b.normX * b.normX) * 2.8;
             tz = 8.0;
-            beamPower = (0.02 + 1.24 * upWeight) * dropPower;
+            beamPower = (0.02 + 1.10 * upWeight) * dropPower;
           }
         } else if (cueMode === 3) {
           // 【阵型 3：中心向外丝滑海啸波 · 顶冠 42 束向左右 64 束水镜侧廊接力推进】
@@ -5385,9 +5450,9 @@ export class LaserScene implements MvScene {
           beamPower = Math.max(beamPower * 0.55, 0.14 * dropPower * leadBreath);
         }
       }
-      beamPower = Math.min(5.20, beamPower) * laserGate;
+      beamPower = Math.min(4.60, beamPower) * laserGate;
 
-      const halfWidth = b.group === 0 ? 0.108 : b.group === 4 ? 0.114 : 0.098;
+      const halfWidth = b.group === 0 ? 0.092 : b.group === 4 ? 0.096 : 0.086;
       for (let mirror = 0; mirror < 2; mirror++) {
         const slot = (mirror * BEAM_EMITTER_COUNT + i) * 4;
         bEnd[slot] = tx;
@@ -5408,9 +5473,10 @@ export class LaserScene implements MvScene {
     let outerConePower = 0;
     let innerConePower = 0;
     if ((isDrop || isChorus) && cueMode === 1) {
-      const conePulse = 0.34 + 0.76 * kickFast + 0.36 * hitEnv + 0.24 * beatPulse;
+      const conePulse = softKneeLimit(0.34 + 0.76 * kickFast + 0.36 * hitEnv + 0.24 * beatPulse, 1.05, 1.34);
+      const innerPulse = softKneeLimit(0.42 + 0.68 * snareFast + 0.24 * beatPulse, 1.05, 1.30);
       outerConePower = (0.52 + 0.72 * conePulse) * dropPower;
-      innerConePower = (0.46 + 0.72 * (0.42 + 0.68 * snareFast + 0.24 * beatPulse)) * dropPower;
+      innerConePower = (0.46 + 0.72 * innerPulse) * dropPower;
       if (isDrop && dropPower < 0.50) {
         const coneFade = smooth(clamp01((dropPower - 0.35) / 0.15));
         outerConePower *= coneFade;
@@ -5421,8 +5487,8 @@ export class LaserScene implements MvScene {
       outerConePower = bGain * 0.48 * (0.35 + 0.65 * beatPulse);
       innerConePower = bGain * 0.88;
     }
-    outerConePower = Math.min(4.20, outerConePower * leadBreath) * laserGate;
-    innerConePower = Math.min(4.20, innerConePower * leadBreath) * laserGate;
+    outerConePower = Math.min(3.80, outerConePower * leadBreath) * laserGate;
+    innerConePower = Math.min(3.80, innerConePower * leadBreath) * laserGate;
 
     for (let mirror = 0; mirror < 2; mirror++) {
       const slot0 = (mirror * CONE_LAYER_COUNT + 0) * 4;
@@ -5487,16 +5553,23 @@ export class LaserScene implements MvScene {
     (u.uChroma1.value as THREE.Vector4).set(readChroma(4), readChroma(5), readChroma(6), readChroma(7));
     (u.uChroma2.value as THREE.Vector4).set(readChroma(8), readChroma(9), readChroma(10), readChroma(11));
 
-    // 11. 后期效果调优：激光切零时保留专辑封面、两侧颜色显示台与体积氛围灯的自然泛光，仅收敛激光额外辉光，绝不硬压黑全屏
+    // 11. 后期效果调优与自动防过曝护眼压限（Auto-Headroom Guard）：
+    // - 激光切零时保留专辑封面、两侧颜色显示台与体积氛围灯的自然泛光（>=0.185），绝不硬压黑全屏；
+    // - 当 Lead 指数呼吸与重拍瞬态同时冲顶时，主动收敛泛光上限并微降全局曝光最多 ~8.5%，防止多层加法激光冲白屏幕。
+    const peakTransient = Math.max(kickFast, snareFast, hitEnv * 0.8);
+    const laserPeakLoad = clamp01(((leadBreath - 1.05) / 1.20) * (0.45 + 0.55 * peakTransient)) * dropPower * laserGate;
     fx.letterbox = 0;
     fx.invert = 0;
     fx.duotone = 0;
+    fx.flash = Math.min(fx.flash, 0.04);
     fx.glitch = Math.min(fx.glitch, 0.06);
     fx.zoom = Math.min(fx.zoom, 0.012 + 0.014 * kickPunch * dropPower);
-    fx.bloom = (this.soft ? 0.20 : 0.22)
-      + 0.05 * dropPower * (1.0 - 0.35 * blackout)
-      + 0.025 * Math.max(0, leadBreath - 1.0) * laserGate
-      + 0.02 * avgBlinderGlow;
+    const rawBloom = (this.soft ? 0.188 : 0.198)
+      + 0.026 * dropPower * (1.0 - 0.25 * blackout)
+      + 0.010 * avgBlinderGlow
+      - 0.018 * laserPeakLoad;
+    fx.bloom = clampRange(rawBloom, 0.185, 0.238);
+    fx.exposure = Math.min(fx.exposure, 1.0 - 0.085 * laserPeakLoad);
     fx.vignette = 0.44;
     fx.grain = 0.035;
 

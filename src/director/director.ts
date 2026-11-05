@@ -877,8 +877,8 @@ export class Director {
     const ballad = this.style.look === 'ballad';
     const random = rng((shot.seed ^ 0x27d4eb2f) >>> 0);
     const intoSec = t - sec.start;
-    // A small, shared bloom pulse follows the estimated foreground in every scene and section.
-    if (m.selectiveAt(t) && shot.scene !== 'phoenix') fx.bloom = Math.min(1.1, fx.bloom + 0.08 * m.foregroundAt(t).attack);
+    // A small, shared bloom pulse follows the estimated foreground in every scene and section (exempt phoenix & laser, which manage their own anti-overexposure HDR headroom).
+    if (m.selectiveAt(t) && shot.scene !== 'phoenix' && shot.scene !== 'laser') fx.bloom = Math.min(1.1, fx.bloom + 0.08 * m.foregroundAt(t).attack);
     if (this.style.id === 'velvet') {
       if ((sec.label === 'chorus' || sec.label === 'drop') && (shot.scene === 'bokeh' || shot.scene === 'rings')) {
         fx.echo = Math.max(fx.echo, 0.48);
@@ -926,7 +926,7 @@ export class Director {
           fx.collapse = Math.max(fx.collapse, Math.pow(p, 1.8));
           fx.ca = Math.max(fx.ca, p * 0.85);
         }
-        if (next && next.energy > sec.energy + 0.08 && sec.end - t < beat * m.meter && shot.scene !== 'crystal') {
+        if (next && next.energy > sec.energy + 0.08 && sec.end - t < beat * m.meter && shot.scene !== 'crystal' && shot.scene !== 'laser') {
           const eighth = info.pos * 2 - Math.floor(info.pos * 2);
           fx.exposure *= 1 + 0.1 * Math.cos(eighth * Math.PI * 2);
           fx.scan = Math.max(fx.scan, 0.3);

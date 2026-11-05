@@ -271,6 +271,8 @@ before(async () => {
     buildHarmonicCoverRecolorScheme: laserMod.buildHarmonicCoverRecolorScheme,
     recolorCoverPixels: laserMod.recolorCoverPixels,
     evalLeadExponentialBreath: laserMod.evalLeadExponentialBreath,
+    softKneeLimit: laserMod.softKneeLimit,
+    evalLaserRadianceLimit: laserMod.evalLaserRadianceLimit,
     LEAD_EXP_SLOPE: laserMod.LEAD_EXP_SLOPE,
     BlackHoleScene: blackholeMod.BlackHoleScene,
     CathedralScene: cathedralMod.CathedralScene,
@@ -2540,6 +2542,107 @@ test('激光舞台：舞台体积烟雾氛围灯(图一)与交叉几何平面扫
   assert.ok(!/1\.0\s*-\s*(?:0\.\d+\s*\*\s*)?uBlackout/.test(mainFragMatch[1]), 'LED_MAIN_FRAG 专辑封面主屏严禁被 uBlackout 压黑');
   assert.ok(!/1\.0\s*-\s*(?:0\.\d+\s*\*\s*)?uBlackout/.test(towerFragMatch[1]), 'LED_TOWER_FRAG 两侧颜色显示台严禁被 uBlackout 压黑');
   assert.ok(!/uBlackout/.test(washFragMatch[1]), 'ATMOS_WASH_FRAG 舞台体积氛围灯严禁被 uBlackout 硬切黑');
+});
+
+test('激光舞台防过曝保护：C1 软膝点保色辐射限幅、极端多鼓重合瞬态压缩与后期高光护眼压限验证', async () => {
+  const m = mods;
+  const { lyrics, palette, init } = buildMockFixture();
+
+  // 1. 验证 softKneeLimit 在膝点以下 1:1 保真、膝点处 C1 一阶导连续、超强输入严格收敛于 limit 以下
+  assert.equal(m.softKneeLimit(0.35, 0.50, 0.90), 0.35);
+  assert.equal(m.softKneeLimit(0.50, 0.50, 0.90), 0.50);
+  const eps = 1e-5;
+  const slopeLeft = (m.softKneeLimit(0.50, 0.50, 0.90) - m.softKneeLimit(0.50 - eps, 0.50, 0.90)) / eps;
+  const slopeRight = (m.softKneeLimit(0.50 + eps, 0.50, 0.90) - m.softKneeLimit(0.50, 0.50, 0.90)) / eps;
+  assert.ok(Math.abs(slopeLeft - 1.0) < 1e-4 && Math.abs(slopeRight - 1.0) < 1e-3, '软膝点处斜率应连续等于 1');
+  const extremeOut = m.softKneeLimit(20.0, 0.50, 0.90);
+  assert.ok(extremeOut > 0.88 && extremeOut < 0.90, `极端超限输入应平滑渐近至上限 0.90 以下，实测 ${extremeOut}`);
+
+  // 2. 验证 evalLaserRadianceLimit 按最大通道等比压缩，100% 保持原色彩比例不漂白偏色
+  const [lr, lg, lb] = m.evalLaserRadianceLimit(0.24, 1.92, 2.40, 0.54, 0.94);
+  assert.ok(lb < 0.94 && lb > 0.80, `峰值通道应被收敛至 0.94 以下，实测 ${lb}`);
+  assert.ok(Math.abs(lr / lb - 0.10) < 1e-6 && Math.abs(lg / lb - 0.80) < 1e-6, '限幅前后 RGB 色相比值必须严格不变');
+
+  // 3. 构造极端过曝压力测试（Drop 正拍同时命中 Kick=1.0 + Snare=1.0 + SynthStab=1.0 + Lead=1.0 + Low/RMS=1.0）
+  const dur = 16;
+  const bpm = 128;
+  const beatLen = 60 / bpm;
+  const beats = Array.from({ length: 35 }, (_, i) => +(i * beatLen).toFixed(4));
+  const downbeats = beats.filter((_, i) => i % 4 === 0);
+  const fullHits = beats.map((bt) => [bt, 1.0]);
+  const envLen = dur * 30;
+  const ones = new Float32Array(envLen).fill(1.0);
+  const stressMusic = new m.Music({
+    version: 1,
+    duration: dur,
+    bpm,
+    namedBpm: bpm,
+    meter: 4,
+    beats,
+    beatInBar: beats.map((_, i) => i % 4),
+    tempo: beats.map(() => bpm),
+    downbeats,
+    sections: [{ start: 0, end: dur, label: 'drop', energy: 1.0, group: 0, vocal: false }],
+    hits: { kick: fullHits, snare: fullHits, accent: fullHits, leads: fullHits },
+    roles: { kick: fullHits, snare: fullHits, synthStab: fullHits, lead: fullHits },
+    env: { fps: 30, low: ones, rms: ones, lead: ones, leadAttack: ones },
+  });
+
+  const ls = new m.LaserScene({ ...init, music: stressMusic, lyrics, seed: 20261105 }, 'pulse');
+  const sec = stressMusic.a.sections[0];
+  const checkT = +(4 * beatLen).toFixed(4);
+  const fx = m.defaultFx();
+  ls.update({
+    t: checkT,
+    dt: 1 / 60,
+    shotT: checkT,
+    shot: {
+      index: 0,
+      start: 0,
+      end: dur,
+      scene: 'laser',
+      variant: 'arena',
+      section: sec,
+      sectionIndex: 0,
+      seed: 20261105,
+      short: false,
+    },
+    music: stressMusic,
+    lyrics,
+    palette,
+    fx,
+    aspect: 16 / 9,
+  });
+
+  let maxBeam = 0;
+  for (let i = 0; i < 152; i++) maxBeam = Math.max(maxBeam, ls.beamStyleAttr.array[i * 4]);
+  let maxScan = 0;
+  for (let i = 0; i < 12; i++) maxScan = Math.max(maxScan, ls.scanWingAttr.array[i * 4 + 3]);
+  let maxWash = 0;
+  let maxWashStrobe = 0;
+  for (let i = 0; i < 24; i++) {
+    maxWash = Math.max(maxWash, ls.washStateAttr.array[i * 4]);
+    maxWashStrobe = Math.max(maxWashStrobe, ls.washStateAttr.array[i * 4 + 2]);
+  }
+
+  assert.ok(maxBeam <= 4.60, `极端全满重音撞车下单束功率应受控 <=4.60（由片元 limitLaserRadiance 进一步软压至 <0.94 HDR），实测 ${maxBeam.toFixed(3)}`);
+  assert.ok(maxScan <= 3.60, `极端全满重音撞车下扫描扇功率应受控 <=3.60，实测 ${maxScan.toFixed(3)}`);
+  assert.ok(maxWash < 0.96 && maxWashStrobe < 0.92, `极端高能下氛围灯与频闪应自动退避防叠加过曝 (${maxWash.toFixed(3)}, ${maxWashStrobe.toFixed(3)})`);
+  assert.ok(fx.bloom <= 0.24, `极端高能下后期 Bloom 必须收敛 <=0.24 防止全屏泛白，实测 ${fx.bloom.toFixed(4)}`);
+  assert.ok(fx.exposure >= 0.90 && fx.exposure < 0.96, `极端高能下应触发动态高光护眼微降曝光 [0.90, 0.96)，实测 ${fx.exposure.toFixed(4)}`);
+
+  // 4. 着色器源码级保证：6 大加法混合发光着色器全部接入 limitLaserRadiance 保色软限幅器，且扫描扇面内腔上限受控 (<0.22)
+  const fsMod = await import('node:fs/promises');
+  const pathMod = await import('node:path');
+  const laserSrc = await fsMod.readFile(pathMod.resolve('src/scenes/laser.ts'), 'utf8');
+  for (const shaderName of ['SHEET_FRAG', 'BEAM_FRAG', 'CONE_FRAG', 'CRYO_FRAG', 'ATMOS_WASH_FRAG', 'SCAN_LASER_FRAG']) {
+    const mFrag = laserSrc.match(new RegExp(`const ${shaderName}\\s*=\\s*\\/\\* glsl \\*\\/\\s*\`([\\s\\S]*?)\`;`));
+    assert.ok(mFrag, `应能定位着色器 ${shaderName}`);
+    assert.ok(
+      mFrag[1].includes('limitLaserRadiance('),
+      `${shaderName} 必须使用 limitLaserRadiance 保色软限幅防止过曝泛白`,
+    );
+  }
 });
 
 
