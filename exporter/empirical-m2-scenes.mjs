@@ -531,3 +531,67 @@ test('M2 4大新场景：Cathedral 光束旋转与 Eclipse 冲击波尺度跨 Dr
     );
   }
 });
+
+test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前车尾灯严格沿 +Z 迎面飞驰（杜绝卡在原地或倒退）', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const highway = new mods.HighwayScene(init, 'pulse');
+  const shot = { scene: 'highway', start: 8, end: 24, variant: 'cockpit', seed: 7, section: music.a.sections[1], sectionIndex: 1 };
+
+  // 验证场景包含真实光源，确保斜拉桥塔与路灯金属杆不会因无光沦为纯黑隐身
+  let lightCount = 0;
+  highway.scene.traverse((obj) => {
+    if (obj.isLight) lightCount++;
+  });
+  assert.ok(lightCount >= 2, `HighwayScene 必须包含至少 2 盏光源以照亮桥塔与路灯，当前=${lightCount}`);
+
+  // 采样两个紧邻时刻 t0 -> t1 (dt = 0.04s，避开周期回折点)，校验所有前景参照物均向 +Z（朝向相机）高速迎面推进
+  const t0 = 10.12;
+  const t1 = 10.16;
+  const fx0 = mods.defaultFx();
+  highway.update({ t: t0, dt: 1 / 60, shotT: t0 - shot.start, shot, music, lyrics, palette, fx: fx0, aspect: 16 / 9 });
+
+  const m = new THREE.Matrix4();
+  const getInstZ = (instMesh, idx) => {
+    instMesh.getMatrixAt(idx, m);
+    return m.elements[14];
+  };
+
+  const d0 = highway.getDistanceAt(t0);
+  const towerZ0 = highway.towerUnits.map((u) => u.position.z);
+  const lampZ0 = getInstZ(highway.streetlightsInstanced, 4);
+  const headZ0 = getInstZ(highway.lampHeadsInstanced, 4);
+  const postZ0 = getInstZ(highway.guardPostsInstanced, 6);
+  const streakZ0 = getInstZ(highway.warpStreaksInstanced, 0);
+  const tailZ0 = highway.tailLightsMesh.geometry.attributes.position.getZ(0);
+
+  const fx1 = mods.defaultFx();
+  highway.update({ t: t1, dt: 1 / 60, shotT: t1 - shot.start, shot, music, lyrics, palette, fx: fx1, aspect: 16 / 9 });
+
+  const d1 = highway.getDistanceAt(t1);
+  const dd = d1 - d0;
+  assert.ok(dd > 1.5, `行驶距离必须高速单调递增: d0=${d0.toFixed(3)}, d1=${d1.toFixed(3)}`);
+  assert.ok(fx1.travel > 12, `fx.travel 必须写入真实前进速度以联动引擎动态模糊, 当前=${fx1.travel}`);
+
+  // 周期循环下的精确正向模位移校验：正向推进 +dd 时，无论是否跨过周期回折点，((z1 - z0) mod P) 恒精确等于 dd
+  const modAdvance = (z0, z1, period) => (((z1 - z0) % period) + period) % period;
+
+  for (let idx = 0; idx < highway.towerUnits.length; idx++) {
+    const adv = modAdvance(towerZ0[idx], highway.towerUnits[idx].position.z, 3 * 112.0);
+    assert.ok(Math.abs(adv - dd) < 1e-4, `跨海斜拉桥主塔[${idx}]必须精确沿 +Z 迎面推进 dd=${dd.toFixed(4)}, 实测=${adv.toFixed(4)}`);
+  }
+
+  const lampAdv = modAdvance(lampZ0, getInstZ(highway.streetlightsInstanced, 4), 18.0);
+  assert.ok(Math.abs(lampAdv - dd) < 1e-4, `路灯杆必须精确沿 +Z 迎面呼啸掠过: 期望=${dd.toFixed(4)}, 实测=${lampAdv.toFixed(4)}`);
+
+  const headAdv = modAdvance(headZ0, getInstZ(highway.lampHeadsInstanced, 4), 18.0);
+  assert.ok(Math.abs(headAdv - dd) < 1e-4, `路灯发光灯头必须精确沿 +Z 迎面掠过: 期望=${dd.toFixed(4)}, 实测=${headAdv.toFixed(4)}`);
+
+  const postAdv = modAdvance(postZ0, getInstZ(highway.guardPostsInstanced, 6), 6.0);
+  assert.ok(Math.abs(postAdv - dd) < 1e-4, `护栏轮廓标必须精确沿 +Z 高速迎面掠过: 期望=${dd.toFixed(4)}, 实测=${postAdv.toFixed(4)}`);
+
+  const streakAdv = modAdvance(streakZ0, getInstZ(highway.warpStreaksInstanced, 0), 180.0);
+  assert.ok(Math.abs(streakAdv - dd * 1.45) < 1e-3, `氮气流光拉丝必须实时沿 +Z 穿梭运动: 期望=${(dd * 1.45).toFixed(4)}, 实测=${streakAdv.toFixed(4)}`);
+
+  const tailAdv = modAdvance(tailZ0, highway.tailLightsMesh.geometry.attributes.position.getZ(0), 240.0);
+  assert.ok(tailAdv > 0.5 && tailAdv < dd, `前车流光尾灯必须具备真实正向超车相对位移: 实测=${tailAdv.toFixed(4)}`);
+});
