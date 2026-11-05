@@ -77,6 +77,8 @@ const LOOK_PLAN: Record<string, { plate: SceneId; style: string; variants: strin
   hibit: { plate: 'tunnel', style: 'pulse', variants: 'rush', in: 'verse', at: 0.4 },
   ascii: { plate: 'relief', style: 'pulse', variants: 'crane', in: 'verse', at: 0.35 },
   vhs: { plate: 'vinyl', style: 'ballad', variants: 'top', in: 'verse', at: 0.5 },
+  stained: { plate: 'clouds', style: 'ballad', variants: 'over', in: 'verse', at: 0.45 },
+  blueprint: { plate: 'city', style: 'pulse', variants: 'canyon', in: 'verse', at: 0.45 },
 };
 
 const args = process.argv.slice(2);

@@ -1,6 +1,7 @@
 // M2 4大新场景（cathedral, highway, pavilion, eclipse）实证集成与连续性/Seek一致性测试
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
@@ -123,6 +124,7 @@ before(async () => {
     defaultFx: engineMod.defaultFx,
     armillarySpec: armillaryMod.armillarySpec,
     SCENES: catalogMod.SCENES,
+    LOOKS: catalogMod.LOOKS,
     CathedralScene: cathedralMod.CathedralScene,
     HighwayScene: highwayMod.HighwayScene,
     PavilionScene: pavilionMod.PavilionScene,
@@ -723,4 +725,26 @@ test('EclipseScene：火山柱状玄武岩与黑曜石断崖立体几何、内�
   );
   // 校验 ridge 机位处于峡谷净空内（|x| < 10.5m），绝不穿入两侧岩体
   assert.ok(Math.abs(eclipse.camera.position.x) < 10.5, `ridge 机位不得穿入峡谷岩体: x=${eclipse.camera.position.x.toFixed(3)}`);
+});
+
+test('设置面板缩略图完整性：全部 49 个场景与 6 种媒介滤镜在 public/previews 下均存在有效 WebP 示意图', () => {
+  const previewDir = path.join(PROJECT, 'public/previews');
+  for (const s of mods.SCENES) {
+    const file = path.join(previewDir, `${s.id}.webp`);
+    assert.ok(fs.existsSync(file), `缺少场景预览示意图: public/previews/${s.id}.webp (${s.name})`);
+    const buf = fs.readFileSync(file);
+    assert.ok(
+      buf.length > 512 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP',
+      `场景预览示意图不是有效的非空 WebP 文件: ${s.id}.webp`,
+    );
+  }
+  for (const lk of mods.LOOKS) {
+    const file = path.join(previewDir, `look-${lk.id}.webp`);
+    assert.ok(fs.existsSync(file), `缺少媒介滤镜预览示意图: public/previews/look-${lk.id}.webp (${lk.name})`);
+    const buf = fs.readFileSync(file);
+    assert.ok(
+      buf.length > 512 && buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP',
+      `媒介滤镜预览示意图不是有效的非空 WebP 文件: look-${lk.id}.webp`,
+    );
+  }
 });
