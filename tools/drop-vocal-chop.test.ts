@@ -200,3 +200,114 @@ test('跨器乐间奏合并的 YRC 切片与孤立复唱钩子不会掩盖双 Dr
   const denseAt192 = denseSecs.find(s => 192 >= s.start && 192 < s.end);
   assert.equal(denseAt192?.label, 'chorus', '密集连贯演唱的副歌应保持为 chorus');
 });
+
+test('半拍 Drop 后半程叠加连贯副歌人声且全频段伴奏未衰减时保持 drop，伴奏撤出时归为 chorus', () => {
+  // 构造双 Drop 合成曲目（80 小节 × 2.8s = 224s）：
+  // Drop 1 为 [28..36) 纯器乐 + [36..44) 密集主唱叠加的 Vocal Drop 下半程；Drop 2 为 [65..73) 纯器乐，用于同时覆盖 contrastForm 的 nextRelease 路径
+  const nb = 80, beatsPerBar = 4, beatDur = 0.7, nBeats = nb * beatsPerBar, duration = nBeats * beatDur, fps = 100;
+  const beats = Array.from({ length: nBeats }, (_, i) => i * beatDur);
+  const beatInBar = beats.map((_, i) => i % beatsPerBar);
+  const bars = makeBars(beats, beatInBar, duration);
+  const totalFrames = Math.ceil(duration * fps);
+
+  const makeCase = (keepFullBandOnVocalHalf: boolean): SectionInput => {
+    const rms = new Float32Array(totalFrames);
+    const low = new Float32Array(totalFrames);
+    const high = new Float32Array(totalFrames);
+    const chroma = new Float32Array(nBeats * 12);
+    const bass = new Float32Array(nBeats * 12);
+    const mfcc = new Float32Array(nBeats * N_MFCC);
+    const db = new Float32Array(nBeats);
+    const bright = new Float32Array(nBeats);
+    const kick = new Float32Array(nBeats);
+    const snare = new Float32Array(nBeats);
+    const hat = new Float32Array(nBeats);
+    const flux = new Float32Array(nBeats);
+    const density = new Float32Array(nBeats);
+    const kicks: Hit[] = [];
+    const snares: Hit[] = [];
+
+    for (let bar = 0; bar < nb; bar++) {
+      const isIntro = bar < 4;
+      const isOutro = bar >= 73;
+      const isInstDrop = (bar >= 28 && bar < 36) || (bar >= 65 && bar < 73);
+      const isVocalHalf = bar >= 36 && bar < 44;
+      const isActiveDrop = isInstDrop || (isVocalHalf && keepFullBandOnVocalHalf);
+      const isChorus = (bar >= 16 && bar < 27) || (bar >= 52 && bar < 64) || (isVocalHalf && !keepFullBandOnVocalHalf);
+      const isPreDip = bar === 27 || bar === 64;
+
+      const barRms = isActiveDrop ? 0.92 : isPreDip ? 0.14 : isChorus ? 0.56 : isIntro || isOutro ? 0.14 : 0.36;
+      const barLow = isActiveDrop ? 0.88 : isPreDip ? 0.002 : isChorus ? 0.05 : isIntro || isOutro ? 0.01 : 0.07;
+      const barHigh = isActiveDrop ? 0.44 : isChorus ? 0.11 : 0.05;
+      const barDb = isActiveDrop ? -1 : isPreDip ? -18 : isChorus ? -7 : isIntro || isOutro ? -16 : -10;
+
+      const f0 = Math.floor(bar * beatsPerBar * beatDur * fps);
+      const f1 = Math.min(totalFrames, Math.floor((bar + 1) * beatsPerBar * beatDur * fps));
+      for (let f = f0; f < f1; f++) {
+        rms[f] = barRms;
+        low[f] = isActiveDrop ? ((f - f0) % 70 < 40 ? barLow : 0.02) : barLow;
+        high[f] = barHigh;
+      }
+
+      for (let b = 0; b < beatsPerBar; b++) {
+        const bi = bar * beatsPerBar + b;
+        const t = beats[bi];
+        const root = isActiveDrop ? 0 : isChorus ? 5 : isOutro ? 9 : 2;
+        chroma[bi * 12 + root] = 1;
+        bass[bi * 12 + root] = 1;
+        mfcc[bi * N_MFCC] = barDb;
+        mfcc[bi * N_MFCC + 1] = isActiveDrop ? 12 : isChorus ? 2 : -4;
+        db[bi] = barDb;
+        bright[bi] = isActiveDrop ? -4 : -10;
+        density[bi] = isActiveDrop ? 3.0 : isChorus ? 1.5 : 0.9;
+        flux[bi] = density[bi];
+        if (isInstDrop) {
+          // 半拍器乐 Drop：每小节 2 kicks + 1 snare -> perc = 2.5 / 2.8 ≈ 0.89..1.07
+          if (b === 0 || b === 1) { kick[bi] = 0.85; kicks.push([t, 0.85]); }
+          if (b === 2) { snare[bi] = 0.9; snares.push([t, 0.9]); }
+          hat[bi] = 0.6;
+        } else if (isVocalHalf && keepFullBandOnVocalHalf) {
+          // 半拍 Vocal Drop（人声掩蔽）：每小节 1 kick + 2 snares -> perc = 2.0 / 2.8 ≈ 0.71 (< 0.9)
+          if (b === 0) { kick[bi] = 0.82; kicks.push([t, 0.82]); }
+          if (b === 2 || b === 3) { snare[bi] = 0.85; snares.push([t, 0.85]); }
+          hat[bi] = 0.58;
+        } else if (!isIntro && !isOutro && !isPreDip && !isVocalHalf) {
+          if (b === 0) { kick[bi] = 0.4; kicks.push([t, 0.4]); }
+        }
+      }
+    }
+
+    const lrc = [
+      '[00:12.00]Walking in the quiet shadow',
+      '[00:18.00]Waiting for a distant spark',
+      '[00:24.00]Tracing lines across the window',
+      '[00:30.00]Fading out into the dark',
+      '[00:46.00]Let me be forgotten',
+      '[00:52.00]Just leave me in your wake',
+      '[00:58.00]Never know the bottom of my heart',
+      '[01:05.00]Never read a caution from the start',
+      // [36..44) = 100.8s..123.2s：紧跟在纯器乐 Drop [78.4..100.8s) 之后的密集副歌人声
+      '[01:41.50]Let me be forgotten',
+      '[01:46.80]Just leave me in your wake',
+      '[01:52.20]Never know the bottom of my heart',
+      '[01:57.60]Never read a caution from the start',
+      '[02:06.00]Broken echoes on the water',
+      '[02:13.00]Drifting past another shore',
+      '[02:27.00]Let me be forgotten',
+      '[02:33.00]Just leave me in your wake',
+      '[02:40.00]Never know the bottom of my heart',
+      '[02:47.00]Never read a caution from the start',
+    ].join('\n');
+    const lyrics = parseNeteaseLyric({ lrc: { lyric: lrc } }, duration);
+    const features: BeatFeatures = { n: nBeats, chroma, bass, mfcc, db, bright, kick, snare, hat, flux, density };
+    return { features, beats, bars, duration, rms, fps, lyrics, hits: { kick: kicks, snare: snares }, low, high };
+  };
+
+  const vocalDropSecs = findSections(makeCase(true));
+  const atVocalDrop = vocalDropSecs.find(s => 110 >= s.start && 110 < s.end);
+  assert.equal(atVocalDrop?.label, 'drop', '全频段半拍重鼓未衰减的 Vocal Drop 下半程应保持为 drop');
+
+  const repriseChorusSecs = findSections(makeCase(false));
+  const atRepriseChorus = repriseChorusSecs.find(s => 110 >= s.start && 110 < s.end);
+  assert.equal(atRepriseChorus?.label, 'chorus', '重低音与高频撤出后的副歌复唱应归为 chorus');
+});

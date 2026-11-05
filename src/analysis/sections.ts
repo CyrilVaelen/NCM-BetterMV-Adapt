@@ -616,7 +616,11 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
     // acoustically verified release and differ in its bass articulation or bandwidth; drum counts alone don't win.
     const shortLead=q===k+1 && secs[k].end-secs[k].start<=32 && bass[k]<bass[q]-3 && sustained;
     const instrumentalRise=(!hasLyrics || li.leadCover<.35) && treble[k]<treble[q]-4 && sustained;
+    // 紧接已确认 Drop 之后的 Vocal Drop 延续段：若总能量、重低音、高频带宽均维持前序 Drop 水平且具备切分低频颗粒感，保留 drop 不降级为副歌
+    const continuesDrop = secs[k].label === 'drop' && secs[k - 1].label === 'drop' && (!sustained || art >= 10) &&
+      secs[k].energy >= 0.88 * secs[k - 1].energy && bass[k] >= -5 && bass[k] >= bass[k - 1] - 3 && treble[k] >= treble[k - 1] - 4;
     if(shortLead || instrumentalRise) { secs[k].label='build'; updated.add(k); }
+    else if(continuesDrop) { updated.add(k); }
     else if(hasLyrics && li.leadCover>=.4 && li.hook>=.5 && li.rep>=.75) { secs[k].label='chorus'; updated.add(k); }
   }
   for(let k=1;k+1<n;k++) {
@@ -1044,7 +1048,7 @@ function labelSections(
   });
   const labels: Array<SectionLabel | ''> = secs.map(() => '');
   // Driving: dense kicks and snares, or (half-time drops, with few kicks) a beat on full bass.
-  const drivenAt = (k: number) => perc[k] >= DROP_DRIVE || (perc[k] >= 0.9 && bass[k] >= -5);
+  const drivenAt = (k: number) => perc[k] >= DROP_DRIVE || (perc[k] >= 0.9 && bass[k] >= -5) || (perc[k] >= 0.78 && bass[k] >= -5 && treble[k] >= -5);
   // A section that only leads into a clearly louder section sung with repeated lines (or a loud sung one): a
   // pre-chorus, not the chorus. (Right before an unsung drop, the sung repeated block is the chorus.)
   const leadIn = (k: number) => k + 1 < n && E[k + 1] >= 1.15 * E[k] && secs[k + 1].vocal && info[k + 1].leadCover >= 0.35 && (high[k + 1] || info[k + 1].rep >= 0.5);
@@ -1108,11 +1112,23 @@ function labelSections(
       }
     }
   }
+  // 判断紧接在 Drop 之后的带人声高能段落是否为同一 Drop 的下半场延续（含半拍鼓组律动与人声掩蔽场景，锚定连续 Drop 起点防链式衰减漂移）
+  const continuesVocalDrop = (k: number): boolean => {
+    if (k < 1 || labels[k] !== 'chorus' || labels[k - 1] !== 'drop') return false;
+    if (E[k] >= 0.9 * E[k - 1] && drivenAt(k)) return true;
+    let d0 = k - 1;
+    while (d0 > 0 && labels[d0 - 1] === 'drop') d0--;
+    return high[k] && E[k] >= 0.88 * E[k - 1] && E[k] >= 0.85 * E[d0] &&
+      bass[k] >= -5 && bass[k] >= bass[k - 1] - 3 && bass[k] >= bass[d0] - 3.5 &&
+      treble[k] >= treble[k - 1] - 4 && treble[k] >= treble[d0] - 5 &&
+      perc[k] >= 0.55 && perc[k] >= 0.5 * perc[k - 1];
+  };
   // A sung build-up chorus followed by a much louder, not more densely sung chorus-like section: that one is the drop.
   // And a sung section right after a drop, as loud and as driven, is the drop going on with the voice back.
+  const fromChorus = new Uint8Array(n);
   for (let k = 1; k < n; k++) {
-    if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) labels[k] = 'drop';
-    else if (labels[k] === 'chorus' && labels[k - 1] === 'drop' && E[k] >= 0.9 * E[k - 1] && drivenAt(k)) labels[k] = 'drop';
+    if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) { labels[k] = 'drop'; fromChorus[k] = 1; }
+    else if (continuesVocalDrop(k)) { labels[k] = 'drop'; fromChorus[k] = 1; }
   }
   // The first section is the intro unless the song opens on its chorus.
   if (n > 1 && labels[0] !== 'chorus') labels[0] = 'intro';
@@ -1221,7 +1237,10 @@ function labelSections(
   // chorus too — the second half of a chorus that drops the bass, or a copy the energy rules above missed.
   const chorusLines = new Set<string>();
   let chorusE = 0, chorusN = 0;
-  labels.forEach((l, k) => { if (l === 'chorus') { info[k].lines.forEach(x => chorusLines.add(x)); chorusE += E[k]; chorusN++; } });
+  labels.forEach((l, k) => {
+    if (l === 'chorus') { info[k].lines.forEach(x => chorusLines.add(x)); chorusE += E[k]; chorusN++; }
+    else if (fromChorus[k]) info[k].lines.forEach(x => chorusLines.add(x));
+  });
   if (chorusN) {
     chorusE /= chorusN;
     for (let k = 1; k < n; k++) {
@@ -1231,9 +1250,10 @@ function labelSections(
       if (inChorus >= 0.6 * info[k].lines.size && E[k] >= 0.6 * chorusE) labels[k] = 'chorus';
     }
   }
-  // 若前一段在 chorusHint 或副歌行传播后刚被升格为 chorus，而紧随其后的高能重鼓段落能量跃升显著且人声未加密，补标为 drop
+  // 若前一段在 chorusHint 或副歌行传播后刚被升格为 chorus，复核高能重鼓跃升段或紧邻 Drop 后的全频段 Vocal Drop 延续
   for (let k = 1; k < n; k++) {
     if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) labels[k] = 'drop';
+    else if (continuesVocalDrop(k)) labels[k] = 'drop';
   }
   secs.forEach((s, k) => (s.label = labels[k] || 'verse'));
 }
