@@ -26,6 +26,7 @@ interface JobInput {
     width?: number;
     height?: number;
     fps?: number;
+    encoding?: 'grain' | 'standard';
     start?: number;
     duration?: number;
     /** 仅针对离线导出画面的听感前瞻补偿（毫秒，0..200）。 */
@@ -156,9 +157,8 @@ async function initialise(): Promise<void> {
   const showLyrics = config.showLyrics !== false;
   const vibe = isVibePresetId(config.vibe) ? config.vibe : 'auto';
   const style = styleFor(song, config.style, showLyrics, vibe);
-  // Output dimensions are CSS pixels at deviceScaleFactor=1. The plugin's low
-  // setting renders at 70% internally; the canvas still fills the output frame.
-  player = new MvPlayer(stage, config.quality === 'low' ? 0.7 : 1);
+  // 离线导出统一以 1:1 原生输出分辨率满血渲染（免疫实时省电“低画质”70% 缩放降级），并解锁至最高 4K 渲染像素预算以完整支持 1080p 与 1440p（2K）导出。
+  player = new MvPlayer(stage, 1, { width: 3840, height: 2160 });
   player.engine.renderer.domElement.addEventListener('webglcontextlost', () => { contextLosses++; });
   player.hud.visible = false;
   const seed = config.seed ?? (config.arrange === 'random' ? crypto.getRandomValues(new Uint32Array(1))[0] : input.song.id >>> 0);

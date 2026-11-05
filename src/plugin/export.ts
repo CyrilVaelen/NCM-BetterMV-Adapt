@@ -1,7 +1,8 @@
 // Hand a snapshot of the current song to the local, offline MP4 renderer. Playback stays independent of the job.
 import type { Client, PlayingSong } from './client.ts';
 import type { Config } from './ui.ts';
-import type { LyricLine } from '../types.ts';
+import type { LyricLine, Section } from '../types.ts';
+import type { SongWiki } from '../meta/wiki.ts';
 import { fetchChorus, fetchLyric, fetchWiki, getAudio } from './source.ts';
 import { parseLocalLrc, readLocalLrcText } from '../lyrics/local.ts';
 
@@ -12,8 +13,6 @@ const TOKEN = typeof __BMV_EXPORT_TOKEN__ === 'string' ? __BMV_EXPORT_TOKEN__ : 
 const OUTPUT = 'D:\\NCM\\exports';
 const delay = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
 
-import type { Section } from '../types.ts';
-
 export interface ExportSnapshot {
   song: PlayingSong;
   config: Config;
@@ -21,6 +20,10 @@ export interface ExportSnapshot {
   seed?: number;
   lines?: LyricLine[];
   analysisLines?: LyricLine[];
+  wiki?: SongWiki;
+  chorus?: [number, number];
+  /** 当前 MV 已加载在内存中的完整音频字节，直接复用可避免重复走本地文件 HTTP 读取。 */
+  audio?: ArrayBuffer;
   duration?: number;
   sections?: Section[];
   currentTime?: number;
@@ -77,23 +80,32 @@ function readableError(value: unknown): string {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 12000): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const headers = new Headers(init.headers);
-    headers.set('X-BetterMV-Token', TOKEN);
-    const response = await fetch(SERVICE + path, { ...init, headers, signal: controller.signal });
-    if (response.status === 401 || response.status === 403) throw new ServiceMismatch();
-    if (response.status === 404 && path.startsWith('/api/exports/')) throw new MissingJob();
-    if (!response.ok) {
-      const body = await response.json().catch(() => null);
-      throw new ServiceRequestError(readableError(body?.error));
-    }
-    return await response.json() as T;
-  } catch (error) {
-    if (error instanceof ServiceMismatch || error instanceof MissingJob || error instanceof ServiceRequestError) throw error;
-    throw new ServiceUnavailable();
-  } finally { clearTimeout(timer); }
+  const isPost = init.method === 'POST';
+  const maxAttempts = isPost ? 2 : 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers = new Headers(init.headers);
+      headers.set('X-BetterMV-Token', TOKEN);
+      const response = await fetch(SERVICE + path, { ...init, headers, signal: controller.signal });
+      if (response.status === 401 || response.status === 403) throw new ServiceMismatch();
+      if (response.status === 404 && path.startsWith('/api/exports/')) throw new MissingJob();
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new ServiceRequestError(readableError(body?.error));
+      }
+      return await response.json() as T;
+    } catch (error) {
+      if (error instanceof ServiceMismatch || error instanceof MissingJob || error instanceof ServiceRequestError) throw error;
+      if (attempt < maxAttempts && (!isPost || error instanceof TypeError)) {
+        await delay(350 * attempt);
+        continue;
+      }
+      throw new ServiceUnavailable();
+    } finally { clearTimeout(timer); }
+  }
+  throw new ServiceUnavailable();
 }
 
 /** A persistent export state, shared by every opening of the MV page's export sheet. */
@@ -105,8 +117,10 @@ export class VideoExporter {
   private progress = 0;
   private outputName = '';
   private error = false;
-  /** A smaller default keeps full-song exports practical on integrated graphics. */
-  private resolution: 720 | 1080 = 720;
+  /** 默认 1080p 全高清直出，对齐实时预览最高物理渲染精度，并支持 1440p（2K 超清）。 */
+  private resolution: 720 | 1080 | 1440 = 1080;
+  /** 默认启用原画高保真编码（BT.709 精准色彩 + 暗场防色带 + 保胶片颗粒与激光细线锐度）。 */
+  private encoding: 'grain' | 'standard' = 'grain';
   /** 默认 60 帧/秒还原实时高刷丝滑感；底层本就按 60Hz 子步进模拟，不增加额外 WebGL 渲染次数。 */
   private fps: 24 | 30 | 60 = 60;
   /** 仅作用于导出视频的听感同步前瞻（毫秒），抵消脉冲爬升与本地播放器输出延迟，不影响实时观看时钟。 */
@@ -124,7 +138,9 @@ export class VideoExporter {
     const root = document.createElement('div');
     root.dataset.bmvSettings = '';
     root.style.cssText = 'padding:8px 20px 24px;line-height:1.6';
-    const formatText = () => `MP4 · ${this.resolution}p · ${this.fps} 帧/秒` + (this.exportLeadMs > 0 ? ` · 前瞻 +${this.exportLeadMs}ms` : '');
+    const formatText = () =>
+      `MP4 · ${this.resolution === 1440 ? '2K (1440p)' : `${this.resolution}p`} · ${this.fps} 帧/秒 · ${this.encoding === 'grain' ? '原画高保真' : '标准均衡'}` +
+      (this.exportLeadMs > 0 ? ` · 前瞻 +${this.exportLeadMs}ms` : '');
     const format = document.createElement('p');
     format.textContent = formatText();
     format.style.cssText = 'margin:0 0 12px;font-size:15px;font-weight:600';
@@ -141,7 +157,11 @@ export class VideoExporter {
     const resolution = document.createElement('select');
     resolution.setAttribute('aria-label', '导出视频分辨率');
     resolution.style.cssText = selectCss;
-    for (const [value, label] of [['720', '720p（推荐）'], ['1080', '1080p（更清晰）']]) {
+    for (const [value, label] of [
+      ['1080', '1080p（推荐，全高清）'],
+      ['1440', '1440p（2K 超清，更锐利）'],
+      ['720', '720p（轻量快速）'],
+    ]) {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = label;
@@ -149,10 +169,34 @@ export class VideoExporter {
     }
     resolution.value = String(this.resolution);
     resolution.onchange = () => {
-      this.resolution = resolution.value === '1080' ? 1080 : 720;
+      const v = Number(resolution.value);
+      this.resolution = v === 1440 ? 1440 : v === 720 ? 720 : 1080;
       this.refresh?.();
     };
     resolutionRow.append(resolution);
+
+    // 编码画质选择（保胶片颗粒与暗场激光锐度 vs 标准均衡体积）
+    const encodingRow = document.createElement('label');
+    encodingRow.textContent = '画质编码';
+    encodingRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px';
+    const encodingSelect = document.createElement('select');
+    encodingSelect.setAttribute('aria-label', '导出视频编码画质');
+    encodingSelect.style.cssText = selectCss;
+    for (const [value, label] of [
+      ['grain', '原画高保真（推荐，保颗粒与锐度）'],
+      ['standard', '标准均衡（体积更小）'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      encodingSelect.append(option);
+    }
+    encodingSelect.value = this.encoding;
+    encodingSelect.onchange = () => {
+      this.encoding = encodingSelect.value === 'standard' ? 'standard' : 'grain';
+      this.refresh?.();
+    };
+    encodingRow.append(encodingSelect);
 
     // 帧率选择
     const fpsRow = document.createElement('label');
@@ -395,7 +439,7 @@ export class VideoExporter {
     note.textContent = '视频保存在 ' + OUTPUT + '。请保持“MV导出工具”打开，生成时间取决于所选片段长度和电脑性能。';
     note.style.cssText = 'margin:18px 0 0;font-size:12px;color:var(--l3);overflow-wrap:anywhere';
 
-    root.append(format, description, resolutionRow, fpsRow, syncRow, resolutionHint, rangeRow, song, status, meter, saved, actions, note);
+    root.append(format, description, resolutionRow, encodingRow, fpsRow, syncRow, resolutionHint, rangeRow, song, status, meter, saved, actions, note);
 
     this.refresh = () => {
       const snap = this.snapshot();
@@ -403,6 +447,8 @@ export class VideoExporter {
       format.textContent = formatText();
       resolution.disabled = locked;
       resolution.style.opacity = locked ? '.5' : '1';
+      encodingSelect.disabled = locked;
+      encodingSelect.style.opacity = locked ? '.5' : '1';
       fpsSelect.disabled = locked;
       fpsSelect.style.opacity = locked ? '.5' : '1';
       syncSelect.disabled = locked;
@@ -454,8 +500,9 @@ export class VideoExporter {
   private async begin(startSec = 0, durSec?: number, label?: string): Promise<void> {
     if (this.busy) return;
     const current = this.snapshot();
-    const snapshot = current ? JSON.parse(JSON.stringify(current)) as ExportSnapshot : null;
-    const width = this.resolution === 1080 ? 1920 : 1280;
+    const inMemoryAudio = current?.audio && current.audio.byteLength > 32 ? current.audio.slice(0) : undefined;
+    const snapshot = current ? JSON.parse(JSON.stringify({ ...current, audio: undefined })) as ExportSnapshot : null;
+    const width = this.resolution === 1440 ? 2560 : this.resolution === 1080 ? 1920 : 1280;
     const height = this.resolution;
     if (!this.jobId && !snapshot) return;
     if (!this.jobId && snapshot) {
@@ -467,7 +514,10 @@ export class VideoExporter {
     try {
       if (!TOKEN) throw new ServiceMismatch();
       this.update(this.jobId ? '正在读取导出进度…' : '正在连接 MV 导出工具…', this.jobId ? this.progress : 0);
-      await request('/api/health');
+      const health = await request<{ ok?: boolean; version?: string }>('/api/health');
+      if (!this.jobId && this.resolution === 1440 && health?.version !== '2') {
+        throw new Error('请先关闭旧版“MV导出工具”窗口并重新运行“启动MV导出工具.cmd”，再导出 2K 超清视频。');
+      }
       if (!this.jobId && snapshot) {
         const song = { ...snapshot.song, artists: [...snapshot.song.artists] };
         const config = JSON.parse(JSON.stringify({
@@ -491,8 +541,13 @@ export class VideoExporter {
         this.update('正在准备歌曲和歌词…', 0.01);
         let cancelled = false;
         let timer = 0;
+        const audioPromise = inMemoryAudio
+          ? Promise.resolve({ audio: inMemoryAudio, source: 'netease-cache' as const })
+          : getAudio(this.client, song.id, () => cancelled, song.local ? localLrcPath : undefined);
+        const wikiPromise = snapshot.wiki !== undefined ? Promise.resolve(snapshot.wiki) : fetchWiki(song.id);
+        const chorusPromise = snapshot.chorus !== undefined ? Promise.resolve(snapshot.chorus) : fetchChorus(song.id);
         const assets = Promise.all([
-          getAudio(this.client, song.id, () => cancelled, song.local ? localLrcPath : undefined), fetchLyric(song.id), fetchWiki(song.id), fetchChorus(song.id),
+          audioPromise, fetchLyric(song.id), wikiPromise, chorusPromise,
           this.cover(song.cover),
         ]);
         const [audioAsset, lyric, wiki, chorus, cover] = await Promise.race([
@@ -508,6 +563,7 @@ export class VideoExporter {
           width,
           height,
           fps: this.fps,
+          encoding: this.encoding,
           visualLeadMs: this.exportLeadMs,
         };
         if (durSec !== undefined) {
@@ -532,10 +588,14 @@ export class VideoExporter {
       await this.followJob();
     } catch (error) {
       this.error = true;
+      const rawMsg = (error as Error)?.message || '';
+      const fallbackMsg = /failed to fetch|networkerror|load failed/i.test(rawMsg)
+        ? '读取本地缓存或连接导出服务时短暂中断，请再点一次导出重试。'
+        : rawMsg || '导出未完成，请重试。';
       this.update(error instanceof ServiceUnavailable
         ? this.jobId ? '暂时无法读取进度。请保持“MV导出工具”打开，再点击“继续查看进度”。' : '请先打开“MV导出工具”，再重试。'
         : error instanceof ServiceMismatch ? 'MV 导出工具与当前插件不匹配，请重新打开配套的导出工具。'
-        : (error as Error)?.message || '导出未完成，请重试。');
+        : fallbackMsg);
     } finally {
       this.busy = false;
       this.refresh?.();

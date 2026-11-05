@@ -57,9 +57,19 @@ async function listCacheDir(dir: string): Promise<string[]> {
   if (cachedDirListing && cachedDirListing.dir === dir && now - cachedDirListing.at < DIR_CACHE_TTL_MS) {
     return cachedDirListing.entries;
   }
-  const entries = (await betterncm.fs.readDir(dir)).map(e => String(e).split(/[\\/]/).pop()!);
-  cachedDirListing = { dir, at: now, entries };
-  return entries;
+  // BetterNCM 的 fs 接口底层基于本地 HTTP fetch，大文件并发读写时可能偶发连接重置（Failed to fetch）
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = await betterncm.fs.readDir(dir);
+      if (!Array.isArray(raw)) return [];
+      const entries = raw.map(e => String(e).split(/[\\/]/).pop()!);
+      cachedDirListing = { dir, at: performance.now(), entries };
+      return entries;
+    } catch {
+      if (attempt === 0) await sleep(250);
+    }
+  }
+  return [];
 }
 
 async function songCacheDir(client: Client): Promise<string | null> {
@@ -90,11 +100,20 @@ export async function readCachedAudio(client: Client, id: number): Promise<Array
       const size = Number(idx.size), zone: string[] = idx.zone || [];
       if (!(zone.length === 1 && zone[0] === `0 ${size - 1}`)) continue;
     } catch { continue; }
-    const bytes = new Uint8Array(await (await betterncm.fs.readFile(`${dir}/${name}`)).arrayBuffer());
-    const words = bytes.length >>> 2, u32 = new Uint32Array(bytes.buffer, 0, words);
-    for (let i = 0; i < words; i++) u32[i] ^= 0xa3a3a3a3;
-    for (let i = words * 4; i < bytes.length; i++) bytes[i] ^= 0xa3;
-    return bytes.buffer;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const blob = await betterncm.fs.readFile(`${dir}/${name}`);
+        if (!blob || typeof blob.arrayBuffer !== 'function') break;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        if (!bytes.byteLength) break;
+        const words = bytes.length >>> 2, u32 = new Uint32Array(bytes.buffer, 0, words);
+        for (let i = 0; i < words; i++) u32[i] ^= 0xa3a3a3a3;
+        for (let i = words * 4; i < bytes.length; i++) bytes[i] ^= 0xa3;
+        return bytes.buffer;
+      } catch {
+        if (attempt < 2) await sleep(300 * (attempt + 1));
+      }
+    }
   }
   return null;
 }

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { startServer, validateMetadata, safeFilename } from './server.mjs';
+import { buildFfmpegArgs } from './runner.mjs';
 
 test('local export API authenticates requests, rejects external origins and persists completed jobs', async () => {
   const temp=await fs.mkdtemp(path.join(os.tmpdir(),'bmv-export-test-'));
@@ -67,8 +68,23 @@ test('submission rejects unsupported format and unsafe output names stay inside 
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:250}}));
   const valid60=validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:55},config:{exportLeadMs:55}});
   assert.equal(valid60.format.fps,60);
+  assert.equal(valid60.format.encoding,'grain');
   assert.equal(valid60.format.visualLeadMs,55);
   assert.equal(valid60.config.exportLeadMs,55);
+  const valid2k=validateMetadata({song:{id:2,name:'B',artists:['ODESZA']},format:{width:2560,height:1440,fps:60,encoding:'grain'}});
+  assert.equal(valid2k.format.width,2560);
+  assert.equal(valid2k.format.height,1440);
+  assert.equal(valid2k.format.encoding,'grain');
+  assert.throws(()=>validateMetadata({song:{id:2,name:'B',artists:[]},format:{width:2560,height:1440,fps:60,encoding:'invalid'}}));
+  const grainArgs=buildFfmpegArgs({fps:60,encoding:'grain',start:190,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  assert.ok(grainArgs.includes('scale=in_range=full:out_color_matrix=bt709:out_range=tv'));
+  assert.ok(grainArgs.includes('bt709'));
+  assert.equal(grainArgs[grainArgs.indexOf('-crf')+1],'15');
+  assert.equal(grainArgs[grainArgs.indexOf('-aq-mode')+1],'3');
+  assert.equal(grainArgs[grainArgs.indexOf('-b:a')+1],'256k');
+  const stdArgs=buildFfmpegArgs({fps:60,encoding:'standard',start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  assert.equal(stdArgs[stdArgs.indexOf('-crf')+1],'18');
+  assert.equal(stdArgs[stdArgs.indexOf('-b:a')+1],'192k');
   assert.equal(safeFilename('CON'),'BetterMV');
   assert.equal(safeFilename('a/b\\c:*?'),'a_b_c___');
 });

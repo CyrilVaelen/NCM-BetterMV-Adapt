@@ -394,6 +394,8 @@ export class Engine {
   set lensScale(v: number) { this.shots.lensScale = v; }
   private halation = 0;
   private basePixelRatio = 1;
+  private maxRenderWidth = 1920;
+  private maxRenderHeight = 1080;
   private readonly onResize = () => this.resize();
   /** 标记当前 WebGL 上下文是否曾发生过丢失（即使后续浏览器触发了 restored，旧 RenderTarget 句柄也已失效，必须重建实例） */
   contextLost = false;
@@ -406,8 +408,16 @@ export class Engine {
   private retainedPrograms = new Map<string, { holder: THREE.Object3D; geo: THREE.BufferGeometry; mat: THREE.Material }>();
   private dummyTex: THREE.DataTexture | null = null;
 
-  constructor(readonly container: HTMLElement, pixelRatio = Math.min(window.devicePixelRatio || 1, 2)) {
+  constructor(
+    readonly container: HTMLElement,
+    pixelRatio = Math.min(window.devicePixelRatio || 1, 2),
+    maxRenderSize?: { width: number; height: number },
+  ) {
     this.basePixelRatio = pixelRatio;
+    if (maxRenderSize) {
+      this.maxRenderWidth = Math.max(64, maxRenderSize.width);
+      this.maxRenderHeight = Math.max(64, maxRenderSize.height);
+    }
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
     renderer.domElement.addEventListener('webglcontextlost', () => {
       this.contextLost = true;
@@ -801,8 +811,8 @@ export class Engine {
   private applySafePixelRatio(): void {
     const w = this.container.clientWidth || window.innerWidth || 1920;
     const h = this.container.clientHeight || window.innerHeight || 1080;
-    const maxRatioW = 1920 / Math.max(1, w);
-    const maxRatioH = 1080 / Math.max(1, h);
+    const maxRatioW = this.maxRenderWidth / Math.max(1, w);
+    const maxRatioH = this.maxRenderHeight / Math.max(1, h);
     const maxSafeRatio = Math.max(0.5, Math.min(maxRatioW, maxRatioH));
     const effectivePixelRatio = Math.min(this.basePixelRatio, maxSafeRatio);
     this.renderer.setPixelRatio(effectivePixelRatio);

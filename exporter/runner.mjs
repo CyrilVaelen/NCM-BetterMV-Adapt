@@ -90,6 +90,52 @@ async function inspectFile(ffmpegPath, partial, expected, signal, ffprobePath) {
   }
 }
 
+/**
+ * 构建 FFmpeg MP4 编码参数：
+ * - 显式指定高清 BT.709 色彩矩阵与色彩元数据，修复 PNG(sRGB) 转 YUV420P 默认走 BT.601 导致暖琥珀色/高光偏暗失真的问题；
+ * - 默认启用 `grain` 原画高保真模式（CRF 15 + AQ-Mode 3 暗场自适应量化 + Psy-RD 保颗粒 + 轻去块滤波），完整保留动态胶片颗粒、暗部烟雾细腻渐变与 1~2px 激光锐利边缘。
+ */
+export function buildFfmpegArgs({ fps, encoding = 'grain', start, duration, audioPath, outputPath }) {
+  const highFidelity = encoding !== 'standard';
+  const videoCodecArgs = highFidelity
+    ? [
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-profile:v', 'high',
+        '-crf', '15',
+        '-aq-mode', '3',
+        '-aq-strength', '1.10',
+        '-psy-rd', '1.05:0.15',
+        '-deblock', '-1:-1',
+        '-qcomp', '0.72',
+      ]
+    : [
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-profile:v', 'high',
+        '-crf', '18',
+        '-aq-mode', '3',
+      ];
+  const audioBitrate = highFidelity ? '256k' : '192k';
+  return [
+    '-hide_banner', '-loglevel', 'warning', '-n',
+    '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'png', '-i', 'pipe:0',
+    '-ss', String(start), '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0',
+    '-vf', 'scale=in_range=full:out_color_matrix=bt709:out_range=tv',
+    ...videoCodecArgs,
+    '-pix_fmt', 'yuv420p',
+    '-colorspace', 'bt709',
+    '-color_primaries', 'bt709',
+    '-color_trc', 'bt709',
+    '-color_range', 'tv',
+    '-r', String(fps),
+    '-c:a', 'aac', '-b:a', audioBitrate,
+    '-af', 'apad', '-t', String(duration),
+    '-movflags', '+faststart', '-f', 'mp4', outputPath,
+  ];
+}
+
 /** Render one prepared local job. No shell, Bun, browser recording, or wall-clock frame timing is used. */
 export async function renderJob(job, options, update = () => {}) {
   const { width, height, fps } = job.format ?? {};
@@ -162,9 +208,14 @@ export async function renderJob(job, options, update = () => {}) {
     const duration = totalFrames / fps, finalFrame = firstFrame + totalFrames;
     const dt = 1 / fps;
     await update({ state: 'preparing', progress: 0.05, frames: 0, totalFrames, start, duration, sourceDuration, warmupFrames: firstFrame, info });
-    const args = ['-hide_banner', '-loglevel', 'warning', '-n', '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'png', '-i', 'pipe:0',
-      '-ss', String(start), '-i', audioPath, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-      '-pix_fmt', 'yuv420p', '-r', String(fps), '-c:a', 'aac', '-b:a', '192k', '-af', 'apad', '-t', String(duration), '-movflags', '+faststart', '-f', 'mp4', partial];
+    const args = buildFfmpegArgs({
+      fps,
+      encoding: job.format.encoding ?? 'grain',
+      start,
+      duration,
+      audioPath,
+      outputPath: partial,
+    });
     encoder = spawn(options.ffmpegPath, args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
     encoderResult = processResult(encoder);
     void encoderResult.then(result => { encoderEnded = { ...result, expectedFrames: totalFrames }; }, error => { encoderFailure = error; });

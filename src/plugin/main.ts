@@ -250,10 +250,15 @@ function start(client: Client): void {
     const song = playingSong(client.store);
     if (!song) return null;
     const shown = player?.song?.id === song.id ? player : null;
+    const prepared = shown?.song ?? ready.get(song.id) ?? null;
+    const memAudio = prepared ? songAudio.get(prepared) : undefined;
     return {
-      song, config, seed: shown?.seed, lines: shown?.song?.lines, analysisLines: shown?.song?.analysisLines,
-      duration: shown?.song?.duration ?? song.duration,
-      sections: shown?.song?.analysis?.sections,
+      song, config, seed: shown?.seed,
+      lines: prepared?.lines, analysisLines: prepared?.analysisLines,
+      wiki: prepared?.wiki, chorus: prepared?.chorus,
+      audio: memAudio && memAudio.byteLength > 32 ? memAudio : undefined,
+      duration: prepared?.duration ?? song.duration,
+      sections: prepared?.analysis?.sections,
       currentTime: clock.time(),
     };
   });

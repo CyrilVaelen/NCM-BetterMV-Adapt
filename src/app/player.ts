@@ -128,8 +128,8 @@ export class MvPlayer {
   /** 最近一次已知的歌曲播放时间（供后台渐进预热计算前瞻距离） */
   private lastPlayTime = 0;
 
-  constructor(container: HTMLElement, pixelRatio?: number) {
-    this.engine = new Engine(container, pixelRatio);
+  constructor(container: HTMLElement, pixelRatio?: number, maxRenderSize?: { width: number; height: number }) {
+    this.engine = new Engine(container, pixelRatio, maxRenderSize);
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
     this.hud = new Hud(container);
     this.scenes = this.createScenesProxy();

@@ -13,7 +13,7 @@
 
 </div>
 
-> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.89`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Adapt/releases/latest)。
+> **版本说明**：本仓库为 [**CyrilVaelen**](https://github.com/CyrilVaelen) 基于开源插件 BetterMV 进行多轮深度重构、场景扩充与管线提速的个人改进版本（当前版本 `0.9.0-local-export.90`）。推送代码后由 GitHub Actions 自动编译并实时更新至本仓库 [Releases 最新版](https://github.com/CyrilVaelen/NCM-BetterMV-Adapt/releases/latest)。
 
 ## 核心功能与定制增强
 
