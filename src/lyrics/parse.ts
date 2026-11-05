@@ -138,6 +138,28 @@ function translations(doc: NeteaseLyric): Map<number, string> {
   return map;
 }
 
+/**
+ * 检测未真实打轴、而是由工具将长跨度行（含大段器乐间奏）按词/分片数机械等分填充的伪逐字 YRC 行。
+ * 例如 21.33s 的 `[106120,21330]` 被均分为 4 个 5.332s 的分片：真实演唱不可能出现多词毫秒级等长且语速极慢的情况。
+ */
+function isUniformSyntheticYrc(
+  pieces: Array<{ text: string; start: number; end: number }>,
+  words: LyricWord[],
+  span: number,
+): boolean {
+  if (words.length < 2 || span < 6) return false;
+  const totalSyl = words.reduce((s, w) => s + syllables(w.text), 0);
+  const voicedSum = words.reduce((s, w) => s + Math.max(0, w.end - w.start), 0);
+  if (voicedSum / Math.max(1, totalSyl) < 1.2 || voicedSum / words.length < 1.4) return false;
+  const uniform = (durs: number[]) => {
+    if (durs.length < 2) return false;
+    const mean = durs.reduce((a, b) => a + b, 0) / durs.length;
+    return mean >= 1.2 && Math.max(...durs) - Math.min(...durs) <= Math.max(0.04, 0.06 * mean);
+  };
+  const nonEmptyPieces = pieces.filter(p => p.text.replace(/\uFEFF/g, '').trim().length > 0);
+  return uniform(words.map(w => w.end - w.start)) || uniform(nonEmptyPieces.map(p => p.end - p.start));
+}
+
 function fromYrc(doc: NeteaseLyric, trans: Map<number, string>): LyricLine[] {
   const lines: LyricLine[] = [];
   for (const raw of String(doc.yrc?.lyric || '').replace(/\r\n?/g, '\n').split('\n')) {
@@ -168,7 +190,23 @@ function fromYrc(doc: NeteaseLyric, trans: Map<number, string>): LyricLine[] {
       const last = joined.length - 1;
       joined[last] = { ...joined[last], text: joined[last].text.replace(/[)）\]】]+$/, '') };
     }
-    lines.push({ start, end, text, words: joined.filter(w => w.text), timedWords: true, translation: nearest(trans, start), backing });
+    const cleanWords = joined.filter(w => w.text);
+    if (isUniformSyntheticYrc(pieces, cleanWords, end - start)) {
+      // 伪逐字线性均分行回退为按音节自然时长分布，避免将后续数十秒器乐 Drop 误标为持续人声演唱
+      const needed = Math.max(2.5, cleanWords.reduce((n, w) => n + syllables(w.text), 0) * 0.42);
+      const naturalEnd = Math.min(end, start + needed * 1.4);
+      lines.push({
+        start,
+        end: naturalEnd,
+        text,
+        words: spreadWords(text, start, naturalEnd),
+        timedWords: false,
+        translation: nearest(trans, start),
+        backing,
+      });
+      continue;
+    }
+    lines.push({ start, end, text, words: cleanWords, timedWords: true, translation: nearest(trans, start), backing });
   }
   return lines;
 }

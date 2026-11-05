@@ -311,3 +311,165 @@ test('半拍 Drop 后半程叠加连贯副歌人声且全频段伴奏未衰减�
   const atRepriseChorus = repriseChorusSecs.find(s => 110 >= s.start && 110 < s.end);
   assert.equal(atRepriseChorus?.label, 'chorus', '重低音与高频撤出后的副歌复唱应归为 chorus');
 });
+
+test('跨器乐间奏机械均分的伪逐字 YRC 行回退为自然音节时长，不污染后续纯器乐 Drop', () => {
+  const yrc = [
+    // 真实逐字行：词长各异，必须保留 timedWords = true 与原始词时间戳
+    '[12250,3300](12250,390,0)Jumping (12640,300,0)right (12940,210,0)off (13150,270,0)the (13420,2070,0)edge',
+    // 伪逐字均分行：21.33s 的器乐 Drop 被机械四等分给每个分片（5332ms），必须回退为自然时长
+    "[106120,21330](106120,5332,0)And (111452,5332,0)it's (116784,5332,0)gor(122116,5334,0)-",
+  ].join('\n');
+  const lines = parseNeteaseLyric({ yrc: { lyric: yrc } }, 240);
+  assert.equal(lines.length, 2);
+
+  assert.equal(lines[0].timedWords, true, '真实逐字行应保留 timedWords = true');
+  assert.ok(Math.abs(lines[0].words[4].end - 15.49) < 1e-6);
+
+  assert.equal(lines[1].timedWords, false, '机械等分伪逐字行应标记为 timedWords = false');
+  const lastWordEnd = lines[1].words[lines[1].words.length - 1].end;
+  assert.ok(lastWordEnd - lines[1].start <= 2.0, `伪逐字行发音跨度应收敛至自然时长（实际 ${lastWordEnd - lines[1].start}s）`);
+});
+
+test('伪逐字切音与末句 Pre-drop 人声不掩盖全曲多处 Drop 及下半场高潮，同时保留结尾收束型尾奏', () => {
+  // 88 小节 × 2.7s = 237.6s（末句歌词后剩余 43.4s <= 22% 时长阈值，确保完整命入 refineTerminalOutro 分支）：
+  // 0..4 intro | 4..16 verse 1 | 16..24 chorus 1 | 24..28 build 1 | 28..36 drop 1 (75.6..97.2s)
+  // 36..48 verse 2 | 48..56 chorus 2 | 56..64 build 2 | 64..72 drop 2a (172.8..194.4s) | 72..80 drop 2b (194.4..216.0s) | 80..88 outro (216.0..237.6s)
+  const nb = 88, beatsPerBar = 4, beatDur = 0.675, nBeats = nb * beatsPerBar, duration = nBeats * beatDur, fps = 100;
+  const beats = Array.from({ length: nBeats }, (_, i) => i * beatDur);
+  const beatInBar = beats.map((_, i) => i % beatsPerBar);
+  const bars = makeBars(beats, beatInBar, duration);
+  const totalFrames = Math.ceil(duration * fps);
+
+  const buildCase = (climaxSecondHalf: boolean): SectionInput => {
+    const rms = new Float32Array(totalFrames);
+    const low = new Float32Array(totalFrames);
+    const high = new Float32Array(totalFrames);
+    const chroma = new Float32Array(nBeats * 12);
+    const bass = new Float32Array(nBeats * 12);
+    const mfcc = new Float32Array(nBeats * N_MFCC);
+    const db = new Float32Array(nBeats);
+    const bright = new Float32Array(nBeats);
+    const kick = new Float32Array(nBeats);
+    const snare = new Float32Array(nBeats);
+    const hat = new Float32Array(nBeats);
+    const flux = new Float32Array(nBeats);
+    const density = new Float32Array(nBeats);
+    const kicks: Hit[] = [];
+    const snares: Hit[] = [];
+
+    for (let bar = 0; bar < nb; bar++) {
+      const isIntro = bar < 4;
+      const isDrop1 = bar >= 28 && bar < 36;
+      const isDrop2a = bar >= 64 && bar < 72;
+      const isMidHitDip = climaxSecondHalf && bar === 71;
+      const isPostTag = bar >= 72 && bar < 84;
+      const isDrop2b = climaxSecondHalf && bar >= 72 && bar < 80;
+      const isClosingTail = !climaxSecondHalf && isPostTag;
+      const isSilenceEnd = !climaxSecondHalf && bar >= 84;
+      const isAudibleOutro = climaxSecondHalf && bar >= 80;
+      const isChorus = (bar >= 16 && bar < 24) || (bar >= 48 && bar < 56);
+      const isBuild = (bar >= 24 && bar < 28) || (bar >= 56 && bar < 64);
+
+      const isArticulatedDrop = isDrop1 || (isDrop2a && !isMidHitDip) || isDrop2b;
+      const barRms = isDrop2b ? 0.98
+        : isArticulatedDrop ? 0.90
+        : isClosingTail ? 0.84
+        : isMidHitDip ? 0.52
+        : isChorus ? 0.66
+        : isBuild ? 0.50
+        : isAudibleOutro ? 0.28
+        : isSilenceEnd ? 0.01
+        : isIntro ? 0.18 : 0.36;
+      const barLow = isArticulatedDrop ? 0.90
+        : isClosingTail ? 0.55
+        : isMidHitDip ? 0.04
+        : isChorus ? 0.16
+        : isBuild ? 0.02
+        : isAudibleOutro ? 0.02
+        : isSilenceEnd ? 1e-6 : 0.03;
+      const barHigh = isArticulatedDrop || isClosingTail ? 0.45 : isChorus ? 0.14 : isBuild ? 0.22 : isSilenceEnd ? 1e-6 : 0.04;
+      const barDb = isDrop2b ? -0.5
+        : isArticulatedDrop ? -1.5
+        : isClosingTail ? -2.2
+        : isMidHitDip ? -8
+        : isChorus ? -5.5
+        : isBuild ? -8.5
+        : isAudibleOutro ? -15
+        : isSilenceEnd ? -65
+        : isIntro ? -16 : -10;
+
+      const f0 = Math.floor(bar * beatsPerBar * beatDur * fps);
+      const f1 = Math.min(totalFrames, Math.floor((bar + 1) * beatsPerBar * beatDur * fps));
+      for (let f = f0; f < f1; f++) {
+        rms[f] = barRms;
+        // 真实 Drop 具备低频颗粒切分；收束型尾奏为平直持续低音
+        low[f] = isArticulatedDrop ? ((f - f0) % 68 < 36 ? barLow : 0.008) : barLow;
+        high[f] = barHigh;
+      }
+
+      for (let b = 0; b < beatsPerBar; b++) {
+        const bi = bar * beatsPerBar + b;
+        const t = beats[bi];
+        const root = isArticulatedDrop ? 0 : isClosingTail ? 7 : isChorus ? 5 : isAudibleOutro ? 9 : 2;
+        chroma[bi * 12 + root] = 1;
+        bass[bi * 12 + root] = 1;
+        mfcc[bi * N_MFCC] = barDb;
+        mfcc[bi * N_MFCC + 1] = isArticulatedDrop ? 12 : isChorus ? 3 : -4;
+        db[bi] = barDb;
+        bright[bi] = isArticulatedDrop ? -4 : -10;
+        density[bi] = isArticulatedDrop ? 3.2 : isBuild ? 2.8 : isChorus ? 1.7 : 0.8;
+        flux[bi] = density[bi];
+        if (isArticulatedDrop || isClosingTail || isBuild) {
+          if (b === 0 || b === 1 || b === 3) { kick[bi] = 0.88; kicks.push([t, 0.88]); }
+          if (b === 2) { snare[bi] = 0.92; snares.push([t, 0.92]); }
+          hat[bi] = 0.6;
+        } else if (isChorus) {
+          if (b === 0 || b === 2) { kick[bi] = 0.55; kicks.push([t, 0.55]); }
+          if (b === 1 || b === 3) { snare[bi] = 0.5; snares.push([t, 0.5]); }
+        }
+      }
+    }
+
+    const yrc = [
+      // Verse 1 (11..42s)
+      '[12000,3500](12000,500,0)Jumping (12500,500,0)right (13000,500,0)off (13500,2000,0)edge',
+      '[22000,3500](22000,500,0)Sleeping (22500,600,0)in (23100,600,0)the (23700,1800,0)deep',
+      // Chorus 1 (43.2..64.8s): 4 句独立歌词，在 Chorus 2 完整重现（每句出现 2 次，hook = 0.33）
+      '[43500,4500](43500,600,0)All (44100,600,0)those (44700,800,0)days (45500,2500,0)pass',
+      '[48800,4500](48800,600,0)Still (49400,700,0)believe (50100,800,0)I (50900,2400,0)breathe',
+      '[54000,4500](54000,600,0)Need (54600,700,0)the (55300,800,0)dark (56100,2400,0)shine',
+      '[59200,4500](59200,600,0)See (59800,700,0)for (60500,800,0)first (61300,2400,0)time',
+      '[66000,2000](66000,1200,0)Gorgeous',
+      // Drop 1 (75.6..97.2s): 伪逐字机械等分切音行
+      "[75200,21330](75200,5332,0)And (80532,5332,0)it's (85864,5332,0)gor(91196,5334,0)-",
+      // Verse 2 (98..128s)
+      '[99000,3500](99000,500,0)Seeing (99500,500,0)it (100000,500,0)for (100500,2000,0)miles',
+      '[112000,3500](112000,500,0)Living (112500,600,0)with (113100,600,0)no (113700,1800,0)fear',
+      // Chorus 2 (129.6..151.2s)
+      '[130000,4500](130000,600,0)All (130600,600,0)those (131200,800,0)days (132000,2500,0)pass',
+      '[135300,4500](135300,600,0)Still (135900,700,0)believe (136600,800,0)I (137400,2400,0)breathe',
+      '[140500,4500](140500,600,0)Need (141100,700,0)the (141800,800,0)dark (142600,2400,0)shine',
+      '[145700,4500](145700,600,0)See (146300,700,0)for (147000,800,0)first (147800,2400,0)time',
+      '[153000,2000](153000,1200,0)Gorgeous',
+      // Drop 2a (172.8..194.4s): 伪逐字机械等分切音行 + 193.5s 末句 Pre-drop/结尾人声
+      "[177000,15030](177000,3006,0)And (180006,3006,0)it's (186018,3006,0)gor(189024,3006,0)-",
+      '[193500,40000](193500,700,0)Gorgeous',
+    ].join('\n');
+    const lyrics = parseNeteaseLyric({ yrc: { lyric: yrc } }, duration);
+    const features: BeatFeatures = { n: nBeats, chroma, bass, mfcc, db, bright, kick, snare, hat, flux, density };
+    return { features, beats, bars, duration, rms, fps, lyrics, hits: { kick: kicks, snare: snares }, low, high };
+  };
+
+  const climaxSecs = findSections(buildCase(true));
+  const atClimax = (t: number) => climaxSecs.find(s => t >= s.start && t < s.end)?.label;
+  assert.equal(atClimax(52), 'chorus', '双遍 4 句人声副歌 1 应保持为 chorus');
+  assert.equal(atClimax(138), 'chorus', '双遍 4 句人声副歌 2 应保持为 chorus');
+  assert.equal(atClimax(85), 'drop', 'Drop 1 不得因伪逐字均分切音被误判为 chorus');
+  assert.equal(atClimax(182), 'drop', 'Drop 2 前半程应识别为 drop');
+  assert.equal(atClimax(202), 'drop', '末句 Pre-drop 人声引爆后的下半场高潮应保持为 drop 而非 outro');
+  assert.equal(atClimax(225), 'outro', '高潮结束后的柔和收尾段应识别为 outro');
+
+  const closingSecs = findSections(buildCase(false));
+  const atClosing = (t: number) => closingSecs.find(s => t >= s.start && t < s.end)?.label;
+  assert.equal(atClosing(202), 'outro', '能量回落、平直低音且末尾仅余静音尾垫的结尾段仍应识别为 outro');
+});

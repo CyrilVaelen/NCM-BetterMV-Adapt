@@ -127,10 +127,12 @@ function estSyllables(word: string): number {
   return Math.max(1, g ? g.length : 1);
 }
 
-/** 单词有效发声结束时间：限制逐字歌词未闭合尾词的异常超长拖尾（避免跨数十秒遮蔽后续纯器乐段落）。 */
+/** 单词有效发声结束时间：限制逐字歌词未闭合尾词及连字符截断切音词（如 `gor-`）的异常超长拖尾。 */
 function voicedWordEnd(w: LyricWord, timed: boolean): number {
   if (!timed) return w.end;
-  return Math.min(w.end, w.start + Math.max(3.5, estSyllables(w.text) * 1.8));
+  const syl = estSyllables(w.text);
+  const cap = /[\p{L}\p{N}]-$/u.test(w.text) ? Math.max(1.2, syl * 0.9) : Math.max(3.5, syl * 1.8);
+  return Math.min(w.end, w.start + cap);
 }
 
 /** 获取歌词行的有效起止发声边界。 */
@@ -524,7 +526,7 @@ export function findSections(inp: SectionInput): Section[] {
     secs.forEach((s,k)=>{s.energy=Math.round(energies[k]/maximum*1000)/1000;s.vocal=refinedInfo[k].cover>=.12;});
     assignGroups(secs,refinedInfo,sectionSimilarity(refinedSpans,S,nb));
   }
-  if (refineTerminalOutro(secs,lyr,bars.time,d.db,duration)) {
+  if (refineTerminalOutro(secs,lyr,bars.time,d.db,duration,rms,fps,form.articulation)) {
     // The final repeated sung hook can resolve into an instrumental outro while the drop drums continue. Keep the
     // hook itself in the preceding section, then refresh the metadata after splitting at its actual lyric end.
     const energies=secs.map(s=>meanRange(rms,Math.floor(s.start*fps),Math.floor(s.end*fps)));
@@ -551,7 +553,16 @@ export function findSections(inp: SectionInput): Section[] {
 /** A repeated final vocal tag followed by the song's permanent fade belongs to the closing outro, even if its
  * instrumental carries the same loud kick pattern as the preceding Drop. This uses ending evidence, never a song ID
  * or a fixed timestamp; the old last-section rule alone cannot find an outro while the final instrumental is loud. */
-function refineTerminalOutro(secs:Section[],lyrics:LyricLine[],time:number[],db:Float64Array,duration:number):boolean {
+function refineTerminalOutro(
+  secs:Section[],
+  lyrics:LyricLine[],
+  time:number[],
+  db:Float64Array,
+  duration:number,
+  rms:Float32Array,
+  fps:number,
+  articulation:Float64Array,
+):boolean {
   if(secs.length<2||!lyrics.length||time.length<8)return false;
   const lineStart=(l:LyricLine)=>l.words.length?l.words[0].start:l.start;
   const lineEnd=(l:LyricLine)=>l.words.length?l.words[l.words.length-1].end:l.end;
@@ -569,13 +580,34 @@ function refineTerminalOutro(secs:Section[],lyrics:LyricLine[],time:number[],db:
   // the final fade (or sustained ending drop in the existing outro path) must still support a closing-form reading.
   const ref=quantile(db,.9),bounded=Float64Array.from(db,value=>Math.max(value,ref-30));
   const from=Math.max(4,lowerBound(time,end+.05));
-  let tail=Infinity;
+  let tail=Infinity,tailBar=-1;
   for(let j=from;j<time.length-1;j++){
     const before=mean(bounded,j-4,j);let top=-Infinity;
     for(let q=j;q<time.length;q++)top=Math.max(top,bounded[q]);
-    if(top<=before-2&&mean(bounded,j,time.length)<=before-3){tail=time[j];break;}
+    if(top<=before-2&&mean(bounded,j,time.length)<=before-3){tail=time[j];tailBar=j;break;}
   }
   if(!Number.isFinite(tail)||tail-end<4||tail-end>45||duration-tail<1.5)return false;
+
+  // 保护末句 Pre-drop 人声引爆后的下半场高潮 Drop（以连续高潮块起点锚定前序能量，保证节拍倍频不变性）：
+  // 1) 若歌词结束后至衰减起点 [end, tail] 的能量反而高于前序连续高潮块（继续攀升冲顶，而非尾奏收束）；
+  // 2) 或 tail 之后本已存在完整充沛的有声尾奏（可听非静音时长 >= 12s），且 [end, tail] 维持高潮能量与重低音切分律动，
+  //    则 tail 才是真正的尾奏起点，不能将 [end, tail] 的高潮下半场提前改写为 outro。
+  if(rms.length>0&&fps>0){
+    let vIdx=secs.indexOf(vocalSection);
+    while(vIdx>0&&secs[vIdx-1].label===vocalSection.label)vIdx--;
+    const blockStart=secs[Math.max(0,vIdx)].start;
+    const preRms=meanRange(rms,Math.floor(blockStart*fps),Math.max(Math.floor(blockStart*fps)+1,Math.floor(end*fps)));
+    const postRms=meanRange(rms,Math.floor(end*fps),Math.max(Math.floor(end*fps)+1,Math.floor(tail*fps)));
+    if(preRms>1e-6&&postRms>preRms*1.02)return false;
+    let audibleSec=0;
+    for(let q=tailBar;q>=0&&q<time.length;q++){
+      if(db[q]<ref-26)continue;
+      audibleSec+=Math.max(0,(time[q+1]??duration)-time[q]);
+    }
+    const postArt=tailBar>from&&articulation.length>=tailBar?quantile(articulation.subarray(from,tailBar),.5):0;
+    const headArt=tailBar>from&&articulation.length>=tailBar?quantile(articulation.subarray(from,Math.min(tailBar,from+3)),.5):0;
+    if(audibleSec>=12&&preRms>1e-6&&postRms>=preRms*.9&&postArt>=9.5&&headArt>=9.5)return false;
+  }
 
   // Make the final lyric's actual end the semantic handoff. If a coarse bar cut left only a tiny sliver before it,
   // extend the preceding section instead of creating a visual shot shorter than a beat.
@@ -604,6 +636,9 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
   const n = secs.length, release = spans.map(([a,b]) => releaseShare(form,a,b) >= .5);
   // Seconds, not a fixed number of bars: the tracker may describe the same half-time music at either tempo octave.
   const nextRelease = (k: number) => { for(let q=k+1;q<n;q++) { if(secs[q].start-secs[k].end>48) break; if(release[q]) return q; } return -1; };
+  // 双遍完整重现的多句人声副歌（>= 4 句独立歌词且 >= 90% 重现）：即使每句仅出现两次（hook ≈ 0.33 < 0.5），只要未紧邻导入更响的唱段，保留为 chorus
+  const isRepeatedChorusBlock = (k: number) => secs[k].label === 'chorus' && info[k].leadCover >= 0.4 && info[k].rep >= 0.9 && info[k].lines.size >= 4 &&
+    !(secs[k + 1].vocal && info[k + 1].leadCover >= 0.35 && secs[k + 1].energy >= 1.15 * secs[k].energy && !release[k + 1]);
   const updated = new Set<number>();
   for (let k=1;k+1<n;k++) {
     if(release[k]) { secs[k].label='drop'; updated.add(k); continue; }
@@ -621,7 +656,7 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
       secs[k].energy >= 0.88 * secs[k - 1].energy && bass[k] >= -5 && bass[k] >= bass[k - 1] - 3 && treble[k] >= treble[k - 1] - 4;
     if(shortLead || instrumentalRise) { secs[k].label='build'; updated.add(k); }
     else if(continuesDrop) { updated.add(k); }
-    else if(hasLyrics && li.leadCover>=.4 && li.hook>=.5 && li.rep>=.75) { secs[k].label='chorus'; updated.add(k); }
+    else if(hasLyrics && ((li.leadCover>=.4 && li.hook>=.5 && li.rep>=.75) || isRepeatedChorusBlock(k))) { secs[k].label='chorus'; updated.add(k); }
   }
   for(let k=1;k+1<n;k++) {
     if(release[k] || updated.has(k)) continue;
@@ -629,6 +664,7 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
     const sung=hasLyrics && li.leadCover>=.4;
     const intoHook=secs[k+1].label==='chorus' && bass[k]>=bass[k+1]+6;
     if(intoHook && (!hasLyrics || (sung && li.hook<.5 && li.rep>=.5))) { secs[k].label='pre'; updated.add(k); }
+    else if(hasLyrics && isRepeatedChorusBlock(k)) { updated.add(k); }
     else if(sung && li.hook<.5 && secs[k].label!=='outro') { secs[k].label='verse'; updated.add(k); }
     else if(!hasLyrics && secs[k].label==='drop' && releaseShare(form,a,b)===0) { secs[k].label='verse'; updated.add(k); }
   }
