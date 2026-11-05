@@ -180,8 +180,23 @@ function leadLines(lyrics: LyricLine[], barLen: number): LyricLine[] {
   const finish = (l: LyricLine) => lineSpan(l)[1];
   const sorted = lyrics.slice().sort((a, b) => begin(a) - begin(b));
   const same = (i: number, j: number) => j < 0 || j >= sorted.length || norm(sorted[j].text) === norm(sorted[i].text);
+  // 连贯间距内连续 >= 4 遍完全相同的单句循环（Ostinato Hook Loop）：整串含首尾均视为高潮循环钩子，避免仅剔除中间句导致首尾漏判
+  const runLen = new Int32Array(sorted.length).fill(1);
+  for (let a = 0; a < sorted.length; ) {
+    let b = a + 1;
+    while (
+      b < sorted.length &&
+      norm(sorted[b].text) === norm(sorted[a].text) &&
+      begin(sorted[b]) - finish(sorted[b - 1]) <= BLOCK_GAP_BARS * barLen
+    ) {
+      b++;
+    }
+    for (let k = a; k < b; k++) runLen[k] = b - a;
+    a = b;
+  }
   return sorted.filter((l, i) => {
     if ((counts.get(norm(l.text)) || 0) < 2) return true;
+    if (runLen[i] >= 4) return false;
     if (same(i, i - 1) && same(i, i + 1)) return false;
     const prevGap = i > 0 ? begin(l) - finish(sorted[i - 1]) : Infinity;
     const nextGap = i + 1 < sorted.length ? begin(sorted[i + 1]) - finish(l) : Infinity;
@@ -651,11 +666,13 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
     // acoustically verified release and differ in its bass articulation or bandwidth; drum counts alone don't win.
     const shortLead=q===k+1 && secs[k].end-secs[k].start<=32 && bass[k]<bass[q]-3 && sustained;
     const instrumentalRise=(!hasLyrics || li.leadCover<.35) && treble[k]<treble[q]-4 && sustained;
-    // 紧接已确认 Drop 之后的 Vocal Drop 延续段：若总能量、重低音、高频带宽均维持前序 Drop 水平且具备切分低频颗粒感，保留 drop 不降级为副歌
+    // 紧接已确认 Drop 之后的 Vocal Drop 延续段，或紧邻已确认 Drop 之前的单句循环型 Vocal Drop 上半场：若全频段能量与颗粒感达标，保留 drop 不降级为副歌
     const continuesDrop = secs[k].label === 'drop' && secs[k - 1].label === 'drop' && (!sustained || art >= 10) &&
       secs[k].energy >= 0.88 * secs[k - 1].energy && bass[k] >= -5 && bass[k] >= bass[k - 1] - 3 && treble[k] >= treble[k - 1] - 4;
+    const precedesDrop = secs[k].label === 'drop' && q === k + 1 && (!sustained || art >= 10) && li.lines.size <= 1 &&
+      secs[k].energy >= 0.88 * secs[q].energy && bass[k] >= -5 && bass[k] >= bass[q] - 3 && treble[k] >= treble[q] - 4;
     if(shortLead || instrumentalRise) { secs[k].label='build'; updated.add(k); }
-    else if(continuesDrop) { updated.add(k); }
+    else if(continuesDrop || precedesDrop) { updated.add(k); }
     else if(hasLyrics && ((li.leadCover>=.4 && li.hook>=.5 && li.rep>=.75) || isRepeatedChorusBlock(k))) { secs[k].label='chorus'; updated.add(k); }
   }
   for(let k=1;k+1<n;k++) {
@@ -1159,9 +1176,27 @@ function labelSections(
       treble[k] >= treble[k - 1] - 4 && treble[k] >= treble[d0] - 5 &&
       perc[k] >= 0.55 && perc[k] >= 0.5 * perc[k - 1];
   };
+  // 判断紧邻已确认 Drop 之前的单句循环型高能段落（或跨在起拍上的 <= 2 小节超短高能切分头）是否为同一 Drop 的前导部分
+  const precedesVocalDrop = (k: number): boolean => {
+    if (k < 1 || k + 1 >= n || labels[k] !== 'chorus' || labels[k + 1] !== 'drop') return false;
+    if (!high[k] || !drivenAt(k) || bass[k] < -5 || E[k] < 0.9 * E[k + 1] || bass[k] < bass[k + 1] - 3 || treble[k] < treble[k + 1] - 4) return false;
+    const singleHookHalf = info[k].lines.size === 1 && info[k].rep >= 0.75 && info[k].leadCover < 0.6;
+    const shortPickupHead = spans[k][1] - spans[k][0] <= 2 && secs[k].end - secs[k].start <= 4 && E[k] >= 0.92 * E[k + 1] && bass[k] >= bass[k + 1] - 2;
+    return singleHookHalf || shortPickupHead;
+  };
+  // 若段落 k 晋升为 drop，复核其紧邻前导短段是否为低频抽空的蓄力铺垫 build
+  const promoteLeadBuild = (k: number): void => {
+    const p = k - 1;
+    if (p >= 1 && labels[p] === 'chorus' && spans[p][1] - spans[p][0] <= 4 && info[p].leadCover < 0.35 && bass[p] <= bass[k] - 8 && E[k] >= 1.15 * E[p]) {
+      labels[p] = 'build';
+    }
+  };
   // A sung build-up chorus followed by a much louder, not more densely sung chorus-like section: that one is the drop.
   // And a sung section right after a drop, as loud and as driven, is the drop going on with the voice back.
   const fromChorus = new Uint8Array(n);
+  for (let k = n - 2; k >= 1; k--) {
+    if (precedesVocalDrop(k)) { labels[k] = 'drop'; promoteLeadBuild(k); }
+  }
   for (let k = 1; k < n; k++) {
     if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) { labels[k] = 'drop'; fromChorus[k] = 1; }
     else if (continuesVocalDrop(k)) { labels[k] = 'drop'; fromChorus[k] = 1; }
@@ -1286,7 +1321,10 @@ function labelSections(
       if (inChorus >= 0.6 * info[k].lines.size && E[k] >= 0.6 * chorusE) labels[k] = 'chorus';
     }
   }
-  // 若前一段在 chorusHint 或副歌行传播后刚被升格为 chorus，复核高能重鼓跃升段或紧邻 Drop 后的全频段 Vocal Drop 延续
+  // 若前一段在 chorusHint 或副歌行传播后刚被升格为 chorus，复核高能重鼓跃升段或紧邻 Drop 前后的全频段 Vocal Drop 半场
+  for (let k = n - 2; k >= 1; k--) {
+    if (precedesVocalDrop(k)) { labels[k] = 'drop'; promoteLeadBuild(k); }
+  }
   for (let k = 1; k < n; k++) {
     if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) labels[k] = 'drop';
     else if (continuesVocalDrop(k)) labels[k] = 'drop';

@@ -473,3 +473,156 @@ test('伪逐字切音与末句 Pre-drop 人声不掩盖全曲多处 Drop 及下�
   const atClosing = (t: number) => closingSecs.find(s => t >= s.start && t < s.end)?.label;
   assert.equal(atClosing(202), 'outro', '能量回落、平直低音且末尾仅余静音尾垫的结尾段仍应识别为 outro');
 });
+
+test('单句长音循环型 Vocal-First Drop 上半场与前导低频抽空蓄力段正确识别，且多句高能真副歌不被误升格', () => {
+  // 84 小节 × 3.0s = 252s（模拟 80 BPM 半拍感编曲）：
+  // 0..5 intro (0..15s) | 5..22 verse 1 (15..66s) | 22..25 build 1 (66..75s)
+  // 25..33 drop 1a 人声单句循环上半场 (75..99s) | 33..41 drop 1b 器乐下半场 (99..123s)
+  // 41..47 verse 2 (123..141s) | 47..53 chorus (141..159s) | 53..56 build 2 (159..168s)
+  // 56..64 drop 2a 器乐上半场 (168..192s) | 64..72 drop 2b 人声单句循环下半场 (192..216s) | 72..84 outro (216..252s)
+  const nb = 84, beatsPerBar = 4, beatDur = 0.75, nBeats = nb * beatsPerBar, duration = nBeats * beatDur, fps = 100;
+  const beats = Array.from({ length: nBeats }, (_, i) => i * beatDur);
+  const beatInBar = beats.map((_, i) => i % beatsPerBar);
+  const bars = makeBars(beats, beatInBar, duration);
+  const totalFrames = Math.ceil(duration * fps);
+
+  const buildVariant = (mode: 'four-repeat' | 'three-repeat' | 'multi-line-chorus'): SectionInput => {
+    const rms = new Float32Array(totalFrames);
+    const low = new Float32Array(totalFrames);
+    const high = new Float32Array(totalFrames);
+    const chroma = new Float32Array(nBeats * 12);
+    const bass = new Float32Array(nBeats * 12);
+    const mfcc = new Float32Array(nBeats * N_MFCC);
+    const db = new Float32Array(nBeats);
+    const bright = new Float32Array(nBeats);
+    const kick = new Float32Array(nBeats);
+    const snare = new Float32Array(nBeats);
+    const hat = new Float32Array(nBeats);
+    const flux = new Float32Array(nBeats);
+    const density = new Float32Array(nBeats);
+    const kicks: Hit[] = [];
+    const snares: Hit[] = [];
+
+    for (let bar = 0; bar < nb; bar++) {
+      const isIntro = bar < 5;
+      const isOutro = bar >= 72;
+      const isBuild = (bar >= 22 && bar < 25) || (bar >= 53 && bar < 56);
+      const isDrop1a = bar >= 25 && bar < 33;
+      const isDrop1b = bar >= 33 && bar < 41;
+      const isDrop2 = bar >= 56 && bar < 72;
+      const isSoftChorus = bar >= 47 && bar < 53;
+      const isFullDrop = isDrop1a || isDrop1b || isDrop2;
+
+      const barRms = isFullDrop ? 0.94 : isBuild ? 0.66 : isSoftChorus ? 0.54 : isIntro || isOutro ? 0.16 : 0.58;
+      const barLow = isFullDrop ? 0.90 : isBuild ? 0.025 : isSoftChorus ? 0.10 : isIntro || isOutro ? 0.01 : 0.28;
+      const barHigh = isFullDrop ? 0.46 : isBuild ? 0.24 : isSoftChorus ? 0.12 : 0.05;
+      const barDb = isFullDrop ? -1 : isBuild ? -6.5 : isSoftChorus ? -7.5 : isIntro || isOutro ? -16 : -6.8;
+
+      const f0 = Math.floor(bar * beatsPerBar * beatDur * fps);
+      const f1 = Math.min(totalFrames, Math.floor((bar + 1) * beatsPerBar * beatDur * fps));
+      for (let f = f0; f < f1; f++) {
+        rms[f] = barRms;
+        low[f] = isFullDrop ? ((f - f0) % 75 < 42 ? barLow : 0.03) : barLow;
+        high[f] = barHigh;
+      }
+
+      for (let b = 0; b < beatsPerBar; b++) {
+        const bi = bar * beatsPerBar + b;
+        const t = beats[bi];
+        // 让 Drop 1a 与 Drop 1b 在音色特征上略有差异，使 DP 在第 33 小节自然切分为前后两个 8 小节半场
+        const root = isDrop1a ? 0 : isDrop1b || isDrop2 ? 7 : isBuild ? 4 : isSoftChorus ? 5 : isOutro ? 9 : 2;
+        chroma[bi * 12 + root] = 1;
+        bass[bi * 12 + root] = 1;
+        mfcc[bi * N_MFCC] = barDb;
+        mfcc[bi * N_MFCC + 1] = isFullDrop ? 12 : isSoftChorus ? 2 : -4;
+        db[bi] = barDb;
+        bright[bi] = isFullDrop ? -4 : -10;
+        density[bi] = isFullDrop ? 3.2 : isBuild ? 1.8 : 1.1;
+        flux[bi] = density[bi];
+        if (isFullDrop) {
+          if (b === 0 || b === 1 || b === 3) { kick[bi] = 0.9; kicks.push([t, 0.9]); }
+          if (b === 2) { snare[bi] = 0.92; snares.push([t, 0.92]); }
+          hat[bi] = 0.6;
+        } else if (!isIntro && !isOutro && !isBuild) {
+          if (b === 0) { kick[bi] = 0.5; kicks.push([t, 0.5]); }
+          if (b === 2) { snare[bi] = 0.45; snares.push([t, 0.45]); }
+        }
+      }
+    }
+
+    const drop1aLines = mode === 'four-repeat'
+      ? [
+          '[75400,4400](75400,800,0)now (76200,500,0)we (76700,2200,0)sleepwalk (78900,900,0)again',
+          '[81300,4400](81300,800,0)now (82100,500,0)we (82600,2200,0)sleepwalk (84800,900,0)again',
+          '[87300,4500](87300,800,0)now (88100,500,0)we (88600,2300,0)sleepwalk (90900,900,0)again',
+          '[93300,5200](93300,800,0)now (94100,500,0)we (94600,3000,0)sleepwalk (97600,900,0)again',
+        ]
+      : mode === 'three-repeat'
+      ? [
+          '[76000,4600](76000,800,0)now (76800,500,0)we (77300,2400,0)sleepwalk (79700,900,0)again',
+          '[83500,4600](83500,800,0)now (84300,500,0)we (84800,2400,0)sleepwalk (87200,900,0)again',
+          '[91500,5200](91500,800,0)now (92300,500,0)we (92800,3000,0)sleepwalk (95800,900,0)again',
+        ]
+      : [
+          '[75400,4800](75400,800,0)now (76200,800,0)we (77000,1600,0)sleepwalk (78600,1600,0)again',
+          '[81200,4800](81200,800,0)hold (82000,800,0)the (82800,1600,0)fortress (84400,1600,0)tonight',
+          '[87200,4800](87200,800,0)running (88000,800,0)out (88800,1600,0)of (90400,1600,0)the (92000,1)rain',
+          '[93200,4800](93200,800,0)calling (94000,800,0)out (94800,1600,0)your (96400,1600,0)name',
+        ];
+
+    const chorus2Lines = mode === 'multi-line-chorus'
+      ? [
+          '[141500,4000](141500,700,0)now (142200,700,0)we (142900,1300,0)sleepwalk (144200,1300,0)again',
+          '[145800,4000](145800,700,0)hold (146500,700,0)the (147200,1300,0)fortress (148500,1300,0)tonight',
+          '[150200,4000](150200,700,0)running (150900,700,0)out (151600,1300,0)of (152900,1300,0)the (154200,1)rain',
+          '[154600,4000](154600,700,0)calling (155300,700,0)out (156000,1300,0)your (157300,1300,0)name',
+        ]
+      : [
+          '[141500,4500](141500,800,0)now (142300,500,0)we (142800,2200,0)sleepwalk (145000,1000,0)again',
+          '[147500,5200](147500,800,0)now (148300,500,0)we (148800,2800,0)sleepwalk (151600,1100,0)again',
+          '[154500,3200](154500,1400,0)sleepwalker (155900,1800,0)tonight',
+        ];
+
+    const yrc = [
+      '[16000,4000](16000,800,0)wandering (16800,800,0)into (17600,1000,0)the (18600,1400,0)mist',
+      '[24000,4000](24000,800,0)footprints (24800,800,0)fade (25600,1000,0)in (26600,1400,0)the (28000,1)sand',
+      '[34000,4000](34000,800,0)voices (34800,800,0)under (35600,1000,0)the (36600,1400,0)bridge',
+      '[48000,4000](48000,800,0)turning (48800,800,0)back (49600,1000,0)to (50600,1400,0)the (52000,1)land',
+      '[67000,2200](67000,1000,0)sleepwalker (68000,1200,0)tonight',
+      '[73200,1600](73200,500,0)where (73700,500,0)did (74200,600,0)you',
+      ...drop1aLines,
+      '[126000,3200](126000,1400,0)sleepwalker (127400,1800,0)tonight',
+      ...chorus2Lines,
+      '[166200,1500](166200,500,0)where (166700,500,0)did (167200,500,0)you',
+      '[192400,4400](192400,800,0)now (193200,500,0)we (193700,2200,0)sleepwalk (195900,900,0)again',
+      '[198300,4400](198300,800,0)now (199100,500,0)we (199600,2200,0)sleepwalk (201800,900,0)again',
+      '[204300,4500](204300,800,0)now (205100,500,0)we (205600,2300,0)sleepwalk (207900,900,0)again',
+      '[210300,5000](210300,800,0)now (211100,500,0)we (211600,2800,0)sleepwalk (214400,900,0)again',
+    ].join('\n');
+
+    const lyrics = parseNeteaseLyric({ yrc: { lyric: yrc } }, duration);
+    const features: BeatFeatures = { n: nBeats, chroma, bass, mfcc, db, bright, kick, snare, hat, flux, density };
+    return { features, beats, bars, duration, rms, fps, lyrics, hits: { kick: kicks, snare: snares }, chorus: [72, 100], low, high };
+  };
+
+  // 1) 4 连长音单句循环 Drop 上半场 + 低频抽空铺垫段
+  const secs4 = findSections(buildVariant('four-repeat'));
+  const at4 = (t: number) => secs4.find(s => t >= s.start && t < s.end)?.label;
+  assert.equal(at4(70), 'build', '4 连循环模式：Drop 1 前低频抽空段应为 build');
+  assert.equal(at4(85), 'drop', '4 连循环模式：Drop 1 单句循环上半场应为 drop');
+  assert.equal(at4(110), 'drop', '4 连循环模式：Drop 1 器乐下半场应为 drop');
+  assert.equal(at4(148), 'chorus', '4 连循环模式：中段柔和人声副歌应保持为 chorus');
+
+  // 2) 3 连长音单句循环 Drop 上半场（覆盖 precedesVocalDrop + promoteLeadBuild 对称晋升路径）
+  const secs3 = findSections(buildVariant('three-repeat'));
+  const at3 = (t: number) => secs3.find(s => t >= s.start && t < s.end)?.label;
+  assert.equal(at3(70), 'build', '3 连循环模式：前导低频抽空段应归位为 build');
+  assert.equal(at3(85), 'drop', '3 连循环模式：单句循环上半场应对称晋升为 drop');
+  assert.equal(at3(110), 'drop', '3 连循环模式：器乐下半场应为 drop');
+
+  // 3) 对照保护：多句不同歌词的高能真副歌紧接器乐 Drop 时，真副歌必须保持为 chorus
+  const secsMulti = findSections(buildVariant('multi-line-chorus'));
+  const atMulti = (t: number) => secsMulti.find(s => t >= s.start && t < s.end)?.label;
+  assert.equal(atMulti(85), 'chorus', '多句叙事高能真副歌不得被误升格为 drop');
+  assert.equal(atMulti(110), 'drop', '紧随真副歌之后的器乐高潮仍应为 drop');
+});
