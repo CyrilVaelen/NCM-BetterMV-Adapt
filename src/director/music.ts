@@ -36,6 +36,10 @@ export type HitKind = keyof Analysis['hits'] | 'keys' | 'leads' | 'foreground' |
 export type TimbreRole = 'synthStab' | 'bassStab' | 'lead';
 /** How long a hit's pulse takes to come up (seconds). */
 const ATTACK = 0.03;
+/** 音色角色分离器（60 fps 居中窗 + 2 帧后向差分 + 单向包络滤波）对真实瞬态峰值的固有滞后（秒）。 */
+const TIMBRE_HIT_LATENCY = 0.015;
+/** 主奏起音检测器（100 fps 居中窗 + 40 ms 通量差分 + 单向包络滤波）对真实瞬态峰值的固有滞后（秒）。 */
+const LEAD_HIT_LATENCY = 0.012;
 
 export class Music {
   readonly beats: Float64Array;
@@ -70,6 +74,7 @@ export class Music {
     if(timbre) {
       this.leadFocus=timbre.leadPresence??this.legacyLeadFocus();
       const melodic=timbre.melodyAttack??Float32Array.from(timbre.leadAttack,(v,i)=>Math.max(v,timbre.synthStab[i]??0));
+      const timbreLatency = timbre.melodyAttack ? TIMBRE_HIT_LATENCY : 0;
       // Arbitrate before finding events. Every event query and decaying pulse consumes these same accepted hits,
       // so a rejected bass onset cannot return later through its unfiltered decay tail.
       for (const [kind, signal] of [['synthStab', timbre.synthStab], ['bassStab', timbre.bassStab], ['leadRole', melodic]] as const) {
@@ -77,15 +82,16 @@ export class Music {
         let previous = -Infinity;
         for (let i = 1; i + 1 < signal.length; i++) {
           const raw = signal[i] ?? 0;
-          if (raw < 0.2 || raw < signal[i - 1] || raw < signal[i + 1] || i / timbre.fps - previous < 0.075) continue;
+          const rawT = i / timbre.fps;
+          if (raw < 0.2 || raw < signal[i - 1] || raw < signal[i + 1] || rawT - previous < 0.075) continue;
           // Arbitrate a near-simultaneous onset before the smoothed owner rises, preserving its true timestamp.
           let eventFocus=this.leadFocus[i]??0;
           for(let j=i+1;j<Math.min(signal.length,i+1+Math.ceil(.075*timbre.fps));j++)eventFocus=Math.max(eventFocus,this.leadFocus[j]??0);
           const value=raw*(kind==='leadRole'?1:1-eventFocus);
           if(value<.2)continue;
-          const t = i / timbre.fps;
+          const t = Math.max(0, rawT - timbreLatency);
           roleHits.push([Math.round(t * 1000) / 1000, Math.round(value * 1000) / 1000]);
-          previous = t;
+          previous = rawT;
         }
         this.hitLists.set(kind, roleHits);
         this.hitTimes.set(kind, Float64Array.from(roleHits, h => h[0]));
@@ -162,7 +168,7 @@ export class Music {
       if (v <= atk[i - 1] || v < atk[i + 1]) continue;
       if (i - lastFrame < minGapFrames) continue;
 
-      const t = Math.max(0, i / fps);
+      const t = Math.max(0, i / fps - LEAD_HIT_LATENCY); // 补偿约 12 ms 的主奏起音检测滞后
       hits.push([Math.round(t * 1000) / 1000, Math.round(Math.min(1, v) * 1000) / 1000]);
       lastFrame = i;
     }

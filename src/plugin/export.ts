@@ -107,6 +107,10 @@ export class VideoExporter {
   private error = false;
   /** A smaller default keeps full-song exports practical on integrated graphics. */
   private resolution: 720 | 1080 = 720;
+  /** 默认 60 帧/秒还原实时高刷丝滑感；底层本就按 60Hz 子步进模拟，不增加额外 WebGL 渲染次数。 */
+  private fps: 24 | 30 | 60 = 60;
+  /** 仅作用于导出视频的听感同步前瞻（毫秒），抵消脉冲爬升与本地播放器输出延迟，不影响实时观看时钟。 */
+  private exportLeadMs: 0 | 55 | 85 = 55;
   private refresh: (() => void) | null = null;
 
   private rangeMode = 'full';
@@ -120,20 +124,23 @@ export class VideoExporter {
     const root = document.createElement('div');
     root.dataset.bmvSettings = '';
     root.style.cssText = 'padding:8px 20px 24px;line-height:1.6';
+    const formatText = () => `MP4 · ${this.resolution}p · ${this.fps} 帧/秒` + (this.exportLeadMs > 0 ? ` · 前瞻 +${this.exportLeadMs}ms` : '');
     const format = document.createElement('p');
-    format.textContent = `MP4 · ${this.resolution}p · 30 帧/秒`;
+    format.textContent = formatText();
     format.style.cssText = 'margin:0 0 12px;font-size:15px;font-weight:600';
     const description = document.createElement('p');
     description.textContent = '使用当前画风、场景和歌词设置。导出期间可以继续听歌或切换歌曲。';
     description.style.cssText = 'margin:0 0 18px;color:var(--l2)';
 
+    const selectCss = 'max-width:236px;padding:6px 10px;border:1px solid rgba(255,255,255,.2);border-radius:7px;background:#353440;color:#fff;font:inherit';
+
     // 分辨率选择
     const resolutionRow = document.createElement('label');
     resolutionRow.textContent = '分辨率';
-    resolutionRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px';
+    resolutionRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px';
     const resolution = document.createElement('select');
     resolution.setAttribute('aria-label', '导出视频分辨率');
-    resolution.style.cssText = 'max-width:220px;padding:6px 10px;border:1px solid rgba(255,255,255,.2);border-radius:7px;background:#353440;color:#fff;font:inherit';
+    resolution.style.cssText = selectCss;
     for (const [value, label] of [['720', '720p（推荐）'], ['1080', '1080p（更清晰）']]) {
       const option = document.createElement('option');
       option.value = value;
@@ -147,8 +154,54 @@ export class VideoExporter {
     };
     resolutionRow.append(resolution);
 
+    // 帧率选择
+    const fpsRow = document.createElement('label');
+    fpsRow.textContent = '帧率';
+    fpsRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px';
+    const fpsSelect = document.createElement('select');
+    fpsSelect.setAttribute('aria-label', '导出视频帧率');
+    fpsSelect.style.cssText = selectCss;
+    for (const [value, label] of [['60', '60 帧/秒（推荐，丝滑跟手）'], ['30', '30 帧/秒（文件更小）'], ['24', '24 帧/秒（电影感）']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      fpsSelect.append(option);
+    }
+    fpsSelect.value = String(this.fps);
+    fpsSelect.onchange = () => {
+      const v = Number(fpsSelect.value);
+      this.fps = v === 24 ? 24 : v === 30 ? 30 : 60;
+      this.refresh?.();
+    };
+    fpsRow.append(fpsSelect);
+
+    // 导出专属音画同步补偿选择
+    const syncRow = document.createElement('label');
+    syncRow.textContent = '音画同步';
+    syncRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px';
+    const syncSelect = document.createElement('select');
+    syncSelect.setAttribute('aria-label', '导出视频音画同步模式');
+    syncSelect.style.cssText = selectCss;
+    for (const [value, label] of [
+      ['55', '听感跟手（推荐，+55ms）'],
+      ['85', '紧凑卡点（+85ms）'],
+      ['0', '波形零偏移（0ms）'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      syncSelect.append(option);
+    }
+    syncSelect.value = String(this.exportLeadMs);
+    syncSelect.onchange = () => {
+      const v = Number(syncSelect.value);
+      this.exportLeadMs = v === 0 ? 0 : v === 85 ? 85 : 55;
+      this.refresh?.();
+    };
+    syncRow.append(syncSelect);
+
     const resolutionHint = document.createElement('p');
-    resolutionHint.textContent = '720p 生成更快。1080p 画面更清晰，所需时间更长。';
+    resolutionHint.textContent = '60 帧与“听感跟手”仅作用于导出视频，补偿光效爬升与播放器输出延迟，不影响实时观看体验。';
     resolutionHint.style.cssText = 'margin:0 0 16px;font-size:12px;color:var(--l3)';
 
     // 片段选择区域
@@ -342,18 +395,23 @@ export class VideoExporter {
     note.textContent = '视频保存在 ' + OUTPUT + '。请保持“MV导出工具”打开，生成时间取决于所选片段长度和电脑性能。';
     note.style.cssText = 'margin:18px 0 0;font-size:12px;color:var(--l3);overflow-wrap:anywhere';
 
-    root.append(format, description, resolutionRow, resolutionHint, rangeRow, song, status, meter, saved, actions, note);
+    root.append(format, description, resolutionRow, fpsRow, syncRow, resolutionHint, rangeRow, song, status, meter, saved, actions, note);
 
     this.refresh = () => {
       const snap = this.snapshot();
-      format.textContent = `MP4 · ${this.resolution}p · 30 帧/秒`;
-      resolution.disabled = this.busy || !!this.jobId;
-      resolution.style.opacity = resolution.disabled ? '.5' : '1';
-      rangeSelect.disabled = this.busy || !!this.jobId;
-      startInput.disabled = this.busy || !!this.jobId;
-      endInput.disabled = this.busy || !!this.jobId;
-      btnCurTime.disabled = this.busy || !!this.jobId;
-      btnResetFull.disabled = this.busy || !!this.jobId;
+      const locked = this.busy || !!this.jobId;
+      format.textContent = formatText();
+      resolution.disabled = locked;
+      resolution.style.opacity = locked ? '.5' : '1';
+      fpsSelect.disabled = locked;
+      fpsSelect.style.opacity = locked ? '.5' : '1';
+      syncSelect.disabled = locked;
+      syncSelect.style.opacity = locked ? '.5' : '1';
+      rangeSelect.disabled = locked;
+      startInput.disabled = locked;
+      endInput.disabled = locked;
+      btnCurTime.disabled = locked;
+      btnResetFull.disabled = locked;
 
       song.textContent = this.busy || this.jobId || this.outputName ? this.songName : snap?.song.name || '请先播放一首歌曲';
       status.textContent = this.message + (this.busy && this.progress > 0 ? ` ${Math.floor(this.progress * 100)}%` : '');
@@ -418,6 +476,7 @@ export class VideoExporter {
           lyricDelays: snapshot.config.lyricDelays, arrange: snapshot.config.arrange,
           showLyrics: snapshot.config.showLyrics,
           seed: snapshot.seed,
+          exportLeadMs: this.exportLeadMs,
         }));
         let lines = snapshot.lines ? JSON.parse(JSON.stringify(snapshot.lines)) : undefined;
         const localLrcPath = snapshot.config?.localLrcPaths?.[String(song.id)];
@@ -445,7 +504,12 @@ export class VideoExporter {
         ]).finally(() => { cancelled = true; clearTimeout(timer); });
         const audio = audioAsset.audio;
 
-        const formatConfig: Record<string, any> = { width, height, fps: 30 };
+        const formatConfig: Record<string, any> = {
+          width,
+          height,
+          fps: this.fps,
+          visualLeadMs: this.exportLeadMs,
+        };
         if (durSec !== undefined) {
           formatConfig.start = Math.max(0, startSec);
           formatConfig.duration = Math.max(1, durSec);

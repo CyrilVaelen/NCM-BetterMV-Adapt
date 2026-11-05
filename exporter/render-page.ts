@@ -22,6 +22,15 @@ interface JobInput {
   analysisLines?: LyricLine[];
   wiki?: unknown;
   chorus?: unknown;
+  format?: {
+    width?: number;
+    height?: number;
+    fps?: number;
+    start?: number;
+    duration?: number;
+    /** 仅针对离线导出画面的听感前瞻补偿（毫秒，0..200）。 */
+    visualLeadMs?: number;
+  };
   config?: {
     style?: 'auto' | StyleId;
     vibe?: VibePresetId;
@@ -32,6 +41,8 @@ interface JobInput {
     lyricDelays?: Record<string, number>;
     arrange?: 'random' | 'fixed';
     showLyrics?: boolean;
+    /** 兼容已启动旧版导出服务进程的画面前瞻透传字段（毫秒，0..200）。 */
+    exportLeadMs?: number;
   };
 }
 
@@ -42,6 +53,7 @@ interface ExportInfo {
   width: number;
   height: number;
   fps: number;
+  visualLeadMs: number;
   seed: number;
   style: StyleId;
 }
@@ -97,6 +109,7 @@ let player: MvPlayer | undefined;
 let info: ExportInfo | undefined;
 let contextLosses = 0;
 let lastFrame = -1;
+let visualLeadSec = 0;
 let captureCanvas: HTMLCanvasElement | undefined;
 let capturedFrame = -1;
 let capturedPng = '';
@@ -113,6 +126,10 @@ async function initialise(): Promise<void> {
   if (config.style !== undefined && config.style !== 'auto' && !Object.hasOwn(STYLES, config.style)) throw new Error('Unknown visual style');
   if (config.quality !== undefined && !['high', 'mid', 'low'].includes(config.quality)) throw new Error('Unknown render quality');
   if (config.seed !== undefined && (!Number.isInteger(config.seed) || config.seed < 0 || config.seed > 0xffffffff)) throw new Error('Invalid arrangement seed');
+  const rawLeadMs = Number(input.format?.visualLeadMs ?? config.exportLeadMs ?? 0);
+  if (!Number.isFinite(rawLeadMs) || rawLeadMs < 0 || rawLeadMs > 200) throw new Error('Invalid export visual lead');
+  const visualLeadMs = Math.round(rawLeadMs);
+  visualLeadSec = visualLeadMs / 1000;
 
   const stage = document.getElementById('stage')!;
   stage.style.width = `${width}px`;
@@ -154,7 +171,7 @@ async function initialise(): Promise<void> {
   player.load(song, style, off, undefined, undefined, delayMs / 1000, seed, undefined, showLyrics, vibe);
   await player.warm(yieldToPage);
   await document.fonts.ready;
-  info = { duration: song.duration, name: input.song.name, artists: input.song.artists ?? [], width, height, fps, seed, style: style.id };
+  info = { duration: song.duration, name: input.song.name, artists: input.song.artists ?? [], width, height, fps, visualLeadMs, seed, style: style.id };
   document.body.dataset.ready = '1';
 }
 
@@ -173,15 +190,16 @@ function frame(time: number, dt?: number): void {
   // no simulation step exceeds 1/60, and capture still lands exactly at n/fps.
   // Replaying skipped output frames keeps that schedule identical after gaps.
   const maxStep = 1 / 60;
+  const mediaTime = (t: number): number => Math.min(info!.duration, t + visualLeadSec);
   for (let n = lastFrame + 1; n <= target; n++) {
-    if (n === 0) { player.frame(0, maxStep); continue; }
+    if (n === 0) { player.frame(mediaTime(0), maxStep); continue; }
     const end = n * step;
     let current = (n - 1) * step;
     while (end - current > maxStep + 1e-9) {
       current += maxStep;
-      player.frame(current, maxStep);
+      player.frame(mediaTime(current), maxStep);
     }
-    player.frame(end, end - current);
+    player.frame(mediaTime(end), end - current);
   }
   lastFrame = target;
   player.engine.renderer.getContext().finish();

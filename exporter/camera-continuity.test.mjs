@@ -2645,6 +2645,68 @@ test('激光舞台防过曝保护：C1 软膝点保色辐射限幅、极端多�
   }
 });
 
+test('Music 瞬态提取校准：真实音色与主奏起音回拨检测器延迟，且保持合成测试夹具兼容', () => {
+  const m = mods;
+  const nEnv = 401;
+  const zeroEnv = () => new Float32Array(nEnv);
+  const leadAttackEnv = zeroEnv();
+  leadAttackEnv[101] = 0.85; // 1.010 s 峰值 -> 回拨 12 ms 后应落在 0.998 s
+
+  const nTimbre = 241; // 60 fps * 4 s
+  const zeroTimbre = () => new Float32Array(nTimbre);
+  const synthStab = zeroTimbre();
+  const melodyAttack = zeroTimbre();
+  synthStab[61] = 0.8;    // 61 / 60 = 1.0167 s -> 回拨 15 ms 后应落在 1.002 s
+  melodyAttack[61] = 0.8;
+
+  const analysis = {
+    version: 14,
+    duration: 4,
+    bpm: 120,
+    meter: 4,
+    beats: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+    beatInBar: [0, 1, 2, 3, 0, 1, 2, 3],
+    tempo: Array(8).fill(120),
+    downbeats: [0, 2],
+    sections: [{ start: 0, end: 4, label: 'drop', energy: 1, group: 0, vocal: false }],
+    env: {
+      fps: 100,
+      rms: zeroEnv(),
+      low: zeroEnv(),
+      mid: zeroEnv(),
+      high: zeroEnv(),
+      onset: zeroEnv(),
+      lead: zeroEnv(),
+      leadAttack: leadAttackEnv,
+      leadBrightness: zeroEnv(),
+    },
+    hits: { kick: [[1.0, 1]], snare: [], hat: [], accent: [] },
+    timbre: {
+      fps: 60,
+      bands: 8,
+      hz: new Float32Array(8),
+      spectrum: new Float32Array(nTimbre * 8),
+      synthStab,
+      bassStab: zeroTimbre(),
+      lead: zeroTimbre(),
+      leadAttack: zeroTimbre(),
+      melodyAttack,
+      leadPresence: zeroTimbre(),
+      confidence: zeroTimbre(),
+      brightness: new Float32Array(nTimbre).fill(0.5),
+    },
+  };
+
+  const calibrated = new m.Music(analysis);
+  const stabs = calibrated.hitsBetween('synthStab', 0.95, 1.05);
+  const leads = calibrated.hitsBetween('leads', 0.95, 1.05);
+  assert.equal(stabs.length, 1);
+  assert.equal(stabs[0][0], 1.002, '真实音色瞬态峰值应扣除 15 ms 检测器延迟对齐 1.000 s 节拍');
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0][0], 0.998, '主奏瞬态峰值应扣除 12 ms 检测器延迟对齐 1.000 s 节拍');
+});
+
+
 
 
 

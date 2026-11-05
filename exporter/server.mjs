@@ -40,12 +40,13 @@ export function validateMetadata(data) {
   if (!Array.isArray(s.artists) || s.artists.length > 30 || s.artists.some(a => typeof a !== 'string' || a.length > 200)) throw new Error('歌手信息不正确');
   const width = f.width ?? 1920, height = f.height ?? 1080, fps = f.fps ?? 30;
   if (![[1280, 720], [1920, 1080]].some(([w,h]) => width === w && height === h) || ![24,30,60].includes(fps)) throw new Error('请选择 720p 或 1080p，以及 24、30 或 60 帧');
-  const start = f.start ?? 0, duration = f.duration;
+  const start = f.start ?? 0, duration = f.duration, visualLeadMs = f.visualLeadMs;
   if (!Number.isFinite(start) || start < 0 || start > 7200 || (duration !== undefined && (!Number.isFinite(duration) || duration <= 0 || duration > 7200))) throw new Error('导出时间范围不正确');
+  if (visualLeadMs !== undefined && (!Number.isFinite(visualLeadMs) || visualLeadMs < 0 || visualLeadMs > 200)) throw new Error('导出音画同步补偿范围不正确');
   if (data.lines !== undefined && (!Array.isArray(data.lines) || data.lines.length > 30000)) throw new Error('歌词数据不正确');
   if (data.analysisLines !== undefined && (!Array.isArray(data.analysisLines) || data.analysisLines.length > 30000)) throw new Error('歌词分析数据不正确');
   if (data.config !== undefined && (!data.config || typeof data.config !== 'object' || Array.isArray(data.config))) throw new Error('画面设置不正确');
-  return { ...data, song: { id:s.id, name:s.name, artists:s.artists, duration:s.duration }, format:{width,height,fps,start,...(duration === undefined ? {} : {duration})} };
+  return { ...data, song: { id:s.id, name:s.name, artists:s.artists, duration:s.duration }, format:{width,height,fps,start,...(duration === undefined ? {} : {duration}),...(visualLeadMs === undefined ? {} : {visualLeadMs: Math.round(visualLeadMs)})} };
 }
 
 function json(res, code, value) {

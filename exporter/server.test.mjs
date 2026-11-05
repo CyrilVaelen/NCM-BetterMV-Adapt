@@ -63,6 +63,12 @@ test('local export API authenticates requests, rejects external origins and pers
 test('submission rejects unsupported format and unsafe output names stay inside output folder',()=>{
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1921,height:1080,fps:30}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{start:-1}}));
+  assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:-5}}));
+  assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:250}}));
+  const valid60=validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:55},config:{exportLeadMs:55}});
+  assert.equal(valid60.format.fps,60);
+  assert.equal(valid60.format.visualLeadMs,55);
+  assert.equal(valid60.config.exportLeadMs,55);
   assert.equal(safeFilename('CON'),'BetterMV');
   assert.equal(safeFilename('a/b\\c:*?'),'a_b_c___');
 });
