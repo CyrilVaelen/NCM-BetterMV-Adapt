@@ -813,7 +813,7 @@ export class Director {
       // The bars slide in over a bar and out over a bar (not at the very start or end of the song).
       const ramp = Math.min(beat * this.music.meter, (b - a) / 4);
       const din = a <= 0.1 ? 1 : smooth((t - a) / ramp), dout = b >= this.music.a.duration - 0.1 ? 1 : smooth((b - t) / ramp);
-      if (shot.scene !== 'starry' && shot.scene !== 'laser' && shot.scene !== 'blackhole') fx.letterbox = Math.min(din, dout);
+      if (shot.scene !== 'starry' && shot.scene !== 'laser' && shot.scene !== 'blackhole' && shot.scene !== 'highway') fx.letterbox = Math.min(din, dout);
     }
     // A plate on paper: trails and the duotone would grey its darks, and the overlay's glowing lines would vanish.
     const bg = scene.scene.background;

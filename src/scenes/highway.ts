@@ -18,6 +18,10 @@ const NUM_TOWER_SPANS = 3;
 const NUM_WARP_STREAKS = 56;
 const NUM_TRAFFIC_CARS = 6;
 const BASE_FOV = 56;
+// 天穹封面明月锚定参数：置于 315m 高空天球，屏幕水平居中 (ndcX = 0)、夜空偏上黄金位 (ndcY = 0.46)、恒定视觉半径 (0.28)
+const MOON_DISTANCE = 315.0;
+const MOON_NDC_Y = 0.46;
+const MOON_SCREEN_RADIUS = 0.28;
 
 interface StreakSeed {
   x: number;
@@ -35,7 +39,7 @@ interface TrafficSeed {
 
 export class HighwayScene implements MvScene {
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.PerspectiveCamera(BASE_FOV, 16 / 9, 0.1, 460);
+  readonly camera = new THREE.PerspectiveCamera(BASE_FOV, 16 / 9, 0.1, 500);
   private rig: LyricRig;
 
   // 确定性距离积分表（0.05s 采样步长，确保单调递增且任意 seek 严格一致）
@@ -51,9 +55,11 @@ export class HighwayScene implements MvScene {
   private snareAmps: Float32Array;
 
   // 网格与材质（保持公开/内部字段兼容测试访问）
-  private sunsetMesh: THREE.Mesh;
-  private sunsetMaterial: THREE.ShaderMaterial;
-  private sunsetHaloMesh: THREE.Mesh;
+  readonly moonMesh: THREE.Mesh;
+  private moonMaterial: THREE.ShaderMaterial;
+  readonly moonHaloMesh: THREE.Mesh;
+  private camForward = new THREE.Vector3();
+  private camUp = new THREE.Vector3();
   private roadMesh: THREE.Mesh;
   private roadMaterial: THREE.ShaderMaterial;
   private oceanMesh: THREE.Mesh;
@@ -117,12 +123,12 @@ export class HighwayScene implements MvScene {
     this.scene.background = fogColor;
     this.scene.fog = new THREE.FogExp2(fogColor.getHex(), 0.0062);
 
-    // 补齐场景照明，使跨海大桥立柱、横梁与路灯金属结构清晰立体可见
+    // 补齐场景高空月光与环境照明，使跨海大桥立柱、横梁与路灯金属结构清晰立体可见
     const ambientLight = new THREE.AmbientLight(this.colorBright, 0.85);
     this.scene.add(ambientLight);
-    const sunsetDirLight = new THREE.DirectionalLight(this.colorAccent, 2.2);
-    sunsetDirLight.position.set(0, 26, -160);
-    this.scene.add(sunsetDirLight);
+    const moonDirLight = new THREE.DirectionalLight(this.colorAccent, 2.2);
+    moonDirLight.position.set(0, 95, -160);
+    this.scene.add(moonDirLight);
     const fillLight = new THREE.DirectionalLight(this.colorMain, 0.9);
     fillLight.position.set(12, 18, 24);
     this.scene.add(fillLight);
@@ -180,17 +186,16 @@ export class HighwayScene implements MvScene {
       uFogColor: { value: fogColor },
     };
 
-    // 5. 远景全息封面落日 (Holographic Sunset Cover at Z = -240m, Y = 18m，位于最远天际不阻挡桥塔穿梭)
-    const sunsetRadius = 34.0;
-    const sunsetGeo = new THREE.CircleGeometry(sunsetRadius, 64);
-    this.sunsetMaterial = new THREE.ShaderMaterial({
+    // 5. 午夜天穹专辑封面明月 (Celestial Cover Moon：单位半径圆盘，在 update 中精确锚定天球无穷远视锥，100% 静止不后退)
+    const moonGeo = new THREE.CircleGeometry(1.0, 72);
+    this.moonMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uCover: this.uniforms.uCover,
-        uTime: this.uniforms.uTime,
         uKickSurge: this.uniforms.uKickSurge,
         uWarpDash: this.uniforms.uWarpDash,
         uMainColor: this.uniforms.uMainColor,
         uAccentColor: this.uniforms.uAccentColor,
+        uBrightColor: this.uniforms.uBrightColor,
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -201,44 +206,45 @@ export class HighwayScene implements MvScene {
       `,
       fragmentShader: /* glsl */ `
         uniform sampler2D uCover;
-        uniform float uTime;
         uniform float uKickSurge;
         uniform float uWarpDash;
         uniform vec3 uMainColor;
         uniform vec3 uAccentColor;
+        uniform vec3 uBrightColor;
         varying vec2 vUv;
 
         void main() {
+          // 完整纯净呈现专辑封面图案，无扫描条纹或内部位移，严格保持原封面空间拓扑与明度
           vec4 coverCol = texture2D(uCover, vUv);
-          float dist = length(vUv - vec2(0.5)) * 2.0;
+          float r = length(vUv - vec2(0.5)) * 2.0;
 
-          // 经典 Synthwave 底部百叶条纹切分 + 全息微扫描线（保持原封面色彩空间分布拓扑）
-          float stripeZone = smoothstep(0.52, 0.04, vUv.y);
-          float blindBand = mix(1.0, smoothstep(-0.18, 0.12, sin(vUv.y * 52.0 - uTime * 1.6)), stripeZone * 0.55);
-          float scanline = 1.0 + sin(vUv.y * 320.0 + uTime * 5.0) * 0.05;
-          float rim = smoothstep(0.98, 0.86, dist) * (0.35 + 0.65 * smoothstep(0.55, 0.96, dist));
-          float mask = smoothstep(1.0, 0.92, dist) * blindBand;
+          // 月轮边缘清辉（Lunar Limb Glow）与平滑抗锯齿圆盘边界
+          float discMask = 1.0 - smoothstep(0.965, 1.0, r);
+          float innerLimb = smoothstep(0.76, 0.985, r) * discMask;
 
-          vec3 baseRgb = mix(coverCol.rgb, coverCol.rgb * (0.78 + 0.42 * uAccentColor), 0.22);
-          vec3 finalRgb = baseRgb * scanline * (1.05 + 0.28 * uKickSurge + 0.35 * uWarpDash) + uAccentColor * rim * 0.35;
+          // 保持封面原色清晰干净，仅在月轮最外缘镀一圈柔和月华清辉
+          vec3 limbTint = mix(uBrightColor, vec3(1.0), 0.45);
+          vec3 finalRgb = coverCol.rgb * (1.02 + 0.08 * uKickSurge) + limbTint * innerLimb * (0.24 + 0.12 * uWarpDash);
 
-          gl_FragColor = vec4(finalRgb, mask);
+          gl_FragColor = vec4(finalRgb, discMask);
         }
       `,
       transparent: true,
+      depthTest: true,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    this.sunsetMesh = new THREE.Mesh(sunsetGeo, this.sunsetMaterial);
-    this.sunsetMesh.position.set(0, 18, -245);
-    this.scene.add(this.sunsetMesh);
+    this.moonMesh = new THREE.Mesh(moonGeo, this.moonMaterial);
+    this.moonMesh.renderOrder = -2;
+    this.moonMesh.frustumCulled = false;
+    this.scene.add(this.moonMesh);
 
-    // 落日外围大气辉光环
-    const haloGeo = new THREE.PlaneGeometry(sunsetRadius * 3.4, sunsetRadius * 2.6);
+    // 明月外围静谧大气月晕（单位平面，跟随月亮同步锁定天球位置，仅光晕随节拍温润呼吸）
+    const haloGeo = new THREE.PlaneGeometry(3.2, 3.2);
     const haloMat = new THREE.ShaderMaterial({
       uniforms: {
         uAccentColor: this.uniforms.uAccentColor,
-        uMainColor: this.uniforms.uMainColor,
+        uBrightColor: this.uniforms.uBrightColor,
         uKickSurge: this.uniforms.uKickSurge,
         uWarpDash: this.uniforms.uWarpDash,
       },
@@ -251,25 +257,29 @@ export class HighwayScene implements MvScene {
       `,
       fragmentShader: /* glsl */ `
         uniform vec3 uAccentColor;
-        uniform vec3 uMainColor;
+        uniform vec3 uBrightColor;
         uniform float uKickSurge;
         uniform float uWarpDash;
         varying vec2 vUv;
         void main() {
-          vec2 p = (vUv - vec2(0.5, 0.42)) * vec2(1.0, 1.25);
-          float d = length(p);
-          float glow = exp(-d * d * 7.5) * (0.38 + 0.18 * uKickSurge + 0.22 * uWarpDash);
-          vec3 col = mix(uMainColor, uAccentColor, 0.55) * glow;
-          gl_FragColor = vec4(col, glow);
+          float d = length(vUv - vec2(0.5)) * 2.0;
+          // 柔和环状月华：中心留给封面本体避免发白雾化，外圈向夜空丝滑衰减
+          float outerCorona = exp(-max(0.0, d - 0.56) * 3.8) * smoothstep(1.0, 0.35, d);
+          float rimRing = exp(-pow((d - 0.62) * 7.5, 2.0)) * 0.35;
+          float glow = (outerCorona * 0.32 + rimRing) * (1.0 + 0.28 * uKickSurge + 0.25 * uWarpDash);
+          vec3 col = mix(uAccentColor, uBrightColor, 0.55) * glow;
+          gl_FragColor = vec4(col, clamp(glow, 0.0, 1.0));
         }
       `,
       transparent: true,
+      depthTest: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
-    this.sunsetHaloMesh = new THREE.Mesh(haloGeo, haloMat);
-    this.sunsetHaloMesh.position.set(0, 14, -248);
-    this.scene.add(this.sunsetHaloMesh);
+    this.moonHaloMesh = new THREE.Mesh(haloGeo, haloMat);
+    this.moonHaloMesh.renderOrder = -3;
+    this.moonHaloMesh.frustumCulled = false;
+    this.scene.add(this.moonHaloMesh);
 
     // 6. 桥面多车道湿润沥青公路 (Highway Road Deck with Wet Reflections, Expansion Joints & Lamp Pools)
     const roadWidth = 20.4;
@@ -347,12 +357,12 @@ export class HighwayScene implements MvScene {
           if (lampCellZ > 9.0) lampCellZ -= 18.0;
           float lampPool = exp(-(lampCellZ * lampCellZ) * 0.045) * exp(-pow((abs(xPos) - 7.8) * 0.36, 2.0));
 
-          // 5) 雨夜水洼分布与远方全息封面落日拉丝倒影
+          // 5) 雨夜桥面水洼分布与天穹封面明月清辉倒影
           float puddleWave = sin(xPos * 0.55 + sin(roadZ * 0.09)) * cos(roadZ * 0.11 - xPos * 0.25);
           float wetness = clamp(0.42 + 0.48 * puddleWave + 0.2 * tireTrack, 0.08, 0.98);
-          float sunsetRefl = exp(-abs(xPos) * 0.16) * wetness;
+          float moonRefl = exp(-abs(xPos) * 0.18) * wetness;
           vec2 coverUv = vec2(clamp(0.5 + xPos / 22.0 + 0.012 * sin(roadZ * 0.45), 0.02, 0.98), clamp(0.35 + 0.18 * sin(roadZ * 0.05), 0.1, 0.9));
-          vec3 sunsetCol = texture2D(uCover, coverUv).rgb;
+          vec3 moonlightCol = texture2D(uCover, coverUv).rgb;
 
           vec3 asphalt = (vec3(0.018, 0.022, 0.032) + 0.016 * grain + 0.008 * streakMicro * tireTrack) * (1.0 - 0.25 * wetness);
           vec3 centerCol = mix(uAccentColor, uBrightColor, 0.55) * centerDouble * (0.85 + 0.55 * uKickSurge);
@@ -360,9 +370,9 @@ export class HighwayScene implements MvScene {
           vec3 studCol = uAccentColor * studs * (1.1 + 0.8 * uSnareFlash + 0.6 * uWarpDash);
           vec3 jointCol = uMainColor * expansionJoint * 0.55;
           vec3 lampReflCol = mix(uBrightColor, uAccentColor, 0.4) * lampPool * wetness * (0.85 + 0.45 * uKickSurge + 0.45 * uWarpDash);
-          vec3 horizonReflCol = mix(sunsetCol, uAccentColor, 0.26) * sunsetRefl * (0.88 + 0.85 * uWarpDash);
+          vec3 moonRoadReflCol = mix(moonlightCol, uBrightColor, 0.32) * moonRefl * (0.62 + 0.55 * uWarpDash);
 
-          vec3 col = asphalt + centerCol + whiteMarks + studCol + jointCol + lampReflCol + horizonReflCol;
+          vec3 col = asphalt + centerCol + whiteMarks + studCol + jointCol + lampReflCol + moonRoadReflCol;
 
           // 远景指数雾平滑融入天际线
           float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
@@ -386,6 +396,7 @@ export class HighwayScene implements MvScene {
         uDistance: this.uniforms.uDistance,
         uMainColor: this.uniforms.uMainColor,
         uAccentColor: this.uniforms.uAccentColor,
+        uBrightColor: this.uniforms.uBrightColor,
         uFogColor: this.uniforms.uFogColor,
       },
       vertexShader: /* glsl */ `
@@ -401,6 +412,7 @@ export class HighwayScene implements MvScene {
         uniform float uDistance;
         uniform vec3 uMainColor;
         uniform vec3 uAccentColor;
+        uniform vec3 uBrightColor;
         uniform vec3 uFogColor;
         varying vec3 vWorldPos;
 
@@ -409,9 +421,9 @@ export class HighwayScene implements MvScene {
           float wave1 = sin(vWorldPos.x * 0.14 + uTime * 1.6) * cos(seaZ * 0.18 + uTime * 0.9);
           float wave2 = sin(vWorldPos.x * 0.32 - seaZ * 0.36 + uTime * 2.1);
           float crest = smoothstep(0.35, 0.95, 0.5 + 0.3 * wave1 + 0.25 * wave2);
-          float sunsetPath = exp(-abs(vWorldPos.x) * 0.032);
+          float moonPath = exp(-abs(vWorldPos.x) * 0.032);
           vec3 baseOcean = mix(vec3(0.008, 0.013, 0.024), uMainColor * 0.12, 0.5);
-          vec3 spec = uAccentColor * (sunsetPath * (0.35 + 0.55 * crest) + 0.06 * crest);
+          vec3 spec = mix(uAccentColor, uBrightColor, 0.42) * (moonPath * (0.32 + 0.52 * crest) + 0.06 * crest);
           vec3 col = baseOcean + spec;
 
           float fogDist = length(vWorldPos);
@@ -720,6 +732,40 @@ export class HighwayScene implements MvScene {
     );
   }
 
+  /**
+   * 将专辑封面明月与月晕 100% 锁定在天球视锥正上方黄金位：
+   * - 无论车辆前后飞驰、左右变道、俯仰起伏或荷兰角倾斜，明月在屏幕上的位置 (ndcX = 0, ndcY = 0.46)、
+   *   视觉半径 (ndcRadiusY = 0.28) 与正立角度均恒定为零误差静止，彻底消除任何“往后退”、缩放或晃动；
+   * - 物理深度置于 315m 夜空（开启 depthTest），供前景跨海斜拉桥主塔与拉索高速迎面掠过时产生真实的遮挡纵深对比。
+   */
+  private anchorCelestialMoon(): void {
+    const cam = this.camera;
+    this.camForward.set(0, 0, -1).applyQuaternion(cam.quaternion);
+    this.camUp.set(0, 1, 0).applyQuaternion(cam.quaternion);
+
+    const halfH = MOON_DISTANCE * Math.tan(THREE.MathUtils.degToRad(cam.fov * 0.5));
+    const screenRadius = cam.aspect < 1 ? MOON_SCREEN_RADIUS * cam.aspect : MOON_SCREEN_RADIUS;
+    const moonRadius = screenRadius * halfH;
+
+    // 明月圆盘严格锁定在相机视锥正上方天穹，屏幕投影 0 位移、0 缩放、0 旋转
+    this.moonMesh.position
+      .copy(cam.position)
+      .addScaledVector(this.camForward, MOON_DISTANCE)
+      .addScaledVector(this.camUp, MOON_NDC_Y * halfH);
+    this.moonMesh.scale.setScalar(moonRadius);
+    this.moonMesh.quaternion.copy(cam.quaternion);
+
+    // 月晕同步同心锁定在明月正后方 2m 处
+    const haloDist = MOON_DISTANCE + 2.0;
+    const haloScale = haloDist / MOON_DISTANCE;
+    this.moonHaloMesh.position
+      .copy(cam.position)
+      .addScaledVector(this.camForward, haloDist)
+      .addScaledVector(this.camUp, MOON_NDC_Y * halfH * haloScale);
+    this.moonHaloMesh.scale.setScalar(moonRadius * haloScale);
+    this.moonHaloMesh.quaternion.copy(cam.quaternion);
+  }
+
   /** 二分查找单脉冲衰减响应 */
   private evalPulse(times: Float64Array, vals: Float32Array, t: number, decay: number): number {
     const i = lastIndex(times, t);
@@ -750,8 +796,14 @@ export class HighwayScene implements MvScene {
     const snarePulse = this.evalPulse(this.snareTimes, this.snareAmps, t, 0.16);
     const warpDash = isDrop ? 1.0 : isChorus ? 0.52 : isBuild ? 0.28 : 0.0;
 
-    // 2. 相机更新
+    // 2. 相机更新，并同步将专辑封面明月精确锁定在天球视锥上方（消除一切后退缩放、变道视差与旋转晃动）
+    if (Math.abs(this.camera.aspect - ctx.aspect) > 1e-6) {
+      this.camera.aspect = ctx.aspect;
+      this.camera.updateProjectionMatrix();
+    }
     this.updateCamera(t, shot, kickPulse, isDrop);
+    this.camera.updateMatrixWorld(true);
+    this.anchorCelestialMoon();
 
     const dummy = this.reusableDummy;
 

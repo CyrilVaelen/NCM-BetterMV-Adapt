@@ -595,3 +595,80 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
   const tailAdv = modAdvance(tailZ0, highway.tailLightsMesh.geometry.attributes.position.getZ(0), 240.0);
   assert.ok(tailAdv > 0.5 && tailAdv < dd, `前车流光尾灯必须具备真实正向超车相对位移: 实测=${tailAdv.toFixed(4)}`);
 });
+
+test('HighwayScene：夜空专辑封面明月（moonMesh）跨全机位、鼓点 FOV 脉冲与荷兰角倾斜保持屏幕投影 100% 静止（零后退、零漂移、零旋转）', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const highway = new mods.HighwayScene(init, 'pulse');
+  const variants = ['cockpit', 'chase', 'bridge', 'warp'];
+  const sampleTimes = [8.2, 10.0, 14.35, 26.8, 40.02, 41.4, 48.75];
+
+  const shots = variants.map((variant, idx) => ({
+    index: idx,
+    start: 8 + idx * 12,
+    end: 8 + (idx + 1) * 12,
+    scene: 'highway',
+    variant,
+    section: idx >= 2 ? music.a.sections[3] : music.a.sections[1],
+    sectionIndex: idx >= 2 ? 3 : 1,
+    seed: 0x10203040 + idx,
+    short: false,
+  }));
+  mods.linkSameSceneShots(shots);
+
+  const aspect = 16 / 9;
+  const projectMoonPoint = (lx, ly) => {
+    const p = new THREE.Vector3(lx, ly, 0);
+    highway.moonMesh.updateMatrixWorld(true);
+    p.applyMatrix4(highway.moonMesh.matrixWorld);
+    p.project(highway.camera);
+    return p;
+  };
+
+  for (const shot of shots) {
+    for (const offset of [0.0, 0.18, 1.35, 4.72, 9.88]) {
+      const t = Math.min(63.5, shot.start + offset);
+      highway.update({
+        t,
+        dt: 1 / 60,
+        shotT: t - shot.start,
+        shot,
+        music,
+        lyrics,
+        palette,
+        fx: mods.defaultFx(),
+        aspect,
+      });
+      highway.camera.updateProjectionMatrix();
+      highway.camera.updateMatrixWorld(true);
+
+      const centerNdc = projectMoonPoint(0, 0);
+      const topNdc = projectMoonPoint(0, 1);
+      const rightNdc = projectMoonPoint(1, 0);
+
+      assert.ok(
+        Math.abs(centerNdc.x - 0.0) < 1e-6 && Math.abs(centerNdc.y - 0.46) < 1e-6,
+        `[${shot.variant} @ t=${t.toFixed(2)}] 明月中心屏幕坐标必须恒定在 (0, 0.46)，实测=(${centerNdc.x.toFixed(6)}, ${centerNdc.y.toFixed(6)})`,
+      );
+      assert.ok(
+        Math.abs((topNdc.y - centerNdc.y) - 0.28) < 1e-6 && Math.abs(topNdc.x - centerNdc.x) < 1e-6,
+        `[${shot.variant} @ t=${t.toFixed(2)}] 明月顶端投影必须恒定正立且零后退缩放 (dy=0.28, dx=0)，实测=(dy=${(topNdc.y - centerNdc.y).toFixed(6)}, dx=${(topNdc.x - centerNdc.x).toFixed(6)})`,
+      );
+      assert.ok(
+        Math.abs((rightNdc.x - centerNdc.x) - 0.28 / aspect) < 1e-6 && Math.abs(rightNdc.y - centerNdc.y) < 1e-6,
+        `[${shot.variant} @ t=${t.toFixed(2)}] 明月横向视觉半径必须恒定不随 FOV 改变，实测 dx=${(rightNdc.x - centerNdc.x).toFixed(6)}`,
+      );
+    }
+  }
+
+  // 额外校验跨任意时间采样点的屏幕直径差严格为 0
+  let refRadiusY = null;
+  for (const t of sampleTimes) {
+    const shot = shots[Math.min(shots.length - 1, Math.floor(Math.max(0, t - 8) / 12))];
+    highway.update({ t, dt: 1 / 60, shotT: t - shot.start, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect });
+    highway.camera.updateProjectionMatrix();
+    highway.camera.updateMatrixWorld(true);
+    const ry = projectMoonPoint(0, 1).y - projectMoonPoint(0, 0).y;
+    if (refRadiusY === null) refRadiusY = ry;
+    assert.ok(Math.abs(ry - refRadiusY) < 1e-7, `明月视觉半径在 t=${t} 发生漂移或后退缩放: ${ry} vs ${refRadiusY}`);
+  }
+});
