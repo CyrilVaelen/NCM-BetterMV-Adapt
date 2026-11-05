@@ -666,12 +666,15 @@ function labelContrastForm(secs: Section[], spans: Array<[number,number]>, info:
     // acoustically verified release and differ in its bass articulation or bandwidth; drum counts alone don't win.
     const shortLead=q===k+1 && secs[k].end-secs[k].start<=32 && bass[k]<bass[q]-3 && sustained;
     const instrumentalRise=(!hasLyrics || li.leadCover<.35) && treble[k]<treble[q]-4 && sustained;
+    // 紧邻全频段释放前的低通闷音滚奏铺垫（或仅隔一段低频抽空的短留白谷）：高频较真实释放压暗超过 5 dB 时归为 build
+    const nearRelease = q === k + 1 || (q === k + 2 && secs[k + 1].end - secs[k].end <= 8 && bass[k + 1] < bass[q] - 6);
+    const muffledRoll = nearRelease && secs[k].end - secs[k].start <= 20 && (!hasLyrics || li.leadCover < 0.35) && treble[k] < treble[q] - 5;
     // 紧接已确认 Drop 之后的 Vocal Drop 延续段，或紧邻已确认 Drop 之前的单句循环型 Vocal Drop 上半场：若全频段能量与颗粒感达标，保留 drop 不降级为副歌
     const continuesDrop = secs[k].label === 'drop' && secs[k - 1].label === 'drop' && (!sustained || art >= 10) &&
       secs[k].energy >= 0.88 * secs[k - 1].energy && bass[k] >= -5 && bass[k] >= bass[k - 1] - 3 && treble[k] >= treble[k - 1] - 4;
     const precedesDrop = secs[k].label === 'drop' && q === k + 1 && (!sustained || art >= 10) && li.lines.size <= 1 &&
       secs[k].energy >= 0.88 * secs[q].energy && bass[k] >= -5 && bass[k] >= bass[q] - 3 && treble[k] >= treble[q] - 4;
-    if(shortLead || instrumentalRise) { secs[k].label='build'; updated.add(k); }
+    if(shortLead || instrumentalRise || muffledRoll) { secs[k].label='build'; updated.add(k); }
     else if(continuesDrop || precedesDrop) { updated.add(k); }
     else if(hasLyrics && ((li.leadCover>=.4 && li.hook>=.5 && li.rep>=.75) || isRepeatedChorusBlock(k))) { secs[k].label='chorus'; updated.add(k); }
   }
@@ -1119,6 +1122,14 @@ function labelSections(
     reprise.push(all);
     info[k].lines.forEach(l => heard.add(l));
   }
+  // 紧接在带主唱叙事主歌（verse，非复唱钩子）之后的纯器乐回落延续段：能量未跃升且高频显著收暗，归为主歌尾声延续而非高潮 Drop
+  const isPostVerseTail = (k: number): boolean => {
+    if (!hasLyrics || k < 1 || labels[k - 1] !== 'verse' || info[k].leadCover >= 0.35) return false;
+    let v0 = k - 1;
+    while (v0 > 0 && labels[v0] === 'verse' && !secs[v0].vocal && labels[v0 - 1] === 'verse') v0--;
+    return labels[v0] === 'verse' && secs[v0].vocal && info[v0].hook < 0.25 &&
+      E[k] <= 1.05 * E[v0] && E[k] <= 1.05 * E[k - 1] && treble[k] <= treble[v0] - 2.5;
+  };
   // A drop by pass 1's reading: loud, driven, hardly any lead singing.
   const dropLike = (q: number) => q < n && high[q] && drivenAt(q) && info[q].leadCover < 0.35;
   // Pass 1: break, build into a drop, chorus, drop, loud verse.
@@ -1155,7 +1166,7 @@ function labelSections(
       if (hasLyrics) {
         // Barely sung but loud: a drop, even when the few lines in it are the hook (vocal chops); without the drums
         // driving it, the hook played instead of sung (a synth lead as loud as the drops: the instrumental chorus).
-        if (li.leadCover < 0.35) labels[k] = driven ? 'drop' : li.hook >= 0.5 || E[k] >= 0.9 ? 'chorus' : k > 0 && k + 1 < n ? 'bridge' : 'verse';
+        if (li.leadCover < 0.35) labels[k] = isPostVerseTail(k) ? 'verse' : driven ? 'drop' : li.hook >= 0.5 || E[k] >= 0.9 ? 'chorus' : k > 0 && k + 1 < n ? 'bridge' : 'verse';
         else if (li.hook >= 0.5) labels[k] = 'chorus';
         else labels[k] = 'verse';
       } else {
@@ -1200,6 +1211,14 @@ function labelSections(
   for (let k = 1; k < n; k++) {
     if (labels[k] === 'chorus' && labels[k - 1] === 'chorus' && high[k] && drivenAt(k) && E[k] >= 1.2 * E[k - 1] && info[k].cover <= info[k - 1].cover) { labels[k] = 'drop'; fromChorus[k] = 1; }
     else if (continuesVocalDrop(k)) { labels[k] = 'drop'; fromChorus[k] = 1; }
+  }
+  // 低通闷音滚奏铺垫紧接短低频抽空留白谷（build/break）再爆发进入全频段真 Drop：若滚奏高频较真 Drop 压暗 >= 5 dB，归为 build
+  for (let k = 1; k + 2 < n; k++) {
+    if (labels[k] === 'drop' && (labels[k + 1] === 'build' || labels[k + 1] === 'break') && labels[k + 2] === 'drop' &&
+      info[k].leadCover < 0.35 && spans[k][1] - spans[k][0] <= 8 && spans[k + 1][1] - spans[k + 1][0] <= 4 &&
+      bass[k + 1] <= bass[k + 2] - 8 && treble[k] <= treble[k + 2] - 5) {
+      labels[k] = 'build';
+    }
   }
   // The first section is the intro unless the song opens on its chorus.
   if (n > 1 && labels[0] !== 'chorus') labels[0] = 'intro';
@@ -1300,7 +1319,11 @@ function labelSections(
       let best = -1;
       for (let k = 0; k < n; k++) if (spans[k][1] - spans[k][0] >= 2 && (best < 0 || over(k) > over(best))) best = k;
       if (best >= 0 && over(best) >= 0.3 * hl && (secs[best].vocal || E[best] >= 0.5)) {
-        labels[best] = high[best] && drivenAt(best) && info[best].leadCover < 0.35 ? 'drop' : 'chorus';
+        const hasChorusAndDrop = labels.includes('chorus') && labels.includes('drop');
+        const narrativeVerse = (labels[best] === 'verse' && secs[best].vocal && info[best].hook === 0 && info[best].rep === 0) || isPostVerseTail(best);
+        if (!(hasChorusAndDrop && narrativeVerse)) {
+          labels[best] = high[best] && drivenAt(best) && info[best].leadCover < 0.35 && !isPostVerseTail(best) ? 'drop' : 'chorus';
+        }
       }
     }
   }

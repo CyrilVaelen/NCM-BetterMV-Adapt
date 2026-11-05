@@ -626,3 +626,136 @@ test('单句长音循环型 Vocal-First Drop 上半场与前导低频抽空蓄�
   assert.equal(atMulti(85), 'chorus', '多句叙事高能真副歌不得被误升格为 drop');
   assert.equal(atMulti(110), 'drop', '紧随真副歌之后的器乐高潮仍应为 drop');
 });
+
+test('高能叙事主歌后的收暗纯器乐尾声与早期副歌提示框不会被误判为 Drop，且低通滚奏后真高潮正常识别', () => {
+  const nb = 84, beatsPerBar = 4, beatDur = 0.7, nBeats = nb * beatsPerBar, duration = nBeats * beatDur, fps = 100;
+  const beats = Array.from({ length: nBeats }, (_, i) => i * beatDur);
+  const beatInBar = beats.map((_, i) => i % beatsPerBar);
+  const bars = makeBars(beats, beatInBar, duration);
+  const totalFrames = Math.ceil(duration * fps);
+  const rms = new Float32Array(totalFrames);
+  const low = new Float32Array(totalFrames);
+  const high = new Float32Array(totalFrames);
+  const chroma = new Float32Array(nBeats * 12);
+  const bass = new Float32Array(nBeats * 12);
+  const mfcc = new Float32Array(nBeats * N_MFCC);
+  const db = new Float32Array(nBeats);
+  const bright = new Float32Array(nBeats);
+  const kick = new Float32Array(nBeats);
+  const snare = new Float32Array(nBeats);
+  const hat = new Float32Array(nBeats);
+  const flux = new Float32Array(nBeats);
+  const density = new Float32Array(nBeats);
+  const kicks: Hit[] = [];
+  const snares: Hit[] = [];
+
+  // 曲式布局（每小节 2.8s）：
+  // 0..4 (0..11.2s): intro
+  // 4..9 (11.2..25.2s): 高能带鼓叙事主歌 Verse 1（4 句不重复歌词，全频段明亮）
+  // 9..15 (25.2..42.0s): 主歌演唱结束后的纯器乐收束延续段（能量微降，高频收暗 > 6 dB）
+  // 15..22 (42.0..61.6s): 抒情复唱副歌 Chorus 1
+  // 22..28 (61.6..78.4s): 渐强器乐 Riser 铺垫（6 小节）
+  // 28..33 (78.4..92.4s): 低通闷音底鼓军鼓滚奏 Build Roll（5 小节，高能但高频压暗）
+  // 33..34 (92.4..95.2s): Drop 前人声留白谷（1 小节低频抽空）
+  // 34..43 (95.2..120.4s): 全频段真高潮 Drop 1
+  // 43..49 (120.4..137.2s): 叙事主歌 Verse 2
+  // 49..56 (137.2..156.8s): 复唱副歌 Chorus 2
+  // 56..61 (156.8..170.8s): 渐强 Build 2 + 留白谷
+  // 61..74 (170.8..207.2s): 全频段真高潮 Drop 2
+  // 74..84 (207.2..235.2s): Outro
+  for (let bar = 0; bar < nb; bar++) {
+    const isIntro = bar < 4;
+    const isVerse1 = bar >= 4 && bar < 9;
+    const isVerseTail = bar >= 9 && bar < 15;
+    const isChorus = (bar >= 15 && bar < 22) || (bar >= 49 && bar < 56);
+    const isRiser1 = bar >= 22 && bar < 28;
+    const isRiser2 = bar >= 56 && bar < 60;
+    const isRiser = isRiser1 || isRiser2;
+    const isMuffledRoll = bar >= 28 && bar < 33;
+    const isPreValley = bar === 33 || bar === 60;
+    const isDrop = (bar >= 34 && bar < 43) || (bar >= 61 && bar < 74);
+    const isVerse2 = bar >= 43 && bar < 49;
+    const isOutro = bar >= 74;
+
+    const riserProg = isRiser1 ? (bar - 22) / 5 : isRiser2 ? (bar - 56) / 3 : 0;
+    const barRms = isDrop ? 0.92 : isMuffledRoll ? 0.95 : isVerse1 ? 0.90 : isVerseTail ? 0.86 : isVerse2 ? 0.78 : isRiser ? 0.42 + 0.26 * riserProg : isChorus ? 0.56 : isPreValley ? 0.20 : 0.14;
+    const barLow = isDrop ? 0.88 : isMuffledRoll ? 0.82 : isVerse1 ? 0.72 : isVerseTail ? 0.68 : isVerse2 ? 0.58 : isRiser ? 0.12 + 0.18 * riserProg : isChorus ? 0.08 : 0.002;
+    const barHigh = isDrop ? 0.48 : isVerse1 ? 0.38 : isVerse2 ? 0.30 : isVerseTail ? 0.07 : isMuffledRoll ? 0.05 : isChorus ? 0.10 : 0.03;
+    const barDb = isDrop || isMuffledRoll ? -1 : isVerse1 ? -1.5 : isVerseTail ? -2.0 : isVerse2 ? -3.5 : isRiser ? -9 + 4 * riserProg : isChorus ? -7.5 : isPreValley ? -16 : -18;
+
+    const f0 = Math.floor(bar * beatsPerBar * beatDur * fps);
+    const f1 = Math.min(totalFrames, Math.floor((bar + 1) * beatsPerBar * beatDur * fps));
+    for (let f = f0; f < f1; f++) {
+      rms[f] = barRms;
+      const articulatedGroove = isDrop || isVerse1 || isVerseTail || isVerse2;
+      low[f] = articulatedGroove ? ((f - f0) % 70 < 40 ? barLow : 0.015) : isMuffledRoll ? ((f - f0) % 35 < 20 ? barLow : 0.04) : barLow;
+      high[f] = barHigh;
+    }
+
+    for (let b = 0; b < beatsPerBar; b++) {
+      const bi = bar * beatsPerBar + b;
+      const t = beats[bi];
+      const root = isDrop ? 0 : isMuffledRoll ? 3 : isVerse1 ? 2 : isVerseTail ? 4 : isChorus ? 5 : isOutro ? 9 : 7;
+      chroma[bi * 12 + root] = 1;
+      bass[bi * 12 + root] = 1;
+      mfcc[bi * N_MFCC] = barDb;
+      mfcc[bi * N_MFCC + 1] = isDrop ? 12 : isVerse1 ? 8 : isVerseTail ? -2 : isMuffledRoll ? -3 : 1;
+      db[bi] = barDb;
+      bright[bi] = isDrop || isVerse1 ? -4 : -12;
+      density[bi] = isMuffledRoll ? 3.8 : isDrop ? 3.0 : isRiser ? 1.0 + 1.4 * riserProg : isVerse1 || isVerseTail ? 2.0 : 1.0;
+      flux[bi] = density[bi];
+      if (isMuffledRoll) {
+        kick[bi] = 0.85; kicks.push([t, 0.85]);
+        snare[bi] = 0.8; snares.push([t, 0.8]);
+      } else if (isDrop) {
+        if (b === 0 || b === 2) { kick[bi] = 0.92; kicks.push([t, 0.92]); }
+        if (b === 2) { snare[bi] = 0.9; snares.push([t, 0.9]); }
+        hat[bi] = 0.65;
+      } else if (isVerse1 || isVerseTail || isVerse2) {
+        if (b === 0 || b === 1) { kick[bi] = 0.72; kicks.push([t, 0.72]); }
+        if (b === 2) { snare[bi] = 0.7; snares.push([t, 0.7]); }
+      }
+    }
+  }
+
+  const lrc = [
+    '[00:11.500]Losing ourselves tonight',
+    '[00:14.800]Barely standing in the rain',
+    '[00:18.200]Shadows gather around',
+    '[00:21.600]No soft landing remains',
+    '[00:42.500]Let me be forgotten',
+    '[00:47.500]Leave me in your wake',
+    '[00:52.500]Never knew the bottom of my heart',
+    '[00:57.000]Never read a caution from the start',
+    '[01:32.600]Leave me in your wake',
+    '[02:01.000]Confusion surrounds the night',
+    '[02:05.000]Nothing left to understand',
+    '[02:09.000]Drifting further out of sight',
+    '[02:13.000]Stranded on an empty land',
+    '[02:17.600]Let me be forgotten',
+    '[02:22.500]Leave me in your wake',
+    '[02:27.500]Never knew the bottom of my heart',
+    '[02:32.000]Never read a caution from the start',
+    '[02:48.200]Leave me in your wake',
+  ].join('\n');
+
+  const lyrics = parseNeteaseLyric({ lrc: { lyric: lrc } }, duration);
+  const features: BeatFeatures = { n: nBeats, chroma, bass, mfcc, db, bright, kick, snare, hat, flux, density };
+  // 附带框在开头主歌与收暗尾声上的早期 chorusHint 干扰
+  const secs = findSections({
+    features, beats, bars, duration, rms, fps, lyrics,
+    hits: { kick: kicks, snare: snares },
+    chorus: [10.5, 43.0],
+    low, high,
+  });
+  const at = (t: number) => secs.find(s => t >= s.start && t < s.end)?.label;
+
+  assert.equal(at(18), 'verse', '高能叙事主歌应为 verse');
+  assert.equal(at(30), 'verse', '主歌后能量未升且高频收暗的纯器乐尾声不得被误判为 drop');
+  assert.equal(at(38), 'verse', '主歌纯器乐尾声末尾仍应保持为 verse');
+  assert.equal(at(50), 'chorus', '复唱副歌段应为 chorus');
+  assert.equal(at(85), 'build', '低通闷音滚奏段应归为 build 而非提前进入 drop');
+  assert.equal(at(93.5), 'build', 'Drop 前人声留白谷应归为 build');
+  assert.equal(at(102), 'drop', '全频段 Drop 1 应准确识别为 drop');
+  assert.equal(at(180), 'drop', '全频段 Drop 2 应准确识别为 drop');
+});

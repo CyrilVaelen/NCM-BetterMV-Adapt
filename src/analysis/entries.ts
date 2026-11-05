@@ -63,8 +63,10 @@ export function refineDropPreparations({sections,beats,fps,low,high,rms,kicks=[]
       const sustainedLowRatio=bandMean(low,fps,t,t+window)/bassRef;
       const sustainedHighRatio=bandMean(high,fps,t,t+window)/highRef;
       const sustainedPowerRatio=bandMean(rms,fps,t,t+window,true)/powerRef;
-      // For a late coarse cut, compare against the local pre-entry phrase rather than an empty reversed range.
-      const prefixStart=t<at?Math.max(previous.start,t-window):at;
+      // 若前导区间 [at, t] 全程处于高频被低通压暗的闷音滚奏铺垫（未打开全频段高潮），则考核紧邻冲击点前的临门留白谷窗口
+      const valleyWindow=Math.max(1,Math.min(window,2*beat));
+      const prefixHighRatio=t>at?bandMean(high,fps,at,t)/highRef:0;
+      const prefixStart=t<at?Math.max(previous.start,t-window):(t-at>valleyWindow&&prefixHighRatio<.48?t-valleyWindow:at);
       const prefixBassRatio=bandMean(low,fps,prefixStart,t)/bassRef;
       const prefixPowerRatio=bandMean(rms,fps,prefixStart,t,true)/powerRef;
       const failed:string[]=[];
@@ -103,9 +105,11 @@ export function refineDropPreparations({sections,beats,fps,low,high,rms,kicks=[]
     // bass attack may be present in the decoded bands while its kick confidence falls below the old hard cutoff.
     entry=scan(Math.max(previous.start+.31,at-lookback),at-.2);
     if(entry!==undefined)method='envelope-backscan';
-    const alreadySupported=kicks.some(([t,s])=>s>=.65&&Math.abs(t-at)<=.2)||
-      (bandMean(low,fps,at,at+window)>=bassRef*.5&&kicks.some(([t,s])=>s>=.45&&Math.abs(t-at)<=Math.max(.2,.9*beat)));
-    Object.assign(trace,{backscanFrames:tested,alreadySupported,bestBackscanCandidate:best});
+    const openHighRatio=bandMean(high,fps,at,at+window)/highRef;
+    // 粗切点首窗若高频被低通严重压暗（openHighRatio < 0.4），说明仅是闷音底鼓滚奏铺垫而非全频段高潮已开启
+    const alreadySupported=openHighRatio>=.4&&(kicks.some(([t,s])=>s>=.65&&Math.abs(t-at)<=.2)||
+      (bandMean(low,fps,at,at+window)>=bassRef*.5&&kicks.some(([t,s])=>s>=.45&&Math.abs(t-at)<=Math.max(.2,.9*beat))));
+    Object.assign(trace,{backscanFrames:tested,openHighRatio,alreadySupported,bestBackscanCandidate:best});
     // Already supported at its first beat: later accents must never replace it. This guard follows the signal backscan.
     if(entry===undefined&&alreadySupported){report('kept-supported-coarse-entry');continue;}
     if(entry===undefined&&kicks.length){
@@ -128,10 +132,12 @@ export function refineDropPreparations({sections,beats,fps,low,high,rms,kicks=[]
         release.start=entry;sections[i-1].end=entry;
       }
     }
-    // An adjacent short, bass/treble-poor refrain belongs to the same preparation.
-    // Do not erase an established sung chorus or move its lyric timings.
-    if(previous&&previous.label==='chorus'&&canExtendBuild?.(previous)&&previous.end-previous.start<=16&&
-      bandMean(low,fps,previous.start,previous.end)<bassRef*.4&&bandMean(high,fps,previous.start,previous.end)<highRef*.4){
+    // 相邻短单句预热段若缺失全频段支撑（低频抽空，或高频严重低通且无密集底鼓驱动），并入同一铺垫段
+    const prevDur=previous?Math.max(1e-6,previous.end-previous.start):1;
+    const prevHigh=previous?bandMean(high,fps,previous.start,previous.end):0;
+    const prevKickRate=previous?kicks.filter(([t,s])=>t>=previous.start&&t<previous.end&&s>=.35).length/prevDur:0;
+    if(previous&&previous.label==='chorus'&&canExtendBuild?.(previous)&&prevDur<=16&&prevHigh<highRef*.4&&
+      (bandMean(low,fps,previous.start,previous.end)<bassRef*.4||(prevHigh<highRef*.2&&prevKickRate<.35))){
       previous.label='build';
     }
     report('entry-refined',{finalEntry:entry,selectedMethod:method,selectedCandidate:selected});
