@@ -843,15 +843,24 @@ test('PavilionScene：三维宣纸孔明灯海、古典六角鎏金宫灯、天�
     '流萤粒子必须使用圆形高斯衰减着色器剔除方形边角，严禁回退为正方形像素块',
   );
 
-  // 校验水榭建筑网格均采用自定义多源灯火 ShaderMaterial（非无光源黑剪影 MeshStandardMaterial）
+  // 校验水榭建筑网格均采用自定义多源灯火 ShaderMaterial，且台基/围栏青石材质沉稳内敛不泛白过曝
+  const jadeHsl = { h: 0, s: 0, l: 0 };
+  pavilion.colorJade.getHSL(jadeHsl);
+  assert.ok(jadeHsl.l <= 0.45, `亭子地基与石栏基色明度必须沉稳克制 (L <= 0.45)，避免泛白过曝，实测 L=${jadeHsl.l.toFixed(3)}`);
+
   let archShaderCount = 0;
+  let hasStoneDetailShader = false;
   pavilion.pavilionGroup.traverse(obj => {
     if (obj.isMesh && obj !== pavilion.palaceLanternsPavilionMesh) {
       assert.equal(obj.material.type, 'ShaderMaterial', '天阙水榭构件必须采用多源灯火 ShaderMaterial');
       if (obj.material.fragmentShader?.includes('lanternWarm')) archShaderCount++;
+      if (obj.material.fragmentShader?.includes('waistBand') && obj.material.fragmentShader?.includes('archNoise')) {
+        hasStoneDetailShader = true;
+      }
     }
   });
-  assert.ok(archShaderCount >= 4, `水榭汉白玉台基、朱漆梁柱、琉璃飞檐与鎏金宝顶均应接入灯火照明 (>=4)，实测=${archShaderCount}`);
+  assert.ok(archShaderCount >= 5, `水榭须弥座青石、御窑金砖地面、朱檀直棂围栏/梁柱、琉璃飞檐与鎏金宝顶均应接入灯火照明 (>=5)，实测=${archShaderCount}`);
+  assert.ok(hasStoneDetailShader, '水榭地基与围栏着色器必须具备青石肌理噪声、内凹束腰 AO 与柔和色调压限');
 
   // 2. 校验四个运镜机位（pavilion / water / eaves / zenith）更新正常且孔明灯海实例充足
   const chorusShot = { scene: 'pavilion', start: 24, end: 40, variant: 'pavilion', seed: 7, section: music.a.sections[2], sectionIndex: 2 };
