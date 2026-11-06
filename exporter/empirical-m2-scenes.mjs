@@ -430,12 +430,14 @@ test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 
     assert.ok(s <= 0.05, `[${name}] 黑白模式下饱和度过高: ${s.toFixed(4)} (必须 <= 0.05)`);
   }
 
-  // 2. Highway 关键色彩与尾灯饱和度断言
+  // 2. Highway 关键色彩、路灯出光色与尾灯饱和度断言
   const highColors = [
     ['highway.colorMain', highway.colorMain],
     ['highway.colorAccent', highway.colorAccent],
     ['highway.colorBright', highway.colorBright],
+    ['highway.colorLampWarm', highway.colorLampWarm],
     ['highway.tailLightsMesh.color', highway.tailLightsMesh.material.color],
+    ['highway.guardReflectors.color', highway.guardReflectorsInstanced.material.color],
   ];
   for (const [name, col] of highColors) {
     const s = calcSat(col);
@@ -564,9 +566,15 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
   const towerZ0 = highway.towerUnits.map((u) => u.position.z);
   const lampZ0 = getInstZ(highway.streetlightsInstanced, 4);
   const headZ0 = getInstZ(highway.lampHeadsInstanced, 4);
+  const coneZ0 = getInstZ(highway.lampConesInstanced, 4);
   const postZ0 = getInstZ(highway.guardPostsInstanced, 6);
+  const reflZ0 = getInstZ(highway.guardReflectorsInstanced, 6);
   const streakZ0 = getInstZ(highway.warpStreaksInstanced, 0);
   const tailZ0 = highway.tailLightsMesh.geometry.attributes.position.getZ(0);
+
+  // 校验三维锥形光束、流线型复合灯杆及重工复合防撞护栏几何体精细度
+  assert.ok(highway.lampConesInstanced.geometry.attributes.position.count >= 3000, '路灯双层三维丁达尔体积光锥顶点数必须足够精细');
+  assert.ok(highway.guardBarrierMesh.geometry.attributes.position.count >= 8000, '两侧混凝土防撞基座与立体双波纹金属护栏复合网格必须具备充足立体折面');
 
   const fx1 = mods.defaultFx();
   highway.update({ t: t1, dt: 1 / 60, shotT: t1 - shot.start, shot, music, lyrics, palette, fx: fx1, aspect: 16 / 9 });
@@ -590,8 +598,12 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
   const headAdv = modAdvance(headZ0, getInstZ(highway.lampHeadsInstanced, 4), 18.0);
   assert.ok(Math.abs(headAdv - dd) < 1e-4, `路灯发光灯头必须精确沿 +Z 迎面掠过: 期望=${dd.toFixed(4)}, 实测=${headAdv.toFixed(4)}`);
 
+  const coneAdv = modAdvance(coneZ0, getInstZ(highway.lampConesInstanced, 4), 18.0);
+  assert.ok(Math.abs(coneAdv - dd) < 1e-4, `路灯三维锥形光束必须与灯头零误差同步沿 +Z 迎面掠过: 期望=${dd.toFixed(4)}, 实测=${coneAdv.toFixed(4)}`);
+
   const postAdv = modAdvance(postZ0, getInstZ(highway.guardPostsInstanced, 6), 6.0);
-  assert.ok(Math.abs(postAdv - dd) < 1e-4, `护栏轮廓标必须精确沿 +Z 高速迎面掠过: 期望=${dd.toFixed(4)}, 实测=${postAdv.toFixed(4)}`);
+  const reflAdv = modAdvance(reflZ0, getInstZ(highway.guardReflectorsInstanced, 6), 6.0);
+  assert.ok(Math.abs(postAdv - dd) < 1e-4 && Math.abs(reflAdv - dd) < 1e-4, `工字钢立柱与反光轮廓标必须精确沿 +Z 高速迎面掠过: 期望=${dd.toFixed(4)}, 实测=${postAdv.toFixed(4)}`);
 
   const streakAdv = modAdvance(streakZ0, getInstZ(highway.warpStreaksInstanced, 0), 180.0);
   assert.ok(Math.abs(streakAdv - dd * 1.45) < 1e-3, `氮气流光拉丝必须实时沿 +Z 穿梭运动: 期望=${(dd * 1.45).toFixed(4)}, 实测=${streakAdv.toFixed(4)}`);
