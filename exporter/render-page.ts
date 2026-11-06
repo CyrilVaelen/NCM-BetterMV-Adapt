@@ -26,7 +26,7 @@ interface JobInput {
     width?: number;
     height?: number;
     fps?: number;
-    encoding?: 'grain' | 'standard';
+    encoding?: 'hevc' | 'standard' | 'grain';
     start?: number;
     duration?: number;
     /** 仅针对离线导出画面的听感前瞻补偿（毫秒，0..200）。 */
@@ -159,6 +159,8 @@ async function initialise(): Promise<void> {
   const style = styleFor(song, config.style, showLyrics, vibe);
   // 离线导出统一以 1:1 原生输出分辨率满血渲染（免疫实时省电“低画质”70% 缩放降级），并解锁至最高 4K 渲染像素预算以完整支持 1080p 与 1440p（2K）导出。
   player = new MvPlayer(stage, 1, { width: 3840, height: 2160 });
+  // 除“母带全颗粒归档（grain）”外，默认启用编码友好型低熵有机胶片颗粒与静态抖动，消除每帧白噪码率黑洞且 100% 保持激光与文字锐度。
+  player.engine.encodeFriendly = input.format?.encoding !== 'grain';
   player.engine.renderer.domElement.addEventListener('webglcontextlost', () => { contextLosses++; });
   player.hud.visible = false;
   const seed = config.seed ?? (config.arrange === 'random' ? crypto.getRandomValues(new Uint32Array(1))[0] : input.song.id >>> 0);

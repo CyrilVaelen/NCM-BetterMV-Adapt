@@ -70,7 +70,10 @@ async function inspectFile(ffmpegPath, partial, expected, signal, ffprobePath) {
       const metadata = JSON.parse(stdout);
       const video = metadata.streams?.find(stream => stream.codec_type === 'video');
       const audio = metadata.streams?.find(stream => stream.codec_type === 'audio');
-      if (!video || !audio || video.codec_name !== 'h264' || audio.codec_name !== 'aac') throw new Error('The encoded MP4 is missing its H.264 video or AAC audio.');
+      const expectedVideoCodec = expected.videoCodec ?? 'h264';
+      if (!video || !audio || video.codec_name !== expectedVideoCodec || audio.codec_name !== 'aac') {
+        throw new Error(`The encoded MP4 is missing its ${expectedVideoCodec.toUpperCase()} video or AAC audio.`);
+      }
       if (video.width !== expected.width || video.height !== expected.height) throw new Error('The encoded video dimensions do not match the requested dimensions.');
       const [numerator, denominator = 1] = String(video.avg_frame_rate).split('/').map(Number);
       if (!Number.isFinite(numerator / denominator) || Math.abs(numerator / denominator - expected.fps) > 0.001) throw new Error('The encoded frame rate does not match the requested frame rate.');
@@ -79,25 +82,97 @@ async function inspectFile(ffmpegPath, partial, expected, signal, ffprobePath) {
       if (!Number.isFinite(duration) || Math.abs(duration - expected.duration) > Math.max(0.15, 2 / expected.fps)) throw new Error('The encoded MP4 duration does not match the rendered frames.');
       return { method: 'ffprobe', duration, videoCodec: video.codec_name, audioCodec: audio.codec_name, metadata };
     }
+    const expectedVideoCodec = expected.videoCodec ?? 'h264';
+    const videoRegex = expectedVideoCodec === 'hevc' ? /Video:\s*hevc\b/ : /Video:\s*h264\b/;
     // `ffmpeg -i` deliberately exits 1 without an output, but must recognize both streams and the container.
-    if (ended.signal || !/Duration:\s*\d+:\d+:\d+(?:\.\d+)?/.test(stderr) || !/Video:\s*h264\b/.test(stderr) || !/Audio:\s*aac\b/.test(stderr)) {
+    if (ended.signal || !/Duration:\s*\d+:\d+:\d+(?:\.\d+)?/.test(stderr) || !videoRegex.test(stderr) || !/Audio:\s*aac\b/.test(stderr)) {
       throw new Error(`FFmpeg could not verify the encoded MP4: ${stderr}`);
     }
-    return { method: 'ffmpeg-metadata', videoCodec: 'h264', audioCodec: 'aac' };
+    return { method: 'ffmpeg-metadata', videoCodec: expectedVideoCodec, audioCodec: 'aac' };
   } finally {
     signal?.removeEventListener('abort', abort);
     await stopProcess(child, result);
   }
 }
 
+const hevcBackendCache = new Map();
+
+/**
+ * 自动探测当前机器显卡支持的 10-bit HEVC 硬件加速编码器（NVIDIA NVENC -> Intel QSV -> AMD AMF -> CPU libx265 兜底），
+ * 并在进程生命周期内缓存探测结果。
+ */
+export async function detectHevcEncoder(ffmpegPath) {
+  if (hevcBackendCache.has(ffmpegPath)) return hevcBackendCache.get(ffmpegPath);
+  const candidates = ['hevc_nvenc', 'hevc_qsv', 'hevc_amf'];
+  for (const name of candidates) {
+    let child;
+    let result;
+    try {
+      child = spawn(
+        ffmpegPath,
+        ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=0.05:r=20', '-vf', 'format=p010le', '-c:v', name, '-f', 'null', '-'],
+        { windowsHide: true, stdio: 'ignore' },
+      );
+      result = processResult(child);
+      // Intel QSV / D3D11 硬件编码驱动冷启动初始化约需 5~9 秒，留足 15 秒探测预算避免误超时掉回慢速软件编码
+      const ended = await withTimeout(result, 15_000, 'HEVC encoder probe timeout');
+      if (ended.code === 0) {
+        hevcBackendCache.set(ffmpegPath, name);
+        return name;
+      }
+    } catch {
+      if (child && result) await stopProcess(child, result);
+    }
+  }
+  hevcBackendCache.set(ffmpegPath, 'libx265');
+  return 'libx265';
+}
+
 /**
  * 构建 FFmpeg MP4 编码参数：
- * - 显式指定高清 BT.709 色彩矩阵与色彩元数据，修复 PNG(sRGB) 转 YUV420P 默认走 BT.601 导致暖琥珀色/高光偏暗失真的问题；
- * - 默认启用 `grain` 原画高保真模式（CRF 15 + AQ-Mode 3 暗场自适应量化 + Psy-RD 保颗粒 + 轻去块滤波），完整保留动态胶片颗粒、暗部烟雾细腻渐变与 1~2px 激光锐利边缘。
+ * - 显式指定高清 BT.709 色彩矩阵与色彩元数据，修复 PNG(sRGB) 转 YUV 默认走 BT.601 导致暖琥珀色/高光偏暗失真的问题；
+ * - `hevc`（默认推荐）：启用 10-bit HEVC 硬件加速（hvc1 标签），1024 级色深天然消除暗场烟雾色带，配合低熵有机颗粒将文件体积缩减约 85%~90%；
+ * - `standard`：全设备免插件兼容的 8-bit H.264 高清小体积模式（CRF 19 + AQ-Mode 3 + 峰值保护）；
+ * - `grain`：发烧友母带存档模式（CRF 15 + 保留全量 30Hz 胶片噪点）。
  */
-export function buildFfmpegArgs({ fps, encoding = 'grain', start, duration, audioPath, outputPath }) {
-  const highFidelity = encoding !== 'standard';
-  const videoCodecArgs = highFidelity
+export function buildFfmpegArgs({ width = 1920, height = 1080, fps, encoding = 'hevc', hevcBackend = 'hevc_qsv', start, duration, audioPath, outputPath }) {
+  const pixels = width * height;
+  const maxMbps = pixels >= 2560 * 1440 ? 28 : pixels <= 1280 * 720 ? 10 : 18;
+  const maxRate = `${maxMbps}M`;
+  const bufSize = `${maxMbps * 2}M`;
+
+  if (encoding === 'hevc') {
+    const hw10 = hevcBackend !== 'libx265';
+    const vf = hw10
+      ? 'scale=in_range=full:out_color_matrix=bt709:out_range=tv,format=p010le'
+      : 'scale=in_range=full:out_color_matrix=bt709:out_range=tv';
+    const hevcArgs = hevcBackend === 'hevc_nvenc'
+      ? ['-c:v', 'hevc_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '20', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      : hevcBackend === 'hevc_qsv'
+      ? ['-c:v', 'hevc_qsv', '-preset', 'slow', '-global_quality', '19', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      : hevcBackend === 'hevc_amf'
+      ? ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'vbr_peak', '-qp_i', '19', '-qp_p', '20', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      : ['-c:v', 'libx265', '-preset', 'fast', '-pix_fmt', 'yuv420p10le', '-crf', '21', '-maxrate', maxRate, '-bufsize', bufSize, '-x265-params', 'aq-mode=3:no-sao=1', '-tag:v', 'hvc1'];
+    return [
+      '-hide_banner', '-loglevel', 'warning', '-n',
+      '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'png', '-i', 'pipe:0',
+      '-ss', String(start), '-i', audioPath,
+      '-map', '0:v:0', '-map', '1:a:0',
+      '-vf', vf,
+      ...hevcArgs,
+      '-colorspace', 'bt709',
+      '-color_primaries', 'bt709',
+      '-color_trc', 'bt709',
+      '-color_range', 'tv',
+      '-r', String(fps),
+      '-c:a', 'aac', '-b:a', '256k',
+      '-af', 'apad', '-t', String(duration),
+      '-movflags', '+faststart', '-f', 'mp4', outputPath,
+    ];
+  }
+
+  const masterGrain = encoding === 'grain';
+  const videoCodecArgs = masterGrain
     ? [
         '-c:v', 'libx264',
         '-preset', 'medium',
@@ -113,10 +188,15 @@ export function buildFfmpegArgs({ fps, encoding = 'grain', start, duration, audi
         '-c:v', 'libx264',
         '-preset', 'medium',
         '-profile:v', 'high',
-        '-crf', '18',
+        '-crf', '19',
+        '-maxrate', maxRate,
+        '-bufsize', bufSize,
         '-aq-mode', '3',
+        '-aq-strength', '1.05',
+        '-psy-rd', '1.00:0.10',
+        '-deblock', '-1:-1',
       ];
-  const audioBitrate = highFidelity ? '256k' : '192k';
+  const audioBitrate = masterGrain ? '256k' : '224k';
   return [
     '-hide_banner', '-loglevel', 'warning', '-n',
     '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'png', '-i', 'pipe:0',
@@ -208,9 +288,15 @@ export async function renderJob(job, options, update = () => {}) {
     const duration = totalFrames / fps, finalFrame = firstFrame + totalFrames;
     const dt = 1 / fps;
     await update({ state: 'preparing', progress: 0.05, frames: 0, totalFrames, start, duration, sourceDuration, warmupFrames: firstFrame, info });
+    const encodingMode = job.format.encoding ?? 'hevc';
+    const hevcBackend = encodingMode === 'hevc' ? await detectHevcEncoder(options.ffmpegPath) : undefined;
+    const expectedVideoCodec = encodingMode === 'hevc' ? 'hevc' : 'h264';
     const args = buildFfmpegArgs({
+      width,
+      height,
       fps,
-      encoding: job.format.encoding ?? 'grain',
+      encoding: encodingMode,
+      hevcBackend,
       start,
       duration,
       audioPath,
@@ -251,7 +337,7 @@ export async function renderJob(job, options, update = () => {}) {
     check();
     const stat = await fs.stat(partial);
     if (!stat.isFile() || stat.size < 1_024) throw new Error('FFmpeg did not create a complete MP4.');
-    const validation = await inspectFile(options.ffmpegPath, partial, { width, height, fps, frames: captured, duration }, signal, options.ffprobePath);
+    const validation = await inspectFile(options.ffmpegPath, partial, { width, height, fps, frames: captured, duration, videoCodec: expectedVideoCodec }, signal, options.ffprobePath);
     check();
     await update({ state: 'encoding', progress: 0.99, frames: captured, totalFrames, bytes: stat.size });
     await assertAbsent(job.outputPath);

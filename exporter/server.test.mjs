@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { startServer, validateMetadata, safeFilename } from './server.mjs';
-import { buildFfmpegArgs } from './runner.mjs';
+import { buildFfmpegArgs, detectHevcEncoder } from './runner.mjs';
+import ffmpegPath from 'ffmpeg-static';
 
 test('local export API authenticates requests, rejects external origins and persists completed jobs', async () => {
   const temp=await fs.mkdtemp(path.join(os.tmpdir(),'bmv-export-test-'));
@@ -61,30 +62,37 @@ test('local export API authenticates requests, rejects external origins and pers
   }
 });
 
-test('submission rejects unsupported format and unsafe output names stay inside output folder',()=>{
+test('submission rejects unsupported format and unsafe output names stay inside output folder',async ()=>{
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1921,height:1080,fps:30}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{start:-1}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:-5}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:250}}));
   const valid60=validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:55},config:{exportLeadMs:55}});
   assert.equal(valid60.format.fps,60);
-  assert.equal(valid60.format.encoding,'grain');
+  assert.equal(valid60.format.encoding,'hevc');
   assert.equal(valid60.format.visualLeadMs,55);
   assert.equal(valid60.config.exportLeadMs,55);
-  const valid2k=validateMetadata({song:{id:2,name:'B',artists:['ODESZA']},format:{width:2560,height:1440,fps:60,encoding:'grain'}});
+  const valid2k=validateMetadata({song:{id:2,name:'B',artists:['ODESZA']},format:{width:2560,height:1440,fps:60,encoding:'hevc'}});
   assert.equal(valid2k.format.width,2560);
   assert.equal(valid2k.format.height,1440);
-  assert.equal(valid2k.format.encoding,'grain');
+  assert.equal(valid2k.format.encoding,'hevc');
   assert.throws(()=>validateMetadata({song:{id:2,name:'B',artists:[]},format:{width:2560,height:1440,fps:60,encoding:'invalid'}}));
-  const grainArgs=buildFfmpegArgs({fps:60,encoding:'grain',start:190,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  const backend=await detectHevcEncoder(ffmpegPath);
+  assert.ok(['hevc_nvenc','hevc_qsv','hevc_amf','libx265'].includes(backend));
+  const hevcArgs=buildFfmpegArgs({width:1920,height:1080,fps:60,encoding:'hevc',hevcBackend:backend,start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  assert.equal(hevcArgs[hevcArgs.indexOf('-c:v',hevcArgs.indexOf('-map'))+1],backend);
+  assert.equal(hevcArgs[hevcArgs.indexOf('-tag:v')+1],'hvc1');
+  assert.equal(hevcArgs[hevcArgs.indexOf('-maxrate')+1],'18M');
+  const grainArgs=buildFfmpegArgs({width:1920,height:1080,fps:60,encoding:'grain',start:190,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
   assert.ok(grainArgs.includes('scale=in_range=full:out_color_matrix=bt709:out_range=tv'));
   assert.ok(grainArgs.includes('bt709'));
   assert.equal(grainArgs[grainArgs.indexOf('-crf')+1],'15');
   assert.equal(grainArgs[grainArgs.indexOf('-aq-mode')+1],'3');
   assert.equal(grainArgs[grainArgs.indexOf('-b:a')+1],'256k');
-  const stdArgs=buildFfmpegArgs({fps:60,encoding:'standard',start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
-  assert.equal(stdArgs[stdArgs.indexOf('-crf')+1],'18');
-  assert.equal(stdArgs[stdArgs.indexOf('-b:a')+1],'192k');
+  const stdArgs=buildFfmpegArgs({width:2560,height:1440,fps:60,encoding:'standard',start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  assert.equal(stdArgs[stdArgs.indexOf('-crf')+1],'19');
+  assert.equal(stdArgs[stdArgs.indexOf('-maxrate')+1],'28M');
+  assert.equal(stdArgs[stdArgs.indexOf('-b:a')+1],'224k');
   assert.equal(safeFilename('CON'),'BetterMV');
   assert.equal(safeFilename('a/b\\c:*?'),'a_b_c___');
 });

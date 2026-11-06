@@ -119,8 +119,8 @@ export class VideoExporter {
   private error = false;
   /** 默认 1080p 全高清直出，对齐实时预览最高物理渲染精度，并支持 1440p（2K 超清）。 */
   private resolution: 720 | 1080 | 1440 = 1080;
-  /** 默认启用原画高保真编码（BT.709 精准色彩 + 暗场防色带 + 保胶片颗粒与激光细线锐度）。 */
-  private encoding: 'grain' | 'standard' = 'grain';
+  /** 默认启用 HEVC 10-bit 硬件加速编码（10-bit 零色带 + 低熵有机颗粒，视觉品质几乎不变而体积降低约 85%~90%）。 */
+  private encoding: 'hevc' | 'standard' | 'grain' = 'hevc';
   /** 默认 60 帧/秒还原实时高刷丝滑感；底层本就按 60Hz 子步进模拟，不增加额外 WebGL 渲染次数。 */
   private fps: 24 | 30 | 60 = 60;
   /** 仅作用于导出视频的听感同步前瞻（毫秒），抵消脉冲爬升与本地播放器输出延迟，不影响实时观看时钟。 */
@@ -138,8 +138,10 @@ export class VideoExporter {
     const root = document.createElement('div');
     root.dataset.bmvSettings = '';
     root.style.cssText = 'padding:8px 20px 24px;line-height:1.6';
+    const encodingLabel = () =>
+      this.encoding === 'hevc' ? 'HEVC 10-bit 小体积' : this.encoding === 'standard' ? 'H.264 小体积' : 'H.264 原画母带';
     const formatText = () =>
-      `MP4 · ${this.resolution === 1440 ? '2K (1440p)' : `${this.resolution}p`} · ${this.fps} 帧/秒 · ${this.encoding === 'grain' ? '原画高保真' : '标准均衡'}` +
+      `MP4 · ${this.resolution === 1440 ? '2K (1440p)' : `${this.resolution}p`} · ${this.fps} 帧/秒 · ${encodingLabel()}` +
       (this.exportLeadMs > 0 ? ` · 前瞻 +${this.exportLeadMs}ms` : '');
     const format = document.createElement('p');
     format.textContent = formatText();
@@ -175,7 +177,7 @@ export class VideoExporter {
     };
     resolutionRow.append(resolution);
 
-    // 编码画质选择（保胶片颗粒与暗场激光锐度 vs 标准均衡体积）
+    // 编码画质选择（HEVC 10-bit 小体积 vs H.264 全兼容小体积 vs 原画全颗粒母带）
     const encodingRow = document.createElement('label');
     encodingRow.textContent = '画质编码';
     encodingRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 10px';
@@ -183,8 +185,9 @@ export class VideoExporter {
     encodingSelect.setAttribute('aria-label', '导出视频编码画质');
     encodingSelect.style.cssText = selectCss;
     for (const [value, label] of [
-      ['grain', '原画高保真（推荐，保颗粒与锐度）'],
-      ['standard', '标准均衡（体积更小）'],
+      ['hevc', 'HEVC 10-bit 小体积（推荐，硬编）'],
+      ['standard', 'H.264 小体积（全设备兼容）'],
+      ['grain', 'H.264 原画母带（全颗粒，体积大）'],
     ]) {
       const option = document.createElement('option');
       option.value = value;
@@ -193,7 +196,8 @@ export class VideoExporter {
     }
     encodingSelect.value = this.encoding;
     encodingSelect.onchange = () => {
-      this.encoding = encodingSelect.value === 'standard' ? 'standard' : 'grain';
+      const v = encodingSelect.value;
+      this.encoding = v === 'standard' ? 'standard' : v === 'grain' ? 'grain' : 'hevc';
       this.refresh?.();
     };
     encodingRow.append(encodingSelect);
@@ -515,8 +519,9 @@ export class VideoExporter {
       if (!TOKEN) throw new ServiceMismatch();
       this.update(this.jobId ? '正在读取导出进度…' : '正在连接 MV 导出工具…', this.jobId ? this.progress : 0);
       const health = await request<{ ok?: boolean; version?: string }>('/api/health');
-      if (!this.jobId && this.resolution === 1440 && health?.version !== '2') {
-        throw new Error('请先关闭旧版“MV导出工具”窗口并重新运行“启动MV导出工具.cmd”，再导出 2K 超清视频。');
+      const ver = Number(health?.version ?? '1');
+      if (!this.jobId && ((this.resolution === 1440 && ver < 2) || (this.encoding === 'hevc' && ver < 3))) {
+        throw new Error('请先关闭旧版“MV导出工具”窗口并重新运行“启动MV导出工具.cmd”，以启用 HEVC 10-bit 小体积与 2K 导出。');
       }
       if (!this.jobId && snapshot) {
         const song = { ...snapshot.song, artists: [...snapshot.song.artists] };

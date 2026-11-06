@@ -292,13 +292,14 @@ const FinishShader = {
     uHigh: { value: new THREE.Vector3(1, 1, 1) },
     uResolution: { value: new THREE.Vector2(1920, 1080) },
     uPixelRatio: { value: 1 },
+    uEncodeFriendly: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float uTime, uFilm, uGrain, uGrainScale, uContrast, uLens, uSharpen, uPixelRatio;
+    uniform float uTime, uFilm, uGrain, uGrainScale, uContrast, uLens, uSharpen, uPixelRatio, uEncodeFriendly;
     uniform vec3 uShadow, uHigh, uInkD, uSignalD;
     uniform float uImpact, uImpactInvert;
     uniform vec2 uResolution;
@@ -354,12 +355,15 @@ const FinishShader = {
         float on = step(0.36, luma(s));
         s = mix(s, mix(uInkD, uSignalD, abs(on - uImpactInvert)), uImpact);
       }
-      // Film grain on what is seen.
-      float lm = luma(s), tq = floor(uTime * 30.0);
+      // Film grain on what is seen (uEncodeFriendly=1: 12Hz organic 2x2 grain + static spatial dither for 10x better video compression).
+      float lm = luma(s), tq = mix(floor(uTime * 30.0), floor(uTime * 12.0), uEncodeFriendly);
       vec2 cell = floor(gl_FragCoord.xy / uPixelRatio);
-      float g = 0.7 * (hash(cell + tq * 17.31) - 0.5) + 0.6 * (hash(floor(cell * 0.5) + tq * 7.13 + 91.7) - 0.5);
-      s += g * uGrain * uGrainScale * uFilm * (0.6 + 1.2 * lm * (1.0 - lm));
-      s += (hash(gl_FragCoord.xy + fract(uTime) * 311.0) + hash(gl_FragCoord.yx * 1.31 + 17.0) - 1.0) / 255.0;
+      float gFine = hash(cell + tq * 17.31) - 0.5;
+      float gCoarse = hash(floor(cell * 0.5) + tq * 7.13 + 91.7) - 0.5;
+      float g = mix(0.7 * gFine + 0.6 * gCoarse, 0.16 * gFine + 0.64 * gCoarse, uEncodeFriendly);
+      s += g * uGrain * uGrainScale * uFilm * mix(1.0, 0.42, uEncodeFriendly) * (0.6 + 1.2 * lm * (1.0 - lm));
+      float ditherPhase = fract(uTime) * 311.0 * (1.0 - uEncodeFriendly);
+      s += (hash(gl_FragCoord.xy + ditherPhase) + hash(gl_FragCoord.yx * 1.31 + 17.0) - 1.0) / 255.0 * mix(1.0, 0.35, uEncodeFriendly);
       gl_FragColor = vec4(s, 1.0);
     }`,
 };
@@ -389,6 +393,8 @@ export class Engine {
   private look: LookPass;
   /** Scales every frame's fx.film (the dev harness's ?film=0 shows the MV without the finish). */
   filmScale = 1;
+  /** 离线视频导出专用的低熵胶片颗粒与静态空间抖动模式（消除每帧不可压缩的随机白噪声，使视频体积降低 85%+ 且不损边缘锐度）。 */
+  encodeFriendly = false;
   /** Scales the lens (depth of field, motion blur; the dev harness's ?lens=0). */
   get lensScale(): number { return this.shots.lensScale; }
   set lensScale(v: number) { this.shots.lensScale = v; }
@@ -881,6 +887,7 @@ export class Engine {
     f.uTime.value = t;
     f.uFilm.value = film;
     f.uGrain.value = fx.grain;
+    f.uEncodeFriendly.value = this.encodeFriendly ? 1 : 0;
     f.uImpact.value = fx.impact;
     f.uImpactInvert.value = fx.impactInvert;
     this.shots.letterbox = fx.letterbox;

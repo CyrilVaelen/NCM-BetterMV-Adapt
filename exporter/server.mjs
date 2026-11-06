@@ -40,8 +40,8 @@ export function validateMetadata(data) {
   if (!Array.isArray(s.artists) || s.artists.length > 30 || s.artists.some(a => typeof a !== 'string' || a.length > 200)) throw new Error('歌手信息不正确');
   const width = f.width ?? 1920, height = f.height ?? 1080, fps = f.fps ?? 30;
   if (![[1280, 720], [1920, 1080], [2560, 1440]].some(([w,h]) => width === w && height === h) || ![24,30,60].includes(fps)) throw new Error('请选择 720p、1080p 或 1440p（2K），以及 24、30 或 60 帧');
-  const encoding = f.encoding ?? 'grain';
-  if (!['grain', 'standard'].includes(encoding)) throw new Error('导出编码画质模式不正确');
+  const encoding = f.encoding ?? 'hevc';
+  if (!['hevc', 'standard', 'grain'].includes(encoding)) throw new Error('导出编码画质模式不正确');
   const start = f.start ?? 0, duration = f.duration, visualLeadMs = f.visualLeadMs;
   if (!Number.isFinite(start) || start < 0 || start > 7200 || (duration !== undefined && (!Number.isFinite(duration) || duration <= 0 || duration > 7200))) throw new Error('导出时间范围不正确');
   if (visualLeadMs !== undefined && (!Number.isFinite(visualLeadMs) || visualLeadMs < 0 || visualLeadMs > 200)) throw new Error('导出音画同步补偿范围不正确');
@@ -178,7 +178,7 @@ export async function startServer({ settings: supplied, settingsPath = SETTINGS,
         if(!headerOK&&!(req.method==='GET'&&tokenMatches(cookie,settings.token)))return json(res,401,{error:'导出工具连接验证失败'});
         if(p==='/api/health'&&req.method==='GET'){
           if(headerOK)res.setHeader('Set-Cookie',`bmv_export_session=${settings.token}; HttpOnly; SameSite=Strict; Path=/`);
-          return json(res,200,{ok:true,version:'2',outputDir:settings.outputDir});
+          return json(res,200,{ok:true,version:'3',outputDir:settings.outputDir});
         }
         if(p==='/api/exports'&&req.method==='POST')return await submit(req,res);
         if(p==='/api/exports'&&req.method==='GET')return json(res,200,[...jobs.values()].map(publicJob).reverse());
