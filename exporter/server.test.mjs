@@ -79,10 +79,11 @@ test('submission rejects unsupported format and unsafe output names stay inside 
   assert.throws(()=>validateMetadata({song:{id:2,name:'B',artists:[]},format:{width:2560,height:1440,fps:60,encoding:'invalid'}}));
   const backend=await detectHevcEncoder(ffmpegPath);
   assert.ok(['hevc_nvenc','hevc_qsv','hevc_amf','libx265'].includes(backend));
-  const hevcArgs=buildFfmpegArgs({width:1920,height:1080,fps:60,encoding:'hevc',hevcBackend:backend,start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
-  assert.equal(hevcArgs[hevcArgs.indexOf('-c:v',hevcArgs.indexOf('-map'))+1],backend);
+  const hevcArgs=buildFfmpegArgs({width:1920,height:1080,fps:60,encoding:'hevc',hevcBackend:'hevc_qsv',start:0,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
+  assert.equal(hevcArgs[hevcArgs.indexOf('-c:v',hevcArgs.indexOf('-map'))+1],'hevc_qsv');
   assert.equal(hevcArgs[hevcArgs.indexOf('-tag:v')+1],'hvc1');
-  assert.equal(hevcArgs[hevcArgs.indexOf('-maxrate')+1],'18M');
+  assert.equal(hevcArgs[hevcArgs.indexOf('-global_quality')+1],'22');
+  assert.equal(hevcArgs.includes('-maxrate'),false);
   const grainArgs=buildFfmpegArgs({width:1920,height:1080,fps:60,encoding:'grain',start:190,duration:10,audioPath:'audio.bin',outputPath:'out.mp4'});
   assert.ok(grainArgs.includes('scale=in_range=full:out_color_matrix=bt709:out_range=tv'));
   assert.ok(grainArgs.includes('bt709'));

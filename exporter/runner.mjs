@@ -146,12 +146,13 @@ export function buildFfmpegArgs({ width = 1920, height = 1080, fps, encoding = '
     const vf = hw10
       ? 'scale=in_range=full:out_color_matrix=bt709:out_range=tv,format=p010le'
       : 'scale=in_range=full:out_color_matrix=bt709:out_range=tv';
+    // 注意：Intel hevc_qsv 使用 -global_quality (ICQ 恒定视觉质量模式) 时严禁同时传入未配 -b:v 的 -maxrate，否则驱动会退回默认极低码率 VBR 导致马赛克。
     const hevcArgs = hevcBackend === 'hevc_nvenc'
-      ? ['-c:v', 'hevc_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '20', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      ? ['-c:v', 'hevc_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '21', '-b:v', '0', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
       : hevcBackend === 'hevc_qsv'
-      ? ['-c:v', 'hevc_qsv', '-preset', 'slow', '-global_quality', '19', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      ? ['-c:v', 'hevc_qsv', '-preset', 'slow', '-global_quality', '22', '-tag:v', 'hvc1']
       : hevcBackend === 'hevc_amf'
-      ? ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'vbr_peak', '-qp_i', '19', '-qp_p', '20', '-maxrate', maxRate, '-bufsize', bufSize, '-tag:v', 'hvc1']
+      ? ['-c:v', 'hevc_amf', '-quality', 'quality', '-rc', 'cqp', '-qp_i', '20', '-qp_p', '22', '-tag:v', 'hvc1']
       : ['-c:v', 'libx265', '-preset', 'fast', '-pix_fmt', 'yuv420p10le', '-crf', '21', '-maxrate', maxRate, '-bufsize', bufSize, '-x265-params', 'aq-mode=3:no-sao=1', '-tag:v', 'hvc1'];
     return [
       '-hide_banner', '-loglevel', 'warning', '-n',
