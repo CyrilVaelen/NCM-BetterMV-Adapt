@@ -893,6 +893,39 @@ export class HighwayScene implements MvScene {
           return fract((p3.x + p3.y) * p3.z);
         }
 
+        // 高效平滑连续 2D 值噪声（C1 连续阶跃为 0，彻底根除马赛克方格噪波）
+        float smoothNoise2D(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          // Quintic 缓动多项式 6f^5 - 15f^4 + 10f^3，二阶导连续
+          vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+          float a = hash12(i);
+          float b = hash12(i + vec2(1.0, 0.0));
+          float c = hash12(i + vec2(0.0, 1.0));
+          float d = hash12(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+
+        // 标线实体物理截面 SDF、微倒角立体棱线与底胶接触阴影结构体
+        struct RoadMarkingProfile {
+          float core;       // 顶层平坦核心主体 [0..1]
+          float bevel;      // 边缘微倒角立体坡面高光 [0..1]
+          float contactAo;  // 边缘底胶/沥青接触阴影暗边 [0.74..1.0]
+        };
+
+        RoadMarkingProfile evalMarkProfile(float distToCenter, float halfWidth) {
+          RoadMarkingProfile p;
+          float bevelWidth = 0.018; // 18mm 边缘斜坡倒角
+          float edge = distToCenter - halfWidth;
+          // 顶层平坦核心
+          p.core = 1.0 - smoothstep(-bevelWidth, 0.0, edge);
+          // 边缘斜坡倒角棱线
+          p.bevel = smoothstep(-bevelWidth * 1.5, -bevelWidth * 0.2, edge) * (1.0 - smoothstep(0.0, bevelWidth * 0.5, edge));
+          // 底部 2~3cm 接触暗边 AO（牢固锚定嵌入沥青面层，杜绝浮动贴纸感）
+          p.contactAo = mix(0.74, 1.0, smoothstep(0.0, 0.028, abs(edge)));
+          return p;
+        }
+
         void main() {
           float roadZ = vWorldPos.z - uDistance;
           float xPos = vWorldPos.x;
@@ -900,20 +933,37 @@ export class HighwayScene implements MvScene {
           // 远景反走样衰减：在极远处平滑抑制高频闪烁噪波，自然化入海雾
           float detailFade = exp(-sq(max(0.0, -zRel) * 0.0042));
 
-          // 1) 高频沥青矿料微纹理、排水沟暗影与轮胎压痕
-          float grain = mix(0.5, hash12(floor(vec2(xPos * 20.0, roadZ * 3.8))), detailFade);
-          float microGrain = mix(0.5, hash12(floor(vec2(xPos * 52.0, roadZ * 11.0))), detailFade);
-          float tireTrack = exp(-sq((abs(xPos) - 2.4) * 0.88)) * 0.38 + exp(-sq((abs(xPos) - 6.8) * 0.88)) * 0.28;
+          // 1) 连续平滑微表面沥青材质（彻底废除 floor 阶跃哈希，引入多尺度平滑插值噪声）
+          float macroNoise = smoothNoise2D(vec2(xPos * 3.6, roadZ * 1.2));
+          float microNoise = smoothNoise2D(vec2(xPos * 38.0, roadZ * 18.0));
+          float smoothGrain = mix(0.5, mix(macroNoise, microNoise, 0.58), detailFade);
+          float fineAggregate = mix(0.5, smoothNoise2D(vec2(xPos * 72.0, roadZ * 36.0)), detailFade);
+
+          // 车轮常跑轨迹（Wheel Tracks）物理压实与打磨平整化（双车道对称位置 |x| ≈ 2.4m 与 |x| ≈ 6.8m）
+          float tireTrack = exp(-sq((abs(xPos) - 2.4) * 0.88)) * 0.42 + exp(-sq((abs(xPos) - 6.8) * 0.88)) * 0.32;
           float streakMicro = 0.5 + 0.5 * sin(roadZ * 1.4 + sin(xPos * 3.2));
           // 靠近混凝土防撞墙根部 (|x| -> 9.52m) 的真实路缘环境遮蔽暗边 (Curb AO)
           float curbAo = smoothstep(9.62, 8.85, abs(xPos));
 
-          // 2) 国标级高对比分道虚线与外侧路肩导流实线
+          // 2) 国标级高对比分道虚线与外侧路肩导流实线（升级为 SDF 实体截面、边缘斜坡倒角与接触阴影）
           float dashCycle = fract(roadZ / 10.0);
           float dashMask = smoothstep(0.0, 0.04, dashCycle) * (1.0 - smoothstep(0.38, 0.42, dashCycle));
-          float centerDouble = smoothstep(0.11, 0.04, abs(abs(xPos) - 0.22));
-          float laneDiv = (smoothstep(0.12, 0.04, abs(xPos - 4.6)) + smoothstep(0.12, 0.04, abs(xPos + 4.6))) * mix(0.4, dashMask, detailFade);
-          float shoulderLine = smoothstep(0.17, 0.055, abs(abs(xPos) - 9.05));
+
+          // 中央双黄线 (|x| ≈ 0.22m, 每根全宽 13cm, 半宽 0.065m)
+          RoadMarkingProfile profCenter = evalMarkProfile(abs(abs(xPos) - 0.22), 0.065);
+          // 分道虚线 (|x| = 4.6m, 全宽 15cm, 半宽 0.075m)
+          float laneDist = min(abs(xPos - 4.6), abs(xPos + 4.6));
+          RoadMarkingProfile profLane = evalMarkProfile(laneDist, 0.075);
+          // 外侧路肩导流实线 (|x| = 9.05m, 全宽 20cm, 半宽 0.10m)
+          RoadMarkingProfile profShoulder = evalMarkProfile(abs(abs(xPos) - 9.05), 0.10);
+
+          float laneDivMask = mix(0.4, dashMask, detailFade);
+          float laneDivCore = profLane.core * laneDivMask;
+          float laneDivBevel = profLane.bevel * laneDivMask;
+
+          // 综合所有标线在沥青交界面的底胶微暗边 Contact AO
+          float totalMarkContactAo = profCenter.contactAo * mix(1.0, profLane.contactAo, laneDivMask) * profShoulder.contactAo;
+
           // 路肩高频反光猫眼道钉（每 6m 一颗）
           float studZ = fract((roadZ + 2.0) / 6.0) * 6.0 - 3.0;
           float studs = exp(-(sq(abs(xPos) - 9.05) * 42.0 + studZ * studZ * 9.5)) * 2.1 * detailFade;
@@ -922,41 +972,70 @@ export class HighwayScene implements MvScene {
           float jointLocal = fract(roadZ / 28.0) * 28.0;
           float expansionJoint = exp(-sq((jointLocal - 14.0) * 5.2)) * (0.48 + 0.42 * uKickSurge) * detailFade;
 
-          // 4) 与头顶三维路灯锥形光束（间距 18m，落地中心 |x| = 6.0m）100% 严丝合缝对齐的桥面真实受光光池
+          // 4) 与头顶三维路灯锥形光束（间距 18m，落地中心 |x| = 6.0m）严丝合缝对齐的桥面受光直接光池
           float lampCellZ = mod(roadZ - 14.0, 18.0);
           if (lampCellZ > 9.0) lampCellZ -= 18.0;
           float dxLamp = (abs(xPos) - 6.0) / 3.75;
           float dzLamp = lampCellZ / 3.45;
           float coneDist2 = dxLamp * dxLamp + dzLamp * dzLamp;
-          // 地面直接照度池（无论干湿均照亮沥青纹理与标线：内圈聚光核 + 外圈柔化漫反射）
+          // 地面直接照度池（内圈高亮核心 + 外圈柔和漫反射）
           float coneCorePool = exp(-coneDist2 * 3.1);
           float coneWidePool = exp(-coneDist2 * 0.92);
-          // 湿滑沥青朝向镜头的纵向拉长高光柱（Anisotropic Wet Specular Streak）
-          float specStreak = exp(-sq((abs(xPos) - 6.25) * 0.52)) * exp(-sq(lampCellZ * 0.16));
 
-          // 5) 雨夜桥面水洼分布与天穹封面明月清辉倒影（压低中心大面积平涂紫光，凸显两侧路灯光池对比度）
+          // 轮迹区域沥青致密磨光，微表面高光聚光更强、油润各向异性明显
+          float trackPolished = clamp(0.70 + 0.65 * tireTrack, 0.70, 1.35);
+          float specStreak = exp(-sq((abs(xPos) - 6.25) * 0.52)) * exp(-sq(lampCellZ * 0.16)) * trackPolished;
+
+          // 5) 雨夜桥面水洼与天穹封面明月倒影
           float puddleWave = sin(xPos * 0.55 + sin(roadZ * 0.09)) * cos(roadZ * 0.11 - xPos * 0.25);
           float wetness = clamp(0.36 + 0.48 * puddleWave + 0.22 * tireTrack, 0.08, 0.96);
           float moonRefl = exp(-abs(xPos) * 0.24) * wetness;
           vec2 coverUv = vec2(clamp(0.5 + xPos / 22.0 + 0.012 * sin(roadZ * 0.45), 0.02, 0.98), clamp(0.35 + 0.18 * sin(roadZ * 0.05), 0.1, 0.9));
           vec3 moonlightCol = texture2D(uCover, coverUv).rgb;
 
+          // 基础沥青色调（平整细腻高等级 SMA 改性沥青面层）
           vec3 baseTone = mix(vec3(0.016, 0.019, 0.026), vec3(0.020), uIsMono);
-          vec3 asphaltLit = baseTone + (0.015 * grain + 0.009 * microGrain + 0.008 * streakMicro * tireTrack);
-          // 路灯光锥直接照亮地面沥青矿料颗粒，呈现极真实的受光质感
-          float lampPulse = 1.0 + 0.28 * uKickSurge + 0.22 * uWarpDash;
-          vec3 lampGroundDiffuse = uLampColor * (0.20 * coneWidePool + 0.34 * coneCorePool) * (0.65 + 0.75 * grain) * lampPulse;
-          vec3 lampWetSpec = mix(uLampColor, uAccentColor, 0.25) * (0.36 * coneCorePool + 0.42 * specStreak) * wetness * lampPulse;
+          vec3 asphaltLit = baseTone + (0.009 * (smoothGrain - 0.5) + 0.005 * (fineAggregate - 0.5) + 0.007 * streakMicro * tireTrack);
 
-          float markBoost = 1.0 + 0.55 * coneWidePool;
-          vec3 centerCol = mix(uAccentColor, uBrightColor, 0.55) * centerDouble * (0.82 + 0.50 * uKickSurge) * markBoost;
-          vec3 whiteMarks = mix(vec3(0.90), uBrightColor, 0.32) * (laneDiv + shoulderLine * 0.92) * (1.02 + 0.45 * uKickSurge) * markBoost;
+          // 全链路路灯光通量响应：路面光池直接照度随鼓点瞬态平滑增强 +70%
+          float lampPulse = 1.0 + 0.70 * uKickSurge + 0.25 * uWarpDash;
+
+          // 漫反射噪点调制收敛至 <= 14% (0.93 + 0.14 * smoothGrain)，彻底消除黑白麻点碎斑与老电视雪花感
+          float groundNoiseMod = 0.93 + 0.14 * smoothGrain;
+          vec3 lampGroundDiffuse = uLampColor * (0.22 * coneWidePool + 0.36 * coneCorePool) * groundNoiseMod * lampPulse;
+          vec3 lampWetSpec = mix(uLampColor, uAccentColor, 0.25) * (0.36 * coneCorePool + 0.45 * specStreak) * wetness * lampPulse;
+
+          // 6) 标线真实物理光照与定向玻璃微珠逆反射（Retroreflection）模型（彻底废除自发光暴冲项）
+          // 视线方向与大灯光照近似
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 1.0, 0.0));
+          // 大灯与路灯前向入射角逆反射因子（自车大灯沿 -Z 照射，视线亦朝前，掠射角产生强微珠后向散射）
+          float beadRetro = safePow(clamp(dot(V, vec3(0.0, 0.28, 0.96)), 0.0, 1.0), 14.0) * 1.6;
+          float lampIllumOnMark = 0.45 + 0.75 * coneWidePool + 0.60 * coneCorePool;
+
+          // 侧光对标线边缘微倒角的立体棱线照亮
+          float bevelHighlight = (profCenter.bevel + laneDivBevel + profShoulder.bevel) * (0.55 + 0.65 * coneWidePool);
+
+          // 黄线与白线物理色彩（黑白无彩色封面时中性灰保护，严格限定饱和度 <= 0.05）
+          vec3 nationalStandardYellow = vec3(0.92, 0.74, 0.18);
+          vec3 standardRetroWhite = vec3(0.90, 0.92, 0.95);
+          vec3 yellowMarkColor = mix(mix(nationalStandardYellow, uAccentColor, 0.32), vec3(0.88), uIsMono);
+          vec3 whiteMarkColor = mix(mix(standardRetroWhite, uBrightColor, 0.24), vec3(0.92), uIsMono);
+
+          // 标线受外部光源真实照亮并叠加坡面微棱线与微珠逆反射，绝无自身通电发光
+          vec3 centerCol = yellowMarkColor * profCenter.core * lampIllumOnMark * lampPulse
+                         + yellowMarkColor * (beadRetro * 0.42 * profCenter.core + bevelHighlight * 0.35);
+          float whiteCores = laneDivCore + profShoulder.core * 0.95;
+          vec3 whiteMarks = whiteMarkColor * whiteCores * lampIllumOnMark * lampPulse
+                          + whiteMarkColor * (beadRetro * 0.46 * whiteCores + bevelHighlight * 0.38);
+
           vec3 studCol = uAccentColor * studs * (1.05 + 0.75 * uSnareFlash + 0.55 * uWarpDash);
           vec3 jointCol = uMainColor * expansionJoint * 0.52;
           vec3 moonRoadReflCol = mix(moonlightCol, uBrightColor, 0.30) * moonRefl * (0.42 + 0.38 * uWarpDash);
 
-          vec3 col = (asphaltLit * (1.0 - 0.22 * wetness) + lampGroundDiffuse + lampWetSpec) * (0.35 + 0.65 * curbAo)
-                   + centerCol + whiteMarks + studCol + jointCol + moonRoadReflCol;
+          // 接触阴影 contactAo 将标线扎实压入沥青中
+          vec3 roadBaseCombined = (asphaltLit * (1.0 - 0.22 * wetness) + lampGroundDiffuse + lampWetSpec) * totalMarkContactAo * (0.35 + 0.65 * curbAo);
+
+          vec3 col = roadBaseCombined + centerCol + whiteMarks + studCol + jointCol + moonRoadReflCol;
 
           // 深度雾与远端天际消隐带（在抵达 z = -715m 网格终端前已 100% 化为纯背景夜雾色，零硬切边）
           float fogDist = length(vWorldPos - uCamPos);
@@ -1608,7 +1687,7 @@ export class HighwayScene implements MvScene {
           // 灯杆根部受路面反光微暖补光，中段深邃冷冽，上段弯臂受自家 LED 灯芯近距离映亮
           float groundBounce = exp(-max(0.0, vWorldPos.y - 0.5) * 0.55) * (0.5 + 0.5 * innerDiff);
           vec3 col = metalBase * (0.18 + 0.42 * moonDiff + 0.24 * innerDiff)
-                   + mix(uLampColor, vec3(1.0), 0.35) * ownAtten * (0.95 * ownDiff + ownSpec) * (1.0 + 0.25 * uKickSurge)
+                   + mix(uLampColor, vec3(1.0), 0.35) * ownAtten * (0.95 * ownDiff + ownSpec) * (1.0 + 0.55 * uKickSurge)
                    + mix(uBrightColor, vec3(0.96), 0.5) * (0.48 * cylinderSpec + 0.28 * moonSpec + 0.22 * fresnel * (0.35 + 0.65 * innerDiff))
                    + mix(uAccentColor, uLampColor, 0.4) * groundBounce * 0.14;
 
@@ -1671,7 +1750,8 @@ export class HighwayScene implements MvScene {
           float bottomWeight = smoothstep(-0.2, -0.8, vLocalNormal.y) * 0.75 + 0.25;
 
           float intensity = (0.78 + 0.52 * emitter) * (0.45 + 0.55 * bezelMask) * bottomWeight;
-          intensity *= (1.05 + 0.32 * uKickSurge + 0.18 * uWarpDash);
+          // 全链路路灯光通量响应：LED 发光芯片亮核瞬态增强峰值达到 +80%
+          intensity *= (1.0 + 0.80 * uKickSurge + 0.20 * uWarpDash);
 
           vec3 coreWhite = mix(uLampColor, vec3(1.0), 0.55);
           vec3 col = mix(uAccentColor, coreWhite, clamp(0.45 + 0.55 * bezelMask * (0.6 + 0.4 * emitter), 0.0, 1.0)) * intensity;
@@ -1761,7 +1841,8 @@ export class HighwayScene implements MvScene {
           float baseGain = mix(0.088, 0.135, vShell);
           float energy = (baseGain * heightFalloff + sourceGlow * (0.5 + 0.5 * vShell))
                        * edgeSoft * topJoin * groundBlend * rays * seaMist * nearFade * farFade;
-          energy *= (1.0 + 0.28 * uKickSurge + 0.16 * uWarpDash);
+          // 全链路路灯光通量响应：锥形丁达尔体积光束透光度与散射增强 +65%
+          energy *= (1.0 + 0.65 * uKickSurge + 0.18 * uWarpDash);
 
           vec3 beamTint = mix(mix(uAccentColor, uLampColor, 0.65), uLampColor, 0.45 * vUv.y + 0.48 * vShell);
           gl_FragColor = vec4(clampHdr(beamTint * energy), 1.0);
@@ -1974,7 +2055,7 @@ export class HighwayScene implements MvScene {
   }
 
   /** 四组电影级运镜机位（cockpit / chase / bridge / warp）纯函数姿态求值（严格处于无障碍净空走廊内，杜绝擦碰灯头/桥塔穿模） */
-  private evalCameraPose(t: number, s: Shot, kickSurge: number, isWarp: boolean, pos: THREE.Vector3, quat: THREE.Quaternion): number {
+  private evalCameraPose(t: number, s: Shot, _kickSurge: number, isWarp: boolean, pos: THREE.Vector3, quat: THREE.Quaternion): number {
     const start = s.run?.start ?? s.start;
     const end = s.run?.end ?? s.end;
     const span = Math.max(0.8, end - start);
@@ -1984,33 +2065,34 @@ export class HighwayScene implements MvScene {
     const variant = s.variant || 'cockpit';
     const roadVibY = 0.022 * Math.sin(t * 5.2) + 0.015 * Math.cos(t * 8.3);
 
+    // 彻底清除所有机位中的 FOV 鼓点突增项（kickSurge * ...），相机保持纯净设计视场角，向后倒退拉扯量严格恒为 0
     if (variant === 'chase') {
       const laneX = Math.sin(t * 0.55) * 2.1 * dir;
       const x = lerp(laneX - 0.9 * dir, laneX + 0.9 * dir, e);
       const y = 1.68 + 0.06 * Math.sin(t * 0.7) + roadVibY;
       const z = 3.8;
       poseLookAt(pos, quat, x, y, z, laneX * 0.45, 1.35, -62.0, -0.025 * Math.cos(t * 0.55) * dir, 1.0, 0.0);
-      return BASE_FOV + 2.0 + kickSurge * 4.5;
+      return BASE_FOV + 2.0;
     } else if (variant === 'bridge') {
       // 保持在桥面中高空无障碍走廊 |x| <= 4.8m, y <= 4.8m，距两侧悬挑路灯灯头 (|x|>=7.1m, y=7.68m) 与斜拉桥塔柱留足 >2.3m 安全净空
       const x = lerp(-4.8 * dir, -3.2 * dir, e);
       const y = lerp(4.8, 3.4, e) + roadVibY;
       const z = lerp(-6.0, -16.0, e);
       poseLookAt(pos, quat, x, y, z, 0, 3.0, -108.0);
-      return BASE_FOV - 2.0 + kickSurge * 3.5;
+      return BASE_FOV - 2.0;
     } else if (variant === 'warp') {
       const x = lerp(-2.2 * dir, 2.2 * dir, e);
       const y = 1.08 + 0.04 * Math.sin(t * 1.4) + roadVibY;
       const z = 1.0;
       poseLookAt(pos, quat, x, y, z, x * 0.25, 1.25, -88.0, 0.075 * dir, 1.0, 0.0);
-      return BASE_FOV + 9.0 + kickSurge * 5.5;
+      return BASE_FOV + 9.0;
     } else {
       const weaveX = Math.sin(t * 0.42) * 1.35 * dir;
       const x = weaveX + lerp(-0.6 * dir, 0.6 * dir, e);
       const y = 1.02 + 0.035 * Math.sin(t * 0.9) + roadVibY;
       const z = 0.0;
       poseLookAt(pos, quat, x, y, z, weaveX * 0.3, 1.18, -82.0);
-      return BASE_FOV + kickSurge * 5.0 + (isWarp ? 5.0 : 0.0);
+      return BASE_FOV + (isWarp ? 5.0 : 0.0);
     }
   }
 
@@ -2075,10 +2157,12 @@ export class HighwayScene implements MvScene {
     const isChorus = label === 'chorus';
     const isBuild = label === 'build' || label === 'pre';
 
-    // 1. 行驶距离、瞬时速度与鼓点脉冲（100% 纯函数 f(t)）
+    // 1. 行驶距离、瞬时速度与鼓点脉冲（100% 纯函数 f(t)，融合直接底鼓与主奏起音多源通量）
     const distance = this.getDistanceAt(t);
     const speed = this.getSpeedAt(t);
-    const kickPulse = this.evalPulse(this.kickTimes, this.kickAmps, t, 0.22);
+    const directKickPulse = this.evalPulse(this.kickTimes, this.kickAmps, t, 0.22);
+    const musicKickPulse = typeof music.pulse === 'function' ? music.pulse('kick', t, 0.22) : 0;
+    const kickPulse = Math.max(directKickPulse, musicKickPulse);
     const snarePulse = this.evalPulse(this.snareTimes, this.snareAmps, t, 0.16);
     const warpDash = isDrop ? 1.0 : isChorus ? 0.52 : isBuild ? 0.28 : 0.0;
 
@@ -2150,7 +2234,7 @@ export class HighwayScene implements MvScene {
     }
     this.guardPostsInstanced.instanceMatrix.needsUpdate = true;
     this.guardReflectorsInstanced.instanceMatrix.needsUpdate = true;
-    this.uniforms.uReflectorGain.value = 0.72 + 0.28 * kickPulse;
+    this.uniforms.uReflectorGain.value = 0.72 + 0.35 * kickPulse;
 
     // 6. 更新桥面多车道被高速追越的前车尾灯流光残影
     const streakLen = 6.5 + 14.0 * warpDash + 9.0 * kickPulse;
