@@ -447,6 +447,14 @@ export class Engine {
     this.echo = new EchoPass();
     this.echo.enabled = false;
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.35, 0.4, 0.92);
+    // 在进入 UnrealBloomPass 5 级高斯模糊金字塔前执行位级非有限值清洗，彻底阻断单像素 NaN/Inf 扩散造成整屏黑屏闪烁
+    this.bloom.materialHighPassFilter.fragmentShader = this.bloom.materialHighPassFilter.fragmentShader.replace(
+      'vec4 texel = texture2D( tDiffuse, vUv );',
+      `vec4 texel = texture2D( tDiffuse, vUv );
+\t\t\tuvec4 tBits = floatBitsToUint( texel );
+\t\t\ttexel = max( mix( texel, vec4( 0.0, 0.0, 0.0, 1.0 ), equal( tBits & 0x7f800000u, uvec4( 0x7f800000u ) ) ), vec4( 0.0 ) );
+\t\t\ttexel.rgb = min( texel.rgb, vec3( 32.0 ) );`,
+    );
     this.grade = new ShaderPass(GradeShader);
     this.grade.uniforms.tMemory.value = this.memory.rt.texture;
     this.grade.uniforms.tWords.value = this.shots.words.texture;

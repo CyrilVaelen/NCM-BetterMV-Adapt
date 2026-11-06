@@ -436,8 +436,8 @@ test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 
     ['highway.colorAccent', highway.colorAccent],
     ['highway.colorBright', highway.colorBright],
     ['highway.colorLampWarm', highway.colorLampWarm],
-    ['highway.tailLightsMesh.color', highway.tailLightsMesh.material.color],
-    ['highway.guardReflectors.color', highway.guardReflectorsInstanced.material.color],
+    ['highway.tailLightsMesh.color', highway.tailLightsMesh.material.color ?? highway.tailLightsMesh.material.uniforms.uColor.value],
+    ['highway.guardReflectors.color', highway.guardReflectorsInstanced.material.color ?? highway.guardReflectorsInstanced.material.uniforms.uColor.value],
   ];
   for (const [name, col] of highColors) {
     const s = calcSat(col);
@@ -572,7 +572,9 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
   const streakZ0 = getInstZ(highway.warpStreaksInstanced, 0);
   const tailZ0 = highway.tailLightsMesh.geometry.attributes.position.getZ(0);
 
-  // 校验三维锥形光束、流线型复合灯杆及重工复合防撞护栏几何体精细度
+  // 校验三维锥形光束、流线型复合灯杆、重工复合防撞护栏精细度与 6 跨远端防突现覆盖范围
+  assert.ok(highway.towerUnits.length >= 6, `斜拉桥主塔跨数必须至少 6 跨以延伸至远端海雾消隐带，当前=${highway.towerUnits.length}`);
+  assert.ok(highway.camera.far >= 1000, `HighwayScene 相机远裁面必须 >= 1000m 以容纳远空明月与消隐雾带，当前=${highway.camera.far}`);
   assert.ok(highway.lampConesInstanced.geometry.attributes.position.count >= 3000, '路灯双层三维丁达尔体积光锥顶点数必须足够精细');
   assert.ok(highway.guardBarrierMesh.geometry.attributes.position.count >= 8000, '两侧混凝土防撞基座与立体双波纹金属护栏复合网格必须具备充足立体折面');
 
@@ -586,9 +588,10 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
 
   // 周期循环下的精确正向模位移校验：正向推进 +dd 时，无论是否跨过周期回折点，((z1 - z0) mod P) 恒精确等于 dd
   const modAdvance = (z0, z1, period) => (((z1 - z0) % period) + period) % period;
+  const towerPeriod = highway.towerUnits.length * 112.0;
 
   for (let idx = 0; idx < highway.towerUnits.length; idx++) {
-    const adv = modAdvance(towerZ0[idx], highway.towerUnits[idx].position.z, 3 * 112.0);
+    const adv = modAdvance(towerZ0[idx], highway.towerUnits[idx].position.z, towerPeriod);
     assert.ok(Math.abs(adv - dd) < 1e-4, `跨海斜拉桥主塔[${idx}]必须精确沿 +Z 迎面推进 dd=${dd.toFixed(4)}, 实测=${adv.toFixed(4)}`);
   }
 
@@ -605,10 +608,10 @@ test('HighwayScene：跨海桥塔、路灯、护栏立柱、氮气拉丝与前�
   const reflAdv = modAdvance(reflZ0, getInstZ(highway.guardReflectorsInstanced, 6), 6.0);
   assert.ok(Math.abs(postAdv - dd) < 1e-4 && Math.abs(reflAdv - dd) < 1e-4, `工字钢立柱与反光轮廓标必须精确沿 +Z 高速迎面掠过: 期望=${dd.toFixed(4)}, 实测=${postAdv.toFixed(4)}`);
 
-  const streakAdv = modAdvance(streakZ0, getInstZ(highway.warpStreaksInstanced, 0), 180.0);
+  const streakAdv = modAdvance(streakZ0, getInstZ(highway.warpStreaksInstanced, 0), 280.0);
   assert.ok(Math.abs(streakAdv - dd * 1.45) < 1e-3, `氮气流光拉丝必须实时沿 +Z 穿梭运动: 期望=${(dd * 1.45).toFixed(4)}, 实测=${streakAdv.toFixed(4)}`);
 
-  const tailAdv = modAdvance(tailZ0, highway.tailLightsMesh.geometry.attributes.position.getZ(0), 240.0);
+  const tailAdv = modAdvance(tailZ0, highway.tailLightsMesh.geometry.attributes.position.getZ(0), 420.0);
   assert.ok(tailAdv > 0.5 && tailAdv < dd, `前车流光尾灯必须具备真实正向超车相对位移: 实测=${tailAdv.toFixed(4)}`);
 });
 

@@ -10,16 +10,18 @@ import { colorFromHsl, extractCoverTone, tuneCoverStop } from './coverTone.ts';
 import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
 const STREETLIGHT_SPACING = 18.0;
-const NUM_STREETLIGHTS = 20;
+const NUM_STREETLIGHTS = 34;
 const GUARD_POST_SPACING = 6.0;
-const NUM_GUARD_POSTS = 54;
+const NUM_GUARD_POSTS = 84;
 const TOWER_SPAN = 112.0;
-const NUM_TOWER_SPANS = 3;
+const NUM_TOWER_SPANS = 6;
 const NUM_WARP_STREAKS = 56;
+const WARP_CYCLE = 280.0;
 const NUM_TRAFFIC_CARS = 6;
+const TRAFFIC_CYCLE = 420.0;
 const BASE_FOV = 56;
-// 天穹封面明月锚定参数：置于 315m 高空天球，屏幕水平居中 (ndcX = 0)、夜空偏上黄金位 (ndcY = 0.46)、恒定视觉半径 (0.28)
-const MOON_DISTANCE = 315.0;
+// 天穹封面明月锚定参数：置于 760m 高空天球（位于全部 6 跨斜拉桥远端消隐带后方），屏幕水平居中 (ndcX = 0)、夜空偏上黄金位 (ndcY = 0.46)、恒定视觉半径 (0.28)
+const MOON_DISTANCE = 760.0;
 const MOON_NDC_Y = 0.46;
 const MOON_SCREEN_RADIUS = 0.28;
 
@@ -28,6 +30,32 @@ const POLE_BASE_X = 10.18;     // 灯杆中心距道路中线横向坐标 (m)，
 const LAMP_LOCAL_X = -2.56;    // 灯具光学中心相对灯杆根部的内悬挑偏移 -> 世界坐标 |x| = 7.62m
 const LAMP_HEIGHT_Y = 7.68;    // 灯具光学出光面离桥面高度 (m)
 const CONE_GROUND_LOCAL_X = -4.18; // 光锥轴线落地中心相对灯杆偏移 -> 世界坐标 |x| = 6.00m
+
+/**
+ * D3D11 HLSL / ANGLE 零 NaN 安全数学库：
+ * 1. sq(x) 替代全部 pow(x, 2.0)，避免 x <= 0 在 HLSL exp2(y * log2(x)) 下触发 NaN / -Inf；
+ * 2. safeNorm(v, fb) 拦截零长度向量归一化除零（如 L == -V 或薄三角面跨两侧插值法线归零）；
+ * 3. safePow / safePowPos 严格钳制底数为正，杜绝 dot(N, V) > 1.0 浮点微超界造成 1.0 - dot < 0 触发分数幂 NaN；
+ * 4. clampHdr(c) 钳制线性 HDR 输出峰值，防止 HalfFloatType (>65504) 溢出为 Inf 污染 UnrealBloomPass。
+ */
+const GLSL_SAFE_MATH = /* glsl */ `
+  float sq(float x) {
+    return x * x;
+  }
+  vec3 safeNorm(vec3 v, vec3 fallback) {
+    float len2 = dot(v, v);
+    return len2 > 1e-8 ? v * inversesqrt(len2) : fallback;
+  }
+  float safePow(float base, float expVal) {
+    return pow(clamp(base, 1e-5, 1.0), expVal);
+  }
+  float safePowPos(float base, float expVal) {
+    return pow(max(base, 1e-5), expVal);
+  }
+  vec3 clampHdr(vec3 c) {
+    return clamp(c, vec3(0.0), vec3(24.0));
+  }
+`;
 
 interface StreakSeed {
   x: number;
@@ -426,15 +454,15 @@ function buildSymmetricExtrudedProfile(
 }
 
 /**
- * 构建跨海大桥两侧重工复合防撞护栏长梁系统（覆盖 z ∈ [-315, +22]）：
+ * 构建跨海大桥两侧重工复合防撞护栏长梁系统（覆盖 z ∈ [-680, +45]，远超海天消隐雾带，彻底杜绝远端截断与整块蹦出）：
  * - Part 0: 钢筋混凝土新泽西防撞墙基座 + 桥面外侧厚翼缘悬臂边梁
  * - Part 1: 三维凹凸双波纹热浸镀锌防撞钢梁 (W-Beam Corrugated Guardrail)
  * - Part 2: 顶部高强圆管金属扶手横梁 + 中部副横管
  */
 function buildBridgeBarrierGeometry(): THREE.BufferGeometry {
-  const zMin = -315.0;
-  const zMax = 22.0;
-  const zSegs = 48;
+  const zMin = -680.0;
+  const zMax = 45.0;
+  const zSegs = 96;
   const specs: PartSpec[] = [];
 
   // 1. 新泽西混凝土防撞基座与桥面板厚悬臂翼缘（逆时针闭合剖面，法线朝外/朝上/朝车道内侧）
@@ -545,7 +573,7 @@ function buildPostReflectorGeometry(): THREE.BufferGeometry {
 
 export class HighwayScene implements MvScene {
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.PerspectiveCamera(BASE_FOV, 16 / 9, 0.1, 500);
+  readonly camera = new THREE.PerspectiveCamera(BASE_FOV, 16 / 9, 0.1, 1100);
   private rig: LyricRig;
 
   // 确定性距离积分表（0.05s 采样步长，确保单调递增且任意 seek 严格一致）
@@ -587,13 +615,13 @@ export class HighwayScene implements MvScene {
   readonly guardPostsInstanced: THREE.InstancedMesh;
   private guardPostMaterial: THREE.ShaderMaterial;
   readonly guardReflectorsInstanced: THREE.InstancedMesh;
-  private guardReflectorMaterial: THREE.MeshBasicMaterial;
+  private guardReflectorMaterial: THREE.ShaderMaterial;
 
   readonly tailLightsMesh: THREE.LineSegments;
   private tailPositions: Float32Array;
   private trafficSeeds: TrafficSeed[] = [];
   readonly warpStreaksInstanced: THREE.InstancedMesh;
-  private warpMaterial: THREE.MeshBasicMaterial;
+  private warpMaterial: THREE.ShaderMaterial;
   private streakSeeds: StreakSeed[] = [];
   private underglowMesh: THREE.Mesh;
   private headlightMaterial: THREE.ShaderMaterial;
@@ -614,6 +642,8 @@ export class HighwayScene implements MvScene {
     uKickSurge: { value: number };
     uSnareFlash: { value: number };
     uWarpDash: { value: number };
+    uWarpOpacity: { value: number };
+    uReflectorGain: { value: number };
     uIsMono: { value: number };
     uCamPos: { value: THREE.Vector3 };
     uMainColor: { value: THREE.Color };
@@ -706,6 +736,8 @@ export class HighwayScene implements MvScene {
       uKickSurge: { value: 0 },
       uSnareFlash: { value: 0 },
       uWarpDash: { value: 0 },
+      uWarpOpacity: { value: 0.1 },
+      uReflectorGain: { value: 0.8 },
       uIsMono: { value: isMono ? 1.0 : 0.0 },
       uCamPos: { value: new THREE.Vector3(0, 1.2, 0) },
       uMainColor: { value: this.colorMain },
@@ -787,12 +819,13 @@ export class HighwayScene implements MvScene {
         uniform float uKickSurge;
         uniform float uWarpDash;
         varying vec2 vUv;
+        ${GLSL_SAFE_MATH}
         void main() {
           float d = length(vUv - vec2(0.5)) * 2.0;
           float outerCorona = exp(-max(0.0, d - 0.56) * 3.8) * smoothstep(1.0, 0.35, d);
-          float rimRing = exp(-pow((d - 0.62) * 7.5, 2.0)) * 0.35;
+          float rimRing = exp(-sq((d - 0.62) * 7.5)) * 0.35;
           float glow = (outerCorona * 0.32 + rimRing) * (1.0 + 0.28 * uKickSurge + 0.25 * uWarpDash);
-          vec3 col = mix(uAccentColor, uBrightColor, 0.55) * glow;
+          vec3 col = clampHdr(mix(uAccentColor, uBrightColor, 0.55) * glow);
           gl_FragColor = vec4(col, clamp(glow, 0.0, 1.0));
         }
       `,
@@ -806,10 +839,10 @@ export class HighwayScene implements MvScene {
     this.moonHaloMesh.frustumCulled = false;
     this.scene.add(this.moonHaloMesh);
 
-    // 6. 桥面多车道湿润沥青公路（精确对齐三维路灯光锥落点 |x|=6.0m，区分地面真实椭圆受光池与湿润沥青镜面光柱）
+    // 6. 桥面多车道湿润沥青公路（延伸至 z ∈ [-715, +45] 海天消隐点，精确对齐三维路灯光锥落点 |x|=6.0m）
     const roadWidth = 19.6;
-    const roadLength = 340.0;
-    const roadGeo = new THREE.PlaneGeometry(roadWidth, roadLength, 24, 96);
+    const roadLength = 760.0;
+    const roadGeo = new THREE.PlaneGeometry(roadWidth, roadLength, 24, 160);
     this.roadMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: this.uniforms.uTime,
@@ -819,6 +852,7 @@ export class HighwayScene implements MvScene {
         uSnareFlash: this.uniforms.uSnareFlash,
         uWarpDash: this.uniforms.uWarpDash,
         uIsMono: this.uniforms.uIsMono,
+        uCamPos: this.uniforms.uCamPos,
         uMainColor: this.uniforms.uMainColor,
         uAccentColor: this.uniforms.uAccentColor,
         uBrightColor: this.uniforms.uBrightColor,
@@ -843,6 +877,7 @@ export class HighwayScene implements MvScene {
         uniform float uSnareFlash;
         uniform float uWarpDash;
         uniform float uIsMono;
+        uniform vec3 uCamPos;
         uniform vec3 uMainColor;
         uniform vec3 uAccentColor;
         uniform vec3 uBrightColor;
@@ -850,6 +885,7 @@ export class HighwayScene implements MvScene {
         uniform vec3 uFogColor;
         varying vec2 vUv;
         varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
 
         float hash12(vec2 p) {
           vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -860,11 +896,14 @@ export class HighwayScene implements MvScene {
         void main() {
           float roadZ = vWorldPos.z - uDistance;
           float xPos = vWorldPos.x;
+          float zRel = vWorldPos.z - uCamPos.z;
+          // 远景反走样衰减：在极远处平滑抑制高频闪烁噪波，自然化入海雾
+          float detailFade = exp(-sq(max(0.0, -zRel) * 0.0042));
 
           // 1) 高频沥青矿料微纹理、排水沟暗影与轮胎压痕
-          float grain = hash12(floor(vec2(xPos * 20.0, roadZ * 3.8)));
-          float microGrain = hash12(floor(vec2(xPos * 52.0, roadZ * 11.0)));
-          float tireTrack = exp(-pow((abs(xPos) - 2.4) * 0.88, 2.0)) * 0.38 + exp(-pow((abs(xPos) - 6.8) * 0.88, 2.0)) * 0.28;
+          float grain = mix(0.5, hash12(floor(vec2(xPos * 20.0, roadZ * 3.8))), detailFade);
+          float microGrain = mix(0.5, hash12(floor(vec2(xPos * 52.0, roadZ * 11.0))), detailFade);
+          float tireTrack = exp(-sq((abs(xPos) - 2.4) * 0.88)) * 0.38 + exp(-sq((abs(xPos) - 6.8) * 0.88)) * 0.28;
           float streakMicro = 0.5 + 0.5 * sin(roadZ * 1.4 + sin(xPos * 3.2));
           // 靠近混凝土防撞墙根部 (|x| -> 9.52m) 的真实路缘环境遮蔽暗边 (Curb AO)
           float curbAo = smoothstep(9.62, 8.85, abs(xPos));
@@ -873,15 +912,15 @@ export class HighwayScene implements MvScene {
           float dashCycle = fract(roadZ / 10.0);
           float dashMask = smoothstep(0.0, 0.04, dashCycle) * (1.0 - smoothstep(0.38, 0.42, dashCycle));
           float centerDouble = smoothstep(0.11, 0.04, abs(abs(xPos) - 0.22));
-          float laneDiv = (smoothstep(0.12, 0.04, abs(xPos - 4.6)) + smoothstep(0.12, 0.04, abs(xPos + 4.6))) * dashMask;
+          float laneDiv = (smoothstep(0.12, 0.04, abs(xPos - 4.6)) + smoothstep(0.12, 0.04, abs(xPos + 4.6))) * mix(0.4, dashMask, detailFade);
           float shoulderLine = smoothstep(0.17, 0.055, abs(abs(xPos) - 9.05));
           // 路肩高频反光猫眼道钉（每 6m 一颗）
           float studZ = fract((roadZ + 2.0) / 6.0) * 6.0 - 3.0;
-          float studs = exp(-(pow(abs(xPos) - 9.05, 2.0) * 42.0 + studZ * studZ * 9.5)) * 2.1;
+          float studs = exp(-(sq(abs(xPos) - 9.05) * 42.0 + studZ * studZ * 9.5)) * 2.1 * detailFade;
 
           // 3) 每 28m 一道跨海大桥横向梳齿钢伸缩缝
           float jointLocal = fract(roadZ / 28.0) * 28.0;
-          float expansionJoint = exp(-pow((jointLocal - 14.0) * 5.2, 2.0)) * (0.48 + 0.42 * uKickSurge);
+          float expansionJoint = exp(-sq((jointLocal - 14.0) * 5.2)) * (0.48 + 0.42 * uKickSurge) * detailFade;
 
           // 4) 与头顶三维路灯锥形光束（间距 18m，落地中心 |x| = 6.0m）100% 严丝合缝对齐的桥面真实受光光池
           float lampCellZ = mod(roadZ - 14.0, 18.0);
@@ -893,7 +932,7 @@ export class HighwayScene implements MvScene {
           float coneCorePool = exp(-coneDist2 * 3.1);
           float coneWidePool = exp(-coneDist2 * 0.92);
           // 湿滑沥青朝向镜头的纵向拉长高光柱（Anisotropic Wet Specular Streak）
-          float specStreak = exp(-pow((abs(xPos) - 6.25) * 0.52, 2.0)) * exp(-pow(lampCellZ * 0.16, 2.0));
+          float specStreak = exp(-sq((abs(xPos) - 6.25) * 0.52)) * exp(-sq(lampCellZ * 0.16));
 
           // 5) 雨夜桥面水洼分布与天穹封面明月清辉倒影（压低中心大面积平涂紫光，凸显两侧路灯光池对比度）
           float puddleWave = sin(xPos * 0.55 + sin(roadZ * 0.09)) * cos(roadZ * 0.11 - xPos * 0.25);
@@ -919,9 +958,10 @@ export class HighwayScene implements MvScene {
           vec3 col = (asphaltLit * (1.0 - 0.22 * wetness) + lampGroundDiffuse + lampWetSpec) * (0.35 + 0.65 * curbAo)
                    + centerCol + whiteMarks + studCol + jointCol + moonRoadReflCol;
 
-          float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
-          float fogFactor = 1.0 - exp(-pow(fogDist * 0.0056, 2.0));
-          col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          // 深度雾与远端天际消隐带（在抵达 z = -715m 网格终端前已 100% 化为纯背景夜雾色，零硬切边）
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0052)) * smoothstep(-680.0, -490.0, zRel);
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -929,16 +969,18 @@ export class HighwayScene implements MvScene {
     });
     this.roadMesh = new THREE.Mesh(roadGeo, this.roadMaterial);
     this.roadMesh.rotation.x = -Math.PI / 2;
-    this.roadMesh.position.set(0, 0, -135);
+    this.roadMesh.position.set(0, 0, -335);
+    this.roadMesh.frustumCulled = false;
     this.scene.add(this.roadMesh);
 
-    // 7. 辽阔大洋水面 (Ocean Water beneath Bridge at Y = -6.5m)
-    const oceanGeo = new THREE.PlaneGeometry(420, 440, 24, 24);
+    // 7. 辽阔大洋水面 (Ocean Water beneath Bridge at Y = -6.5m，无边延伸至远方海天交界)
+    const oceanGeo = new THREE.PlaneGeometry(1600, 1100, 32, 32);
     this.oceanMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: this.uniforms.uTime,
         uDistance: this.uniforms.uDistance,
         uIsMono: this.uniforms.uIsMono,
+        uCamPos: this.uniforms.uCamPos,
         uMainColor: this.uniforms.uMainColor,
         uAccentColor: this.uniforms.uAccentColor,
         uBrightColor: this.uniforms.uBrightColor,
@@ -956,11 +998,13 @@ export class HighwayScene implements MvScene {
         uniform float uTime;
         uniform float uDistance;
         uniform float uIsMono;
+        uniform vec3 uCamPos;
         uniform vec3 uMainColor;
         uniform vec3 uAccentColor;
         uniform vec3 uBrightColor;
         uniform vec3 uFogColor;
         varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
 
         void main() {
           float seaZ = vWorldPos.z - uDistance * 0.95;
@@ -973,39 +1017,176 @@ export class HighwayScene implements MvScene {
           vec3 spec = mix(uAccentColor, uBrightColor, 0.42) * (moonPath * (0.32 + 0.52 * crest) + 0.06 * crest);
           vec3 col = baseOcean + spec;
 
-          float fogDist = length(vWorldPos);
-          float fogFactor = 1.0 - exp(-pow(fogDist * 0.0052, 2.0));
-          col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          float fogDist = length(vWorldPos - uCamPos);
+          float edgeFade = smoothstep(-940.0, -640.0, vWorldPos.z - uCamPos.z) * smoothstep(760.0, 520.0, abs(vWorldPos.x));
+          float fogKeep = exp(-sq(fogDist * 0.0046)) * edgeFade;
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
           gl_FragColor = vec4(col, 1.0);
         }
       `,
     });
     this.oceanMesh = new THREE.Mesh(oceanGeo, this.oceanMaterial);
     this.oceanMesh.rotation.x = -Math.PI / 2;
-    this.oceanMesh.position.set(0, -6.5, -165);
+    this.oceanMesh.position.set(0, -6.5, -450);
+    this.oceanMesh.frustumCulled = false;
     this.scene.add(this.oceanMesh);
 
-    // 8. 跨海斜拉桥循环主塔与放射发光钢索
-    const towerMat = new THREE.MeshStandardMaterial({
-      color: isMono ? 0x2a2a2a : 0x1e2534,
-      emissive: this.colorDeep,
-      emissiveIntensity: 0.9,
-      roughness: 0.45,
-      metalness: 0.65,
-    });
-    const neonCableMat = new THREE.LineBasicMaterial({
-      color: this.colorAccent,
+    // 8. 6 跨连绵跨海斜拉桥主塔与放射发光钢索（远端 z ∈ [-616, -450] 位于明月下沿以下的海天迷雾中平滑渐显，100% 根除整块突现）
+    const towerBaseColor = new THREE.Color(isMono ? 0x262626 : 0x1b2231);
+    const towerMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uKickSurge: this.uniforms.uKickSurge,
+        uIsMono: this.uniforms.uIsMono,
+        uCamPos: this.uniforms.uCamPos,
+        uBaseColor: { value: towerBaseColor },
+        uDeepColor: { value: this.colorDeep },
+        uMainColor: this.uniforms.uMainColor,
+        uAccentColor: this.uniforms.uAccentColor,
+        uBrightColor: this.uniforms.uBrightColor,
+        uLampColor: this.uniforms.uLampColor,
+        uFogColor: this.uniforms.uFogColor,
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        varying vec3 vWorldNormal;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          vWorldNormal = safeNorm(mat3(modelMatrix) * normal, vec3(0.0, 1.0, 0.0));
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uKickSurge;
+        uniform float uIsMono;
+        uniform vec3 uCamPos;
+        uniform vec3 uBaseColor;
+        uniform vec3 uDeepColor;
+        uniform vec3 uMainColor;
+        uniform vec3 uAccentColor;
+        uniform vec3 uBrightColor;
+        uniform vec3 uLampColor;
+        uniform vec3 uFogColor;
+        varying vec3 vWorldPos;
+        varying vec3 vWorldNormal;
+        ${GLSL_SAFE_MATH}
+
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          // 在海天消隐雾带 (-590m -> -450m) 从完全透明平滑浮现，杜绝遮挡远空月晕产生突兀剪影跳变
+          float horizonAlpha = smoothstep(-590.0, -450.0, zRel);
+          if (horizonAlpha <= 0.002) discard;
+
+          vec3 N = safeNorm(vWorldNormal, vec3(0.0, 1.0, 0.0));
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 0.0, 1.0));
+          vec3 moonDir = safeNorm(vec3(0.0, 0.52, -0.85), vec3(0.0, 1.0, 0.0));
+          vec3 fillDir = safeNorm(vec3(0.36, 0.48, 0.80), vec3(0.0, 1.0, 0.0));
+
+          float moonDiff = max(0.0, dot(N, moonDir));
+          float fillDiff = max(0.0, dot(N, fillDir));
+          float fresnel = safePow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+          vec3 H = safeNorm(fillDir + V, N);
+          float spec = safePow(max(0.0, dot(N, H)), 28.0) * 0.45;
+          // 塔柱下段受桥面路灯光廊向上漫射暖光映衬
+          float deckBounce = exp(-max(0.0, vWorldPos.y - 1.0) * 0.095);
+
+          vec3 lit = uBaseColor * (0.42 + 0.72 * fillDiff + 0.55 * moonDiff)
+                   + uDeepColor * 0.85
+                   + uAccentColor * (0.26 * moonDiff + 0.22 * fresnel)
+                   + uBrightColor * spec
+                   + uLampColor * deckBounce * (0.18 + 0.08 * uKickSurge);
+
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0044)) * smoothstep(-580.0, -430.0, zRel);
+          vec3 col = clampHdr(mix(uFogColor, lit, clamp(fogKeep, 0.0, 1.0)));
+          gl_FragColor = vec4(col, horizonAlpha);
+        }
+      `,
       transparent: true,
-      opacity: 0.88,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      depthTest: true,
+      depthWrite: true,
     });
-    const towerStripMat = new THREE.MeshBasicMaterial({
-      color: this.colorBright,
+
+    const neonCableMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uKickSurge: this.uniforms.uKickSurge,
+        uWarpDash: this.uniforms.uWarpDash,
+        uCamPos: this.uniforms.uCamPos,
+        uAccentColor: this.uniforms.uAccentColor,
+        uBrightColor: this.uniforms.uBrightColor,
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uKickSurge;
+        uniform float uWarpDash;
+        uniform vec3 uCamPos;
+        uniform vec3 uAccentColor;
+        uniform vec3 uBrightColor;
+        varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          float spawnFade = smoothstep(-580.0, -420.0, zRel);
+          if (spawnFade <= 0.001) discard;
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogAtten = exp(-sq(fogDist * 0.0046)) * spawnFade;
+          float heightTint = clamp(vWorldPos.y / 42.0, 0.0, 1.0);
+          vec3 col = mix(uAccentColor, uBrightColor, 0.32 * heightTint) * (0.82 + 0.24 * uKickSurge + 0.16 * uWarpDash) * fogAtten;
+          gl_FragColor = vec4(clampHdr(col), 1.0);
+        }
+      `,
       transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending,
+      depthTest: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+
+    const towerStripMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uKickSurge: this.uniforms.uKickSurge,
+        uWarpDash: this.uniforms.uWarpDash,
+        uCamPos: this.uniforms.uCamPos,
+        uBrightColor: this.uniforms.uBrightColor,
+        uAccentColor: this.uniforms.uAccentColor,
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uKickSurge;
+        uniform float uWarpDash;
+        uniform vec3 uCamPos;
+        uniform vec3 uBrightColor;
+        uniform vec3 uAccentColor;
+        varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          float spawnFade = smoothstep(-580.0, -425.0, zRel);
+          if (spawnFade <= 0.001) discard;
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogAtten = exp(-sq(fogDist * 0.0046)) * spawnFade;
+          vec3 col = mix(uBrightColor, uAccentColor, 0.25) * (0.88 + 0.28 * uKickSurge + 0.18 * uWarpDash) * fogAtten;
+          gl_FragColor = vec4(clampHdr(col), 1.0);
+        }
+      `,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
 
     const towerPillarGeo = new THREE.CylinderGeometry(0.75, 1.15, 48, 8);
@@ -1034,32 +1215,39 @@ export class HighwayScene implements MvScene {
       const leftPillar = new THREE.Mesh(towerPillarGeo, towerMat);
       leftPillar.position.set(-10.2, 20, 0);
       leftPillar.rotation.z = -0.11;
+      leftPillar.renderOrder = -1;
       unit.add(leftPillar);
 
       const rightPillar = new THREE.Mesh(towerPillarGeo, towerMat);
       rightPillar.position.set(10.2, 20, 0);
       rightPillar.rotation.z = 0.11;
+      rightPillar.renderOrder = -1;
       unit.add(rightPillar);
 
       const leftStrip = new THREE.Mesh(stripGeo, towerStripMat);
       leftStrip.position.set(-9.45, 20, 0.68);
       leftStrip.rotation.z = -0.11;
+      leftStrip.renderOrder = 1;
       unit.add(leftStrip);
 
       const rightStrip = new THREE.Mesh(stripGeo, towerStripMat);
       rightStrip.position.set(9.45, 20, 0.68);
       rightStrip.rotation.z = 0.11;
+      rightStrip.renderOrder = 1;
       unit.add(rightStrip);
 
       const upperBeam = new THREE.Mesh(upperBeamGeo, towerMat);
       upperBeam.position.set(0, 35.5, 0);
+      upperBeam.renderOrder = -1;
       unit.add(upperBeam);
 
       const midBeam = new THREE.Mesh(midBeamGeo, towerMat);
       midBeam.position.set(0, 21.0, 0);
+      midBeam.renderOrder = -1;
       unit.add(midBeam);
 
       const cables = new THREE.LineSegments(cableGeo, neonCableMat);
+      cables.renderOrder = 1;
       unit.add(cables);
 
       this.towerUnits.push(unit);
@@ -1088,11 +1276,12 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
         void main() {
           vPart = aPart;
           vec4 wp = modelMatrix * vec4(position, 1.0);
           vWorldPos = wp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vWorldNormal = safeNorm(mat3(modelMatrix) * normal, vec3(0.0, 1.0, 0.0));
           gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
@@ -1111,6 +1300,7 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
 
         float hash12(vec2 p) {
           vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -1119,21 +1309,22 @@ export class HighwayScene implements MvScene {
         }
 
         void main() {
-          vec3 N = normalize(vWorldNormal);
-          vec3 V = normalize(uCamPos - vWorldPos);
+          vec3 N = safeNorm(vWorldNormal, vec3(0.0, 1.0, 0.0));
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 0.0, 1.0));
           float roadZ = vWorldPos.z - uDistance;
+          float zRel = vWorldPos.z - uCamPos.z;
 
           // 每 6.0m 对齐工字钢立柱的伸缩沉降缝与护栏板拼接缝
           float postMod = mod(roadZ - 12.0 + 3.0, 6.0) - 3.0;
-          float seamGroove = 1.0 - 0.62 * exp(-pow(postMod * 18.0, 2.0));
+          float seamGroove = 1.0 - 0.62 * exp(-sq(postMod * 18.0));
 
           // 最近一盏头顶路灯 (|x| = 7.62, y = 7.68, 周期 18m) 对护栏表面的三维实时点光照明与流动金属高光
           float lampRelZ = mod(roadZ - 14.0 + 9.0, 18.0) - 9.0;
           float sideSign = vWorldPos.x >= 0.0 ? 1.0 : -1.0;
           vec3 lampOffset = vec3(sideSign * 7.62 - vWorldPos.x, 7.68 - vWorldPos.y, -lampRelZ);
           float lampDist = length(lampOffset);
-          vec3 L = lampOffset / max(0.001, lampDist);
-          vec3 H = normalize(L + V);
+          vec3 L = safeNorm(lampOffset, vec3(0.0, 1.0, 0.0));
+          vec3 H = safeNorm(L + V, N);
           float atten = 1.0 / (1.0 + 0.022 * lampDist * lampDist);
           float ndl = max(0.0, dot(N, L));
 
@@ -1141,15 +1332,15 @@ export class HighwayScene implements MvScene {
           vec3 headPos = vec3(uCamPos.x, 0.82, uCamPos.z + 1.2);
           vec3 headVec = headPos - vWorldPos;
           float headDist = length(headVec);
-          vec3 Lh = headVec / max(0.001, headDist);
-          float forwardMask = smoothstep(2.0, -4.0, vWorldPos.z - uCamPos.z);
+          vec3 Lh = safeNorm(headVec, vec3(0.0, 0.0, 1.0));
+          float forwardMask = smoothstep(2.0, -4.0, zRel);
           float headAtten = forwardMask / (1.0 + 0.012 * headDist * headDist);
           float ndlh = max(0.0, dot(N, Lh));
 
           // 月光与天光边缘菲涅尔轮廓
-          vec3 moonL = normalize(vec3(-sideSign * 0.35, 0.78, -0.52));
+          vec3 moonL = safeNorm(vec3(-sideSign * 0.35, 0.78, -0.52), vec3(0.0, 1.0, 0.0));
           float moonDiff = max(0.0, dot(N, moonL));
-          float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
+          float fresnel = safePow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
 
           vec3 col;
           float lampPulse = 1.0 + 0.25 * uKickSurge + 0.20 * uWarpDash;
@@ -1168,7 +1359,7 @@ export class HighwayScene implements MvScene {
             vec3 hazardCol = mix(concBase * 0.25, hazardBright, chevron);
 
             float topEdge = smoothstep(0.49, 0.535, vWorldPos.y) * max(0.0, N.y);
-            float specConc = pow(max(0.0, dot(N, H)), 24.0) * (0.28 + 0.35 * topEdge);
+            float specConc = safePow(max(0.0, dot(N, H)), 24.0) * (0.28 + 0.35 * topEdge);
             vec3 litConc = concBase * (0.22 + 0.38 * moonDiff + 0.25 * max(0.0, N.y))
                          + uLampColor * atten * (0.95 * ndl + specConc) * lampPulse
                          + uLampColor * headAtten * (0.62 * ndlh)
@@ -1181,21 +1372,21 @@ export class HighwayScene implements MvScene {
             vec3 steelTint = mix(vec3(0.065, 0.078, 0.105), vec3(0.082), uIsMono) * brushed;
 
             // 每 6m 立柱拼接处的钢板搭接黑缝与双排镀铬铆钉高光颗粒
-            float lapSeam = 1.0 - 0.78 * exp(-pow(postMod * 26.0, 2.0));
-            float boltRow = exp(-pow(abs(vWorldPos.y - 0.76) * 34.0, 2.0)) + exp(-pow(abs(vWorldPos.y - 0.92) * 34.0, 2.0));
-            float boltBump = exp(-pow((abs(postMod) - 0.12) * 36.0, 2.0)) * boltRow * (1.0 - isTopTube);
+            float lapSeam = 1.0 - 0.78 * exp(-sq(postMod * 26.0));
+            float boltRow = exp(-sq(abs(vWorldPos.y - 0.76) * 34.0)) + exp(-sq(abs(vWorldPos.y - 0.92) * 34.0));
+            float boltBump = exp(-sq((abs(postMod) - 0.12) * 36.0)) * boltRow * (1.0 - isTopTube);
 
             // 强烈区分朝上折面（映天光与路灯）与朝下背阴面（深邃暗钢色）+ 中央深 V 凹槽机械 AO
             float skyFacing = clamp(0.5 + 0.5 * N.y, 0.0, 1.0);
             float grooveAo = isTopTube > 0.5 ? 1.0 : (0.26 + 0.74 * smoothstep(0.008, 0.075, abs(vWorldPos.y - 0.84)));
 
             // 高锐度各向异性拉丝金属高光：头顶路灯扫过时在凹凸波形脊线与圆管上拉出璀璨银白/同色流光带
-            vec3 Hh = normalize(Lh + V);
+            vec3 Hh = safeNorm(Lh + V, N);
             float shininess = mix(42.0, 72.0, isTopTube);
-            float anisoSpec = pow(max(0.0, dot(N, H)), shininess) * mix(1.95, 2.65, isTopTube)
-                            + pow(max(0.0, 1.0 - abs(N.y - H.y)), 18.0) * max(0.0, dot(N, L)) * 0.42;
-            float specHead = pow(max(0.0, dot(N, Hh)), shininess * 0.75) * 1.55;
-            float specSky = pow(skyFacing, 3.2) * (0.14 + 0.12 * isTopTube);
+            float anisoSpec = safePow(max(0.0, dot(N, H)), shininess) * mix(1.95, 2.65, isTopTube)
+                            + safePow(clamp(1.0 - abs(N.y - H.y), 0.0, 1.0), 18.0) * max(0.0, dot(N, L)) * 0.42;
+            float specHead = safePow(max(0.0, dot(N, Hh)), shininess * 0.75) * 1.55;
+            float specSky = safePow(skyFacing, 3.2) * (0.14 + 0.12 * isTopTube);
 
             vec3 specularTint = mix(uLampColor, vec3(1.0), 0.42);
             col = steelTint * (0.16 + 0.42 * moonDiff + 0.35 * skyFacing) * grooveAo
@@ -1207,9 +1398,9 @@ export class HighwayScene implements MvScene {
             col *= mix(lapSeam, seamGroove, isTopTube);
           }
 
-          float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
-          float fogFactor = 1.0 - exp(-pow(fogDist * 0.0056, 2.0));
-          col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0052)) * smoothstep(-645.0, -475.0, zRel);
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -1237,11 +1428,12 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
         void main() {
           vPart = aPart;
           vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
           vWorldPos = wp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+          vWorldNormal = safeNorm(mat3(modelMatrix) * mat3(instanceMatrix) * normal, vec3(0.0, 1.0, 0.0));
           gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
@@ -1258,33 +1450,37 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
 
         void main() {
-          vec3 N = normalize(vWorldNormal);
-          vec3 V = normalize(uCamPos - vWorldPos);
+          float zRel = vWorldPos.z - uCamPos.z;
+          if (zRel < -468.0) discard;
+
+          vec3 N = safeNorm(vWorldNormal, vec3(0.0, 1.0, 0.0));
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 0.0, 1.0));
           float roadZ = vWorldPos.z - uDistance;
           float sideSign = vWorldPos.x >= 0.0 ? 1.0 : -1.0;
 
           float lampRelZ = mod(roadZ - 14.0 + 9.0, 18.0) - 9.0;
           vec3 lampOffset = vec3(sideSign * 7.62 - vWorldPos.x, 7.68 - vWorldPos.y, -lampRelZ);
           float lampDist = length(lampOffset);
-          vec3 L = lampOffset / max(0.001, lampDist);
-          vec3 H = normalize(L + V);
+          vec3 L = safeNorm(lampOffset, vec3(0.0, 1.0, 0.0));
+          vec3 H = safeNorm(L + V, N);
           float atten = 1.0 / (1.0 + 0.022 * lampDist * lampDist);
 
-          vec3 moonL = normalize(vec3(-sideSign * 0.3, 0.8, -0.5));
+          vec3 moonL = safeNorm(vec3(-sideSign * 0.3, 0.8, -0.5), vec3(0.0, 1.0, 0.0));
           float moonDiff = max(0.0, dot(N, moonL));
-          float spec = pow(max(0.0, dot(N, H)), 48.0) * 1.95;
-          float rim = pow(1.0 - max(0.0, dot(N, V)), 3.0);
+          float spec = safePow(max(0.0, dot(N, H)), 48.0) * 1.95;
+          float rim = safePow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
 
           vec3 steelBase = mix(vec3(0.055, 0.068, 0.092), vec3(0.068), uIsMono) * (1.0 + 0.28 * vPart);
           vec3 col = steelBase * (0.22 + 0.55 * moonDiff)
                    + mix(uLampColor, vec3(1.0), 0.35) * atten * (0.85 * max(0.0, dot(N, L)) + spec) * (1.0 + 0.25 * uKickSurge)
                    + mix(uMainColor, uBrightColor, 0.55) * rim * 0.24;
 
-          float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
-          float fogFactor = 1.0 - exp(-pow(fogDist * 0.0056, 2.0));
-          col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0054)) * smoothstep(-465.0, -340.0, zRel);
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -1293,14 +1489,42 @@ export class HighwayScene implements MvScene {
     this.guardPostsInstanced.frustumCulled = false;
     this.scene.add(this.guardPostsInstanced);
 
-    // 工字钢立柱迎车侧镶嵌的精致高强反光轮廓标（小巧棱镜，高速清脆掠过）
+    // 工字钢立柱迎车侧镶嵌的精致高强反光轮廓标（自定义远端零突现发光材质，能量严格在迷雾中归零）
     const reflectorGeo = buildPostReflectorGeometry();
-    this.guardReflectorMaterial = new THREE.MeshBasicMaterial({
-      color: this.colorLampWarm.clone().lerp(this.colorAccent, 0.45),
+    const reflectorTint = this.colorLampWarm.clone().lerp(this.colorAccent, 0.45);
+    this.guardReflectorMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uReflectorGain: this.uniforms.uReflectorGain,
+        uCamPos: this.uniforms.uCamPos,
+        uColor: { value: reflectorTint },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uReflectorGain;
+        uniform vec3 uCamPos;
+        uniform vec3 uColor;
+        varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          float spawnFade = smoothstep(-450.0, -310.0, zRel);
+          if (spawnFade <= 0.001) discard;
+          float camDist = length(vWorldPos - uCamPos);
+          float energy = uReflectorGain * exp(-sq(camDist * 0.0068)) * spawnFade;
+          gl_FragColor = vec4(clampHdr(uColor * energy), 1.0);
+        }
+      `,
       transparent: true,
-      opacity: 0.92,
-      blending: THREE.AdditiveBlending,
+      depthTest: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
     this.guardReflectorsInstanced = new THREE.InstancedMesh(reflectorGeo, this.guardReflectorMaterial, NUM_GUARD_POSTS * 2);
     this.guardReflectorsInstanced.frustumCulled = false;
@@ -1325,12 +1549,13 @@ export class HighwayScene implements MvScene {
         varying vec3 vLocalPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
         void main() {
           vPart = aPart;
           vLocalPos = position;
           vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
           vWorldPos = wp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+          vWorldNormal = safeNorm(mat3(modelMatrix) * mat3(instanceMatrix) * normal, vec3(0.0, 1.0, 0.0));
           gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
@@ -1347,30 +1572,34 @@ export class HighwayScene implements MvScene {
         varying vec3 vLocalPos;
         varying vec3 vWorldNormal;
         varying float vPart;
+        ${GLSL_SAFE_MATH}
 
         void main() {
-          vec3 N = normalize(vWorldNormal);
-          vec3 V = normalize(uCamPos - vWorldPos);
+          float zRel = vWorldPos.z - uCamPos.z;
+          if (zRel < -560.0) discard;
+
+          vec3 N = safeNorm(vWorldNormal, vec3(0.0, 1.0, 0.0));
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 0.0, 1.0));
           float sideSign = vWorldPos.x >= 0.0 ? 1.0 : -1.0;
 
-          // 1) 自家 LED 灯头（局部 (-2.56, 7.62, 0)）对挑臂、斜撑拉杆与灯杆内侧上半截的真实近场强照明与圆柱金属高光
+          // 1) 自家 LED 灯头（局部 (-2.56, 7.56, 0)）对挑臂、斜撑拉杆与灯杆内侧上半截的真实近场强照明与圆柱金属高光
           vec3 ownLampLocal = vec3(-2.56, 7.56, 0.0);
           vec3 toLampLocal = ownLampLocal - vLocalPos;
           float dOwn = length(toLampLocal);
-          vec3 Lown = normalize(vec3(-sideSign * toLampLocal.x, toLampLocal.y, -sideSign * toLampLocal.z));
-          vec3 Hown = normalize(Lown + V);
+          vec3 Lown = safeNorm(vec3(-sideSign * toLampLocal.x, toLampLocal.y, -sideSign * toLampLocal.z), vec3(0.0, 1.0, 0.0));
+          vec3 Hown = safeNorm(Lown + V, N);
           float ownAtten = 1.0 / (0.28 + 0.32 * dOwn * dOwn);
           float ownDiff = max(0.0, dot(N, Lown));
-          float ownSpec = pow(max(0.0, dot(N, Hown)), 48.0) * 2.1;
+          float ownSpec = safePow(max(0.0, dot(N, Hown)), 48.0) * 2.1;
 
-          // 2) 高对比深枪灰钛金属烤漆 + 圆柱侧面锐利月光/天光高光脊线（告别平涂浅灰）
-          vec3 moonL = normalize(vec3(-sideSign * 0.52, 0.68, -0.52));
-          vec3 rimLightDir = normalize(vec3(-sideSign * 0.72, 0.22, 0.65));
+          // 2) 高对比深枪灰钛金属烤漆 + 圆柱侧面锐利月光/天光高光脊线
+          vec3 moonL = safeNorm(vec3(-sideSign * 0.52, 0.68, -0.52), vec3(0.0, 1.0, 0.0));
+          vec3 rimLightDir = safeNorm(vec3(-sideSign * 0.72, 0.22, 0.65), vec3(0.0, 1.0, 0.0));
           float moonDiff = max(0.0, dot(N, moonL));
           float innerDiff = max(0.0, dot(N, rimLightDir));
-          float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.2);
-          float cylinderSpec = pow(max(0.0, dot(N, normalize(rimLightDir + V))), 42.0);
-          float moonSpec = pow(max(0.0, dot(N, normalize(moonL + V))), 32.0);
+          float fresnel = safePow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.2);
+          float cylinderSpec = safePow(max(0.0, dot(N, safeNorm(rimLightDir + V, N))), 42.0);
+          float moonSpec = safePow(max(0.0, dot(N, safeNorm(moonL + V, N))), 32.0);
 
           vec3 poleAlbedo = mix(vec3(0.058, 0.070, 0.098), vec3(0.072), uIsMono);
           vec3 hoodAlbedo = mix(vec3(0.036, 0.042, 0.062), vec3(0.045), uIsMono);
@@ -1383,9 +1612,9 @@ export class HighwayScene implements MvScene {
                    + mix(uBrightColor, vec3(0.96), 0.5) * (0.48 * cylinderSpec + 0.28 * moonSpec + 0.22 * fresnel * (0.35 + 0.65 * innerDiff))
                    + mix(uAccentColor, uLampColor, 0.4) * groundBounce * 0.14;
 
-          float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
-          float fogFactor = 1.0 - exp(-pow(fogDist * 0.0056, 2.0));
-          col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0052)) * smoothstep(-555.0, -420.0, zRel);
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -1394,12 +1623,13 @@ export class HighwayScene implements MvScene {
     this.streetlightsInstanced.frustumCulled = false;
     this.scene.add(this.streetlightsInstanced);
 
-    // 下嵌式多核光学透镜 LED 发光模组（取代原先扁平纯色大方块）
+    // 下嵌式多核光学透镜 LED 发光模组（远端平滑融入海雾色，绝不在地平线留下黑点或跳变亮点）
     const lampLensGeo = buildLuminaireLensGeometry();
     this.lampHeadMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uKickSurge: this.uniforms.uKickSurge,
         uWarpDash: this.uniforms.uWarpDash,
+        uCamPos: this.uniforms.uCamPos,
         uLampColor: this.uniforms.uLampColor,
         uAccentColor: this.uniforms.uAccentColor,
         uFogColor: this.uniforms.uFogColor,
@@ -1419,14 +1649,19 @@ export class HighwayScene implements MvScene {
       fragmentShader: /* glsl */ `
         uniform float uKickSurge;
         uniform float uWarpDash;
+        uniform vec3 uCamPos;
         uniform vec3 uLampColor;
         uniform vec3 uAccentColor;
         uniform vec3 uFogColor;
         varying vec2 vUv;
         varying vec3 vWorldPos;
         varying vec3 vLocalNormal;
+        ${GLSL_SAFE_MATH}
 
         void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          if (zRel < -560.0) discard;
+
           // 模拟 8×3 颗高功率光学透镜 LED 灯珠矩阵与柔光漫射玻璃罩
           vec2 cell = fract(vUv * vec2(8.0, 3.0)) - 0.5;
           float emitter = exp(-dot(cell, cell) * 14.0);
@@ -1441,9 +1676,10 @@ export class HighwayScene implements MvScene {
           vec3 coreWhite = mix(uLampColor, vec3(1.0), 0.55);
           vec3 col = mix(uAccentColor, coreWhite, clamp(0.45 + 0.55 * bezelMask * (0.6 + 0.4 * emitter), 0.0, 1.0)) * intensity;
 
-          float fogDist = length(vWorldPos - vec3(0.0, 1.5, 0.0));
-          float fogFactor = exp(-pow(fogDist * 0.0054, 2.0));
-          gl_FragColor = vec4(col * fogFactor, 1.0);
+          float fogDist = length(vWorldPos - uCamPos);
+          float fogKeep = exp(-sq(fogDist * 0.0052)) * smoothstep(-555.0, -415.0, zRel);
+          col = clampHdr(mix(uFogColor, col, clamp(fogKeep, 0.0, 1.0)));
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
     });
@@ -1469,12 +1705,13 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vShell;
+        ${GLSL_SAFE_MATH}
         void main() {
           vUv = uv;
           vShell = aPart;
           vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
           vWorldPos = wp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+          vWorldNormal = safeNorm(mat3(modelMatrix) * mat3(instanceMatrix) * normal, vec3(0.0, 1.0, 0.0));
           gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
@@ -1490,19 +1727,24 @@ export class HighwayScene implements MvScene {
         varying vec3 vWorldPos;
         varying vec3 vWorldNormal;
         varying float vShell;
+        ${GLSL_SAFE_MATH}
 
         void main() {
-          vec3 V = normalize(uCamPos - vWorldPos);
-          vec3 N = normalize(vWorldNormal);
+          float zRel = vWorldPos.z - uCamPos.z;
+          float spawnFade = smoothstep(-510.0, -340.0, zRel);
+          if (spawnFade <= 0.001) discard;
 
-          // 1) 视角菲涅尔软边缘积分：圆锥两侧切线边缘 ndv -> 0，100% 消除多边形硬折边
-          float ndv = abs(dot(N, V));
-          float edgeSoft = pow(ndv, mix(1.50, 1.95, vShell));
+          vec3 V = safeNorm(uCamPos - vWorldPos, vec3(0.0, 0.0, 1.0));
+          vec3 N = safeNorm(vWorldNormal, vec3(0.0, 1.0, 0.0));
+
+          // 1) 视角菲涅尔软边缘积分：圆锥两侧切线边缘 ndv -> 0，100% 消除多边形硬折边且零 NaN
+          float ndv = clamp(abs(dot(N, V)), 0.0, 1.0);
+          float edgeSoft = safePow(ndv, mix(1.50, 1.95, vShell));
 
           // 2) 纵向配光衰减：vUv.y = 1 紧贴灯头亮核，向下斜射延伸为清晰修长的锥形丁达尔光束，触地前柔和汇入地面椭圆光池
           float topJoin = smoothstep(1.0, 0.965, vUv.y);
-          float heightFalloff = mix(0.26, 1.0, pow(vUv.y, 1.25));
-          float sourceGlow = 0.42 * exp(-pow((1.0 - vUv.y) * 8.5, 2.0));
+          float heightFalloff = mix(0.26, 1.0, safePow(vUv.y, 1.25));
+          float sourceGlow = 0.42 * exp(-sq((1.0 - vUv.y) * 8.5));
           float groundBlend = smoothstep(0.0, 0.075, vUv.y);
 
           // 3) 跨海夜雾丁达尔光缕微纹理（随圆锥母线角度与海风细微流动）
@@ -1510,10 +1752,10 @@ export class HighwayScene implements MvScene {
           float rays = 0.86 + 0.14 * sin(angle * 7.0 + vUv.y * 2.5) * cos(angle * 4.0 - uTime * 0.85);
           float seaMist = 0.90 + 0.10 * sin((vWorldPos.z - uDistance) * 0.16 + vWorldPos.y * 0.6 + uTime * 1.1);
 
-          // 4) 远景雾化与贴近镜头防刺眼淡出（避免斜向机位远端多盏光锥视线重叠过曝，近中景 6~85m 保持饱满清晰）
+          // 4) 远景雾化与贴近镜头防刺眼淡出
           float camDist = length(vWorldPos - uCamPos);
           float nearFade = smoothstep(1.8, 6.2, camDist);
-          float farFade = exp(-pow(camDist * 0.0085, 2.0));
+          float farFade = exp(-sq(camDist * 0.0085)) * spawnFade;
 
           // 注意：Three.js AdditiveBlending 为 srcRGB * srcAlpha + dstRGB，alpha 通道置 1.0 避免二次平方衰减！
           float baseGain = mix(0.088, 0.135, vShell);
@@ -1522,7 +1764,7 @@ export class HighwayScene implements MvScene {
           energy *= (1.0 + 0.28 * uKickSurge + 0.16 * uWarpDash);
 
           vec3 beamTint = mix(mix(uAccentColor, uLampColor, 0.65), uLampColor, 0.45 * vUv.y + 0.48 * vShell);
-          gl_FragColor = vec4(beamTint * energy, 1.0);
+          gl_FragColor = vec4(clampHdr(beamTint * energy), 1.0);
         }
       `,
       transparent: true,
@@ -1536,13 +1778,13 @@ export class HighwayScene implements MvScene {
     this.lampConesInstanced.renderOrder = 2;
     this.scene.add(this.lampConesInstanced);
 
-    // 11. 动态穿梭超车的车流尾灯流光残影与自车双前照大灯铺路柔光（消除原先路面中央生硬的纯色矩形色块！）
+    // 11. 动态穿梭超车的车流尾灯流光残影与自车双前照大灯铺路柔光（远近两端能量平滑归零，杜绝生硬闪现）
     const trafficRand = rng((seed ^ 0x7711cc99) >>> 0);
     const lanes = [-6.8, -2.5, 2.5, 6.8];
     for (let i = 0; i < NUM_TRAFFIC_CARS; i++) {
       this.trafficSeeds.push({
         laneX: lanes[i % lanes.length] + (trafficRand() - 0.5) * 0.4,
-        zPhase: trafficRand() * 240.0,
+        zPhase: trafficRand() * TRAFFIC_CYCLE,
         relSpeed: 0.42 + trafficRand() * 0.36,
         width: 0.78 + trafficRand() * 0.18,
       });
@@ -1553,18 +1795,48 @@ export class HighwayScene implements MvScene {
     const tailColor = isMono
       ? colorFromHsl(0, 0.0, 0.86)
       : colorFromHsl((stopAccent.h + 10) % 360, Math.max(0.68, stopAccent.s), Math.max(0.62, stopAccent.l));
-    const tailMat = new THREE.LineBasicMaterial({
-      color: tailColor,
+    const tailMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uCamPos: this.uniforms.uCamPos,
+        uKickSurge: this.uniforms.uKickSurge,
+        uColor: { value: tailColor },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uCamPos;
+        uniform float uKickSurge;
+        uniform vec3 uColor;
+        varying vec3 vWorldPos;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          float farIn = smoothstep(-380.0, -255.0, zRel);
+          float rearOut = smoothstep(22.0, 4.0, zRel);
+          float vis = farIn * rearOut;
+          if (vis <= 0.001) discard;
+          float fogAtten = exp(-sq(length(vWorldPos - uCamPos) * 0.0055));
+          vec3 col = uColor * (0.90 + 0.22 * uKickSurge) * vis * fogAtten;
+          gl_FragColor = vec4(clampHdr(col), 1.0);
+        }
+      `,
       transparent: true,
-      opacity: 0.92,
-      blending: THREE.AdditiveBlending,
+      depthTest: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
     this.tailLightsMesh = new THREE.LineSegments(tailLinesGeo, tailMat);
     this.tailLightsMesh.frustumCulled = false;
+    this.tailLightsMesh.renderOrder = 1;
     this.scene.add(this.tailLightsMesh);
 
-    // 第一人称自车前照双锥铺路柔光（100% 径向与扇形高斯羽化，彻底告别硬边粉红方块！）
+    // 第一人称自车前照双锥铺路柔光（100% 径向与扇形高斯羽化，零 NaN 安全平方）
     const underglowGeo = new THREE.PlaneGeometry(9.0, 26.0);
     this.headlightMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -1586,17 +1858,18 @@ export class HighwayScene implements MvScene {
         uniform float uKickSurge;
         uniform float uWarpDash;
         varying vec2 vUv;
+        ${GLSL_SAFE_MATH}
         void main() {
           // vUv.y: 1.0 在车头近处，0.0 在前方远端；左右双车灯扇形柔和展开并在四周平滑归零
           float fwd = 1.0 - vUv.y;
-          float beamSpread = 0.09 + fwd * 0.28;
-          float leftBeam = exp(-pow((vUv.x - (0.41 - fwd * 0.06)) / beamSpread, 2.0));
-          float rightBeam = exp(-pow((vUv.x - (0.59 + fwd * 0.06)) / beamSpread, 2.0));
+          float beamSpread = max(0.05, 0.09 + fwd * 0.28);
+          float leftBeam = exp(-sq((vUv.x - (0.41 - fwd * 0.06)) / beamSpread));
+          float rightBeam = exp(-sq((vUv.x - (0.59 + fwd * 0.06)) / beamSpread));
           float edgeMaskX = smoothstep(0.0, 0.16, vUv.x) * smoothstep(1.0, 0.84, vUv.x);
           float edgeMaskY = smoothstep(0.0, 0.22, fwd) * exp(-fwd * 2.4) * smoothstep(1.0, 0.82, fwd);
-          float glow = (leftBeam + rightBeam) * edgeMaskX * edgeMaskY * (0.20 + 0.08 * uKickSurge + 0.06 * uWarpDash);
-          vec3 col = mix(uLampColor, uAccentColor, 0.30) * glow;
-          gl_FragColor = vec4(col, glow);
+          float glow = clamp((leftBeam + rightBeam) * edgeMaskX * edgeMaskY * (0.20 + 0.08 * uKickSurge + 0.06 * uWarpDash), 0.0, 1.0);
+          vec3 col = clampHdr(mix(uLampColor, uAccentColor, 0.30) * glow);
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
       transparent: true,
@@ -1607,20 +1880,58 @@ export class HighwayScene implements MvScene {
     this.underglowMesh = new THREE.Mesh(underglowGeo, this.headlightMaterial);
     this.underglowMesh.rotation.x = -Math.PI / 2;
     this.underglowMesh.position.set(0, 0.04, -14.5);
+    this.underglowMesh.frustumCulled = false;
     this.scene.add(this.underglowMesh);
 
-    // 12. 高速迎面流光拉丝
+    // 12. 高速迎面流光拉丝（两端梭形羽化 + 远近生成边界平滑消隐，彻底消除流光柱凭空蹦出）
     const streakGeo = new THREE.CylinderGeometry(0.035, 0.035, 7.5, 4);
     streakGeo.rotateX(Math.PI * 0.5);
-    this.warpMaterial = new THREE.MeshBasicMaterial({
-      color: this.colorBright,
+    this.warpMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uWarpOpacity: this.uniforms.uWarpOpacity,
+        uCamPos: this.uniforms.uCamPos,
+        uBrightColor: this.uniforms.uBrightColor,
+        uAccentColor: this.uniforms.uAccentColor,
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        varying float vTipFade;
+        void main() {
+          // 局部 Z ∈ [-3.75, +3.75]，两端柔化为梭形流光针
+          vTipFade = 1.0 - smoothstep(0.25, 1.0, abs(position.z) / 3.75);
+          vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uWarpOpacity;
+        uniform vec3 uCamPos;
+        uniform vec3 uBrightColor;
+        uniform vec3 uAccentColor;
+        varying vec3 vWorldPos;
+        varying float vTipFade;
+        ${GLSL_SAFE_MATH}
+        void main() {
+          float zRel = vWorldPos.z - uCamPos.z;
+          float farIn = smoothstep(-242.0, -155.0, zRel);
+          float nearOut = smoothstep(14.0, -2.0, zRel);
+          float camDist = length(vWorldPos - uCamPos);
+          float lensClear = smoothstep(2.2, 6.5, camDist);
+          float energy = uWarpOpacity * vTipFade * farIn * nearOut * lensClear * exp(-sq(camDist * 0.0055));
+          if (energy <= 0.001) discard;
+          vec3 col = mix(uAccentColor, uBrightColor, 0.72) * energy;
+          gl_FragColor = vec4(clampHdr(col), 1.0);
+        }
+      `,
       transparent: true,
-      opacity: 0.0,
-      blending: THREE.AdditiveBlending,
+      depthTest: true,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
     this.warpStreaksInstanced = new THREE.InstancedMesh(streakGeo, this.warpMaterial, NUM_WARP_STREAKS);
     this.warpStreaksInstanced.frustumCulled = false;
+    this.warpStreaksInstanced.renderOrder = 2;
     const streakRand = rng((seed ^ 0x55aa3311) >>> 0);
     for (let i = 0; i < NUM_WARP_STREAKS; i++) {
       const side = streakRand() < 0.5 ? -1 : 1;
@@ -1629,7 +1940,7 @@ export class HighwayScene implements MvScene {
       this.streakSeeds.push({
         x,
         y,
-        zPhase: streakRand() * 180.0,
+        zPhase: streakRand() * WARP_CYCLE,
         lenScale: 0.7 + streakRand() * 1.1,
       });
     }
@@ -1662,7 +1973,7 @@ export class HighwayScene implements MvScene {
     return lerp(this.speedTable[idx], this.speedTable[next], frac);
   }
 
-  /** 四组电影级运镜机位（cockpit / chase / bridge / warp）纯函数姿态求值 */
+  /** 四组电影级运镜机位（cockpit / chase / bridge / warp）纯函数姿态求值（严格处于无障碍净空走廊内，杜绝擦碰灯头/桥塔穿模） */
   private evalCameraPose(t: number, s: Shot, kickSurge: number, isWarp: boolean, pos: THREE.Vector3, quat: THREE.Quaternion): number {
     const start = s.run?.start ?? s.start;
     const end = s.run?.end ?? s.end;
@@ -1681,10 +1992,11 @@ export class HighwayScene implements MvScene {
       poseLookAt(pos, quat, x, y, z, laneX * 0.45, 1.35, -62.0, -0.025 * Math.cos(t * 0.55) * dir, 1.0, 0.0);
       return BASE_FOV + 2.0 + kickSurge * 4.5;
     } else if (variant === 'bridge') {
-      const x = lerp(-8.2 * dir, -5.8 * dir, e);
-      const y = lerp(6.8, 4.6, e) + roadVibY;
+      // 保持在桥面中高空无障碍走廊 |x| <= 4.8m, y <= 4.8m，距两侧悬挑路灯灯头 (|x|>=7.1m, y=7.68m) 与斜拉桥塔柱留足 >2.3m 安全净空
+      const x = lerp(-4.8 * dir, -3.2 * dir, e);
+      const y = lerp(4.8, 3.4, e) + roadVibY;
       const z = lerp(-6.0, -16.0, e);
-      poseLookAt(pos, quat, x, y, z, 0, 3.2, -98.0);
+      poseLookAt(pos, quat, x, y, z, 0, 3.0, -108.0);
       return BASE_FOV - 2.0 + kickSurge * 3.5;
     } else if (variant === 'warp') {
       const x = lerp(-2.2 * dir, 2.2 * dir, e);
@@ -1782,19 +2094,19 @@ export class HighwayScene implements MvScene {
 
     const dummy = this.reusableDummy;
 
-    // 3. 更新 3 组跨海斜拉桥主塔与放射钢索
+    // 3. 更新 6 跨连绵跨海斜拉桥主塔与放射钢索（z ∈ [-616, +56]，远端于海天迷雾内平滑渐显，近端完全退至镜头背后再回收）
     const totalTowerCycle = NUM_TOWER_SPANS * TOWER_SPAN;
     for (let k = 0; k < NUM_TOWER_SPANS; k++) {
       const raw = ((distance + k * TOWER_SPAN) % totalTowerCycle + totalTowerCycle) % totalTowerCycle;
-      const zTower = -298.0 + raw;
+      const zTower = -616.0 + raw;
       this.towerUnits[k].position.set(0, 0, zTower);
     }
 
-    // 4. 刚体同步更新两侧流线型路灯杆、光学 LED 灯芯与三维锥形丁达尔体积光束（零相对位移、零缩放畸变）
+    // 4. 刚体同步更新两侧 34 对流线型路灯杆、光学 LED 灯芯与三维锥形丁达尔体积光束（z ∈ [-580, +32]，相位精确对齐路面光池）
     const lampForward = ((distance % STREETLIGHT_SPACING) + STREETLIGHT_SPACING) % STREETLIGHT_SPACING;
     dummy.scale.set(1, 1, 1);
     for (let i = 0; i < NUM_STREETLIGHTS; i++) {
-      const zPos = 14.0 + lampForward - (i + 1) * STREETLIGHT_SPACING;
+      const zPos = 32.0 + lampForward - (i + 1) * STREETLIGHT_SPACING;
 
       // 左侧路灯组（绕 Y 轴旋转 180°，使鹅颈挑臂、灯具与倾斜光锥精准朝向 +X 车道内侧，且保持正向法线）
       dummy.position.set(-POLE_BASE_X, 0, zPos);
@@ -1816,11 +2128,11 @@ export class HighwayScene implements MvScene {
     this.lampHeadsInstanced.instanceMatrix.needsUpdate = true;
     this.lampConesInstanced.instanceMatrix.needsUpdate = true;
 
-    // 5. 更新桥侧高频 H 型工字钢护栏立柱与嵌入式棱镜反光轮廓标（每 6m 一对沿 +Z 飞掠）
+    // 5. 更新桥侧 84 对高频 H 型工字钢护栏立柱与嵌入式棱镜反光轮廓标（z ∈ [-480, +24]，每 6m 一对沿 +Z 飞掠）
     const postForward = ((distance % GUARD_POST_SPACING) + GUARD_POST_SPACING) % GUARD_POST_SPACING;
     dummy.scale.set(1, 1, 1);
     for (let i = 0; i < NUM_GUARD_POSTS; i++) {
-      const zPost = 12.0 + postForward - (i + 1) * GUARD_POST_SPACING;
+      const zPost = 24.0 + postForward - (i + 1) * GUARD_POST_SPACING;
 
       // 左侧立柱与内向反光标
       dummy.position.set(-9.94, 0, zPost);
@@ -1838,15 +2150,14 @@ export class HighwayScene implements MvScene {
     }
     this.guardPostsInstanced.instanceMatrix.needsUpdate = true;
     this.guardReflectorsInstanced.instanceMatrix.needsUpdate = true;
-    this.guardReflectorMaterial.opacity = 0.72 + 0.28 * kickPulse;
+    this.uniforms.uReflectorGain.value = 0.72 + 0.28 * kickPulse;
 
     // 6. 更新桥面多车道被高速追越的前车尾灯流光残影
-    const trafficCycle = 240.0;
     const streakLen = 6.5 + 14.0 * warpDash + 9.0 * kickPulse;
     for (let c = 0; c < NUM_TRAFFIC_CARS; c++) {
       const seed = this.trafficSeeds[c];
       const relTravel = distance * seed.relSpeed + seed.zPhase;
-      const zCar = -222.0 + ((relTravel % trafficCycle) + trafficCycle) % trafficCycle;
+      const zCar = -390.0 + ((relTravel % TRAFFIC_CYCLE) + TRAFFIC_CYCLE) % TRAFFIC_CYCLE;
       const swayX = seed.laneX + 0.18 * Math.sin(t * 0.9 + c * 1.7);
       const yTail = 0.72;
       const base = c * 12;
@@ -1870,20 +2181,19 @@ export class HighwayScene implements MvScene {
     this.underglowMesh.position.set(this.camera.position.x * 0.85, 0.03, this.camera.position.z - 14.5);
 
     // 7. 更新高速氮气流光拉丝
-    const warpCycle = 180.0;
     const streakStretch = isDrop ? 2.4 + 0.8 * kickPulse : isChorus ? 1.45 : 0.85;
     dummy.rotation.set(0, 0, 0);
     for (let i = 0; i < NUM_WARP_STREAKS; i++) {
       const st = this.streakSeeds[i];
       const travelZ = distance * 1.45 + st.zPhase;
-      const zStreak = -166.0 + ((travelZ % warpCycle) + warpCycle) % warpCycle;
+      const zStreak = -250.0 + ((travelZ % WARP_CYCLE) + WARP_CYCLE) % WARP_CYCLE;
       dummy.position.set(st.x, st.y, zStreak);
       dummy.scale.set(1.0, 1.0, st.lenScale * streakStretch);
       dummy.updateMatrix();
       this.warpStreaksInstanced.setMatrixAt(i, dummy.matrix);
     }
     this.warpStreaksInstanced.instanceMatrix.needsUpdate = true;
-    this.warpMaterial.opacity = isDrop ? 0.68 : isChorus ? 0.34 : isBuild ? 0.18 : 0.08;
+    this.uniforms.uWarpOpacity.value = isDrop ? 0.68 : isChorus ? 0.34 : isBuild ? 0.18 : 0.08;
 
     // 8. 全局着色器 Uniforms
     this.uniforms.uTime.value = t;
