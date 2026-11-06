@@ -449,6 +449,10 @@ test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 
     ['pavilion.colorMain', pavilion.colorMain],
     ['pavilion.colorGold', pavilion.colorGold],
     ['pavilion.colorDeep', pavilion.colorDeep],
+    ['pavilion.colorFlameCore', pavilion.colorFlameCore],
+    ['pavilion.colorLacquer', pavilion.colorLacquer],
+    ['pavilion.colorRoofTile', pavilion.colorRoofTile],
+    ['pavilion.colorJade', pavilion.colorJade],
   ];
   for (const [name, col] of pavColors) {
     const s = calcSat(col);
@@ -815,6 +819,77 @@ test('EclipseScene：三维分形体积闪电树拓扑多样性、梯级先导/�
   const afterSeekSample = Array.from(eclipse.lightningMesh.geometry.getAttribute('aStart').array.slice(0, 18));
   for (let k = 0; k < peakStartSample.length; k++) {
     assert.equal(afterSeekSample[k], peakStartSample[k], `Seek 后第 ${k} 个闪电顶点分量不一致`);
+  }
+});
+
+test('PavilionScene：三维宣纸孔明灯海、古典六角鎏金宫灯、天池莲花河灯、古建多源灯火照明与 Seek 幂等性校验', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const pavilion = new mods.PavilionScene(init, 'film');
+
+  // 1. 校验三维灯火几何与着色器结构（彻底告别无纹理正方形像素块与无光源纯黑剪影）
+  assert.equal(pavilion.palaceLanternsPavilionMesh.geometry.instanceCount, 16, '双层八角飞檐翘角必须完整悬挂 16 盏古典六角宫灯');
+  assert.equal(pavilion.palaceLanternsPoolMesh.geometry.instanceCount, 8, '天池汉白玉望柱挑臂必须完整悬挂 8 盏引路宫灯');
+  assert.equal(pavilion.lotusLanternsMesh.geometry.instanceCount, 32, '瑶池水面与外圈必须完整布置 32 盏双层十六瓣莲花河灯');
+  assert.ok(pavilion.releasedSkyLanterns.length >= 20, `随歌词字词与旋律重音预烘焙的放飞天灯事件应充足 (>=20)，实测=${pavilion.releasedSkyLanterns.length}`);
+
+  const skyFrag = pavilion.skyLanternsMesh.material.fragmentShader;
+  assert.ok(
+    skyFrag.includes('paperNoise') && skyFrag.includes('frameMask') && skyFrag.includes('uFlameCore'),
+    '孔明灯着色器必须具备手工宣纸纤维透光肌理、竹篾灯骨剪影与内部跃动明火烛芯',
+  );
+  const fireflyFrag = pavilion.firefliesMaterial.fragmentShader;
+  assert.ok(
+    fireflyFrag.includes('gl_PointCoord') && fireflyFrag.includes('discard'),
+    '流萤粒子必须使用圆形高斯衰减着色器剔除方形边角，严禁回退为正方形像素块',
+  );
+
+  // 校验水榭建筑网格均采用自定义多源灯火 ShaderMaterial（非无光源黑剪影 MeshStandardMaterial）
+  let archShaderCount = 0;
+  pavilion.pavilionGroup.traverse(obj => {
+    if (obj.isMesh && obj !== pavilion.palaceLanternsPavilionMesh) {
+      assert.equal(obj.material.type, 'ShaderMaterial', '天阙水榭构件必须采用多源灯火 ShaderMaterial');
+      if (obj.material.fragmentShader?.includes('lanternWarm')) archShaderCount++;
+    }
+  });
+  assert.ok(archShaderCount >= 4, `水榭汉白玉台基、朱漆梁柱、琉璃飞檐与鎏金宝顶均应接入灯火照明 (>=4)，实测=${archShaderCount}`);
+
+  // 2. 校验四个运镜机位（pavilion / water / eaves / zenith）更新正常且孔明灯海实例充足
+  const chorusShot = { scene: 'pavilion', start: 24, end: 40, variant: 'pavilion', seed: 7, section: music.a.sections[2], sectionIndex: 2 };
+  const tProbe = 28.4;
+  pavilion.update({ t: tProbe, dt: 1 / 60, shotT: 4.4, shot: chorusShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+
+  const activeSkyCount = pavilion.skyLanternsMesh.geometry.instanceCount;
+  assert.ok(activeSkyCount >= 220, `副歌阶段漫天三维孔明灯激活实例数应丰满壮观 (>=220)，实测=${activeSkyCount}`);
+  assert.equal(pavilion.skyLanternHalosMesh.geometry.instanceCount, activeSkyCount, '孔明灯大气柔光晕实例数必须与灯体严格同步');
+
+  const posSnapshot = Array.from(pavilion.skyLanternsMesh.geometry.getAttribute('aLanternPos').array.slice(0, 32));
+  const stateSnapshot = Array.from(pavilion.skyLanternsMesh.geometry.getAttribute('aLanternState').array.slice(0, 32));
+  const lotusSnapshot = Array.from(pavilion.lotusLanternsMesh.geometry.getAttribute('aLotus').array.slice(0, 24));
+  const camSnapshot = pavilion.camera.position.clone();
+
+  // 3. 跨 water、eaves、drop 段落大幅度前后跳跃后逆向 Seek 回 tProbe，验证比特级确定性（误差=0）
+  const waterShot = { scene: 'pavilion', start: 8, end: 24, variant: 'water', seed: 5, section: music.a.sections[1], sectionIndex: 1 };
+  pavilion.update({ t: 14.2, dt: 1 / 60, shotT: 6.2, shot: waterShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.ok(pavilion.camera.position.z > -24.0, `water 机位必须保持在瑶池开阔视野外圈 (z > -24m)，实测 z=${pavilion.camera.position.z.toFixed(2)}`);
+
+  const dropShot = { scene: 'pavilion', start: 40, end: 64, variant: 'eaves', seed: 19, section: music.a.sections[3], sectionIndex: 3 };
+  pavilion.update({ t: 46.75, dt: 1 / 60, shotT: 6.75, shot: dropShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  pavilion.update({ t: 1.2, dt: 1 / 60, shotT: 1.2, shot: waterShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+
+  // 逆向 Seek 回 tProbe
+  pavilion.update({ t: tProbe, dt: 1 / 60, shotT: 4.4, shot: chorusShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.equal(pavilion.skyLanternsMesh.geometry.instanceCount, activeSkyCount, 'Seek 回原时刻后孔明灯激活数量必须严格一致');
+  assert.ok(pavilion.camera.position.distanceTo(camSnapshot) === 0, 'Seek 回原时刻后相机坐标必须比特级一致');
+
+  const posAfter = Array.from(pavilion.skyLanternsMesh.geometry.getAttribute('aLanternPos').array.slice(0, 32));
+  const stateAfter = Array.from(pavilion.skyLanternsMesh.geometry.getAttribute('aLanternState').array.slice(0, 32));
+  const lotusAfter = Array.from(pavilion.lotusLanternsMesh.geometry.getAttribute('aLotus').array.slice(0, 24));
+  for (let i = 0; i < posSnapshot.length; i++) {
+    assert.equal(posAfter[i], posSnapshot[i], `Seek 后孔明灯位置属性分量 [${i}] 不一致`);
+    assert.equal(stateAfter[i], stateSnapshot[i], `Seek 后孔明灯状态属性分量 [${i}] 不一致`);
+  }
+  for (let i = 0; i < lotusSnapshot.length; i++) {
+    assert.equal(lotusAfter[i], lotusSnapshot[i], `Seek 后莲花河灯位置属性分量 [${i}] 不一致`);
   }
 });
 
