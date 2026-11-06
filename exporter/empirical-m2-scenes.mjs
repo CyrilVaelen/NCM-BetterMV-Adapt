@@ -850,6 +850,7 @@ test('PavilionScene：三维宣纸孔明灯海、古典六角鎏金宫灯、天�
 
   let archShaderCount = 0;
   let hasStoneDetailShader = false;
+  let hasGlazedRoofShader = false;
   pavilion.pavilionGroup.traverse(obj => {
     if (obj.isMesh && obj !== pavilion.palaceLanternsPavilionMesh) {
       assert.equal(obj.material.type, 'ShaderMaterial', '天阙水榭构件必须采用多源灯火 ShaderMaterial');
@@ -857,10 +858,24 @@ test('PavilionScene：三维宣纸孔明灯海、古典六角鎏金宫灯、天�
       if (obj.material.fragmentShader?.includes('waistBand') && obj.material.fragmentShader?.includes('archNoise')) {
         hasStoneDetailShader = true;
       }
+      if (obj.material.fragmentShader?.includes('topGlazeTerm') && obj.material.fragmentShader?.includes('overlapShadow')) {
+        hasGlazedRoofShader = true;
+      }
     }
   });
-  assert.ok(archShaderCount >= 5, `水榭须弥座青石、御窑金砖地面、朱檀直棂围栏/梁柱、琉璃飞檐与鎏金宝顶均应接入灯火照明 (>=5)，实测=${archShaderCount}`);
+  assert.ok(archShaderCount >= 6, `水榭须弥座青石、御窑金砖地面、朱檀直棂围栏/梁柱、琉璃瓦面、16道立体垂脊与鎏金宝顶均应接入灯火照明 (>=6)，实测=${archShaderCount}`);
   assert.ok(hasStoneDetailShader, '水榭地基与围栏着色器必须具备青石肌理噪声、内凹束腰 AO 与柔和色调压限');
+  assert.ok(hasGlazedRoofShader, '重檐八角亭顶必须具备阴阳筒瓦叠瓦阶梯缝与漫天千灯琉璃釉面高光着色器，确保俯视视角立体通透');
+
+  // 校验三维解剖级东方灵韵锦鲤（拒绝过曝纯白 Additive 椭圆管，具备胸背燕尾鳍、珠光鱼鳞、三色锦斑与半浸吃水线）
+  assert.equal(pavilion.koiMaterial.blending, THREE.NormalBlending, '锦鲤材质必须采用 NormalBlending 真实表面混合，严禁 AdditiveBlending 过曝成死白剪影');
+  const koiVertCount = pavilion.koiInstanced.geometry.getAttribute('position').count;
+  assert.ok(koiVertCount >= 2400, `锦鲤三维解剖网格（流线鱼躯+吻须+双叶深V燕尾+蝴蝶胸腹鳍+旗状背鳍）顶点数应充实精细 (>=2400)，实测=${koiVertCount}`);
+  const koiFrag = pavilion.koiMaterial.fragmentShader;
+  assert.ok(
+    koiFrag.includes('vermilionBrocade') && koiFrag.includes('scaleGrid') && koiFrag.includes('submerge'),
+    '锦鲤片元着色器必须包含红白/丹顶/黄金花斑、交错菱形珠光鱼鳞与半浸清波吃水线折射模型',
+  );
 
   // 2. 校验四个运镜机位（pavilion / water / eaves / zenith）更新正常且孔明灯海实例充足
   const chorusShot = { scene: 'pavilion', start: 24, end: 40, variant: 'pavilion', seed: 7, section: music.a.sections[2], sectionIndex: 2 };

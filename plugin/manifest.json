@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "BetterMV（增强定制版）",
   "slug": "ncm-better-mv",
-  "version": "0.9.0-local-export.99",
+  "version": "0.9.0-local-export.100",
   "author": "CyrilVaelen (基于 XIAOMING6680 v0.9.0 原版定制)",
   "author_link": "https://github.com/CyrilVaelen/NCM-BetterMV-Adapt",
   "description": "为正在播放的歌曲实时生成 3D MV：内置 50 个实时动效场景（完整集成琉璃圣堂、午夜高架、千灯天阙、日蚀裂谷 4 大新场景）、全局铺垫坍缩与 Drop 折射冲击波后处理转场、段落媒介滤镜（彩绘镶嵌玻璃、工程蓝图线稿）、5 种导演母风格与音乐曲风概率预设，支持秒开秒切加速与本地视频导出。",

@@ -29,6 +29,8 @@ interface KoiState {
   radiusZ: number;
   yBase: number;
   scale: number;
+  seed: number;
+  pattern: number;
 }
 
 /** 常驻环绕云海与天阙的孔明灯纯函数轨道参数 */
@@ -354,7 +356,7 @@ function createLotusLanternGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * 构建东方古建八角凹曲起翘飞檐屋顶（带翼角反宇起翘曲线与八脊棱线，彻底告别死板直圆锥）
+ * 构建东方古建八角凹曲起翘飞檐琉璃瓦屋顶（放射扇面精确瓦垄 UV + 翼角反宇曲线 + 立体滴水瓦当封口檐唇）
  */
 function createChineseOctagonalRoofGeometry(
   topRadius: number,
@@ -363,50 +365,59 @@ function createChineseOctagonalRoofGeometry(
   upturn: number,
 ): THREE.BufferGeometry {
   const sides = 8;
-  const subPerSide = 6;
+  const subPerSide = 8;
   const radialSegs = sides * subPerSide;
-  const ringSegs = 10;
+  const ringSegs = 14;
 
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
 
+  const evalRingPoint = (v: number, ia: number): [number, number, number, number] => {
+    const u = ia / radialSegs;
+    const sector = Math.floor(ia / subPerSide) % sides;
+    const f = (ia % subPerSide) / subPerSide;
+    // 注意当 ia 恰好落在最后一扇终点时保持连续扇区坐标
+    const sectorCoord = ia / subPerSide;
+
+    const sag = height * (1.0 - v) * (1.0 - 0.34 * v * (1.0 - v));
+    const a0 = (sector / sides) * Math.PI * 2;
+    const a1 = ((sector + 1) / sides) * Math.PI * 2;
+
+    const rCurr = lerp(topRadius, eaveRadius, v);
+    const cornerFactor = Math.pow(Math.abs(f - 0.5) * 2.0, 1.85);
+    const wingFlare = 1.0 + cornerFactor * Math.pow(v, 2.1) * 0.11;
+
+    const x0 = Math.cos(a0) * rCurr;
+    const z0 = Math.sin(a0) * rCurr;
+    const x1 = Math.cos(a1) * rCurr;
+    const z1 = Math.sin(a1) * rCurr;
+
+    const x = lerp(x0, x1, f) * wingFlare;
+    const z = lerp(z0, z1, f) * wingFlare;
+    const cornerLift = upturn * Math.pow(v, 2.3) * (0.28 + 0.72 * cornerFactor);
+    const y = sag + cornerLift;
+    return [x, y, z, sectorCoord || u * sides];
+  };
+
   for (let ir = 0; ir <= ringSegs; ir++) {
     const v = ir / ringSegs; // 0 = 顶部攒尖/上口, 1 = 飞檐外缘
-    // 古建举折凹曲屋面：中段下凹柔美，檐口反宇上翘
-    const sag = height * (1.0 - v) * (1.0 - 0.34 * v * (1.0 - v));
-
     for (let ia = 0; ia <= radialSegs; ia++) {
-      const u = ia / radialSegs;
-      const sector = Math.floor(ia / subPerSide) % sides;
-      const f = (ia % subPerSide) / subPerSide;
-
-      const a0 = (sector / sides) * Math.PI * 2;
-      const a1 = ((sector + 1) / sides) * Math.PI * 2;
-
-      const rCurr = lerp(topRadius, eaveRadius, v);
-      // 在八边形相邻两角点之间插值，翼角处向外飞展并向上翘起
-      const cornerFactor = Math.pow(Math.abs(f - 0.5) * 2.0, 1.85);
-      const wingFlare = 1.0 + cornerFactor * Math.pow(v, 2.1) * 0.11;
-
-      const x0 = Math.cos(a0) * rCurr;
-      const z0 = Math.sin(a0) * rCurr;
-      const x1 = Math.cos(a1) * rCurr;
-      const z1 = Math.sin(a1) * rCurr;
-
-      const x = lerp(x0, x1, f) * wingFlare;
-      const z = lerp(z0, z1, f) * wingFlare;
-      const cornerLift = upturn * Math.pow(v, 2.3) * (0.28 + 0.72 * cornerFactor);
-      const ridgeBump = cornerFactor > 0.92 ? 0.055 * (1.0 - 0.3 * v) : 0.0;
-      const y = sag + cornerLift + ridgeBump;
-
+      const [x, y, z, su] = evalRingPoint(v, ia);
       positions.push(x, y, z);
-      uvs.push(u * sides, v);
+      uvs.push(su, v);
     }
   }
 
+  // 檐口立体滴水瓦当垂直封边唇（v 编码为 1.06，彻底消除俯视与平视的纸片薄边感）
+  for (let ia = 0; ia <= radialSegs; ia++) {
+    const [x, y, z, su] = evalRingPoint(1.0, ia);
+    positions.push(x * 0.996, y - 0.135, z * 0.996);
+    uvs.push(su, 1.06);
+  }
+
   const stride = radialSegs + 1;
-  for (let ir = 0; ir < ringSegs; ir++) {
+  for (let ir = 0; ir < ringSegs + 1; ir++) {
     for (let ia = 0; ia < radialSegs; ia++) {
       const a = ir * stride + ia;
       const b = a + 1;
@@ -425,63 +436,350 @@ function createChineseOctagonalRoofGeometry(
 }
 
 /**
- * 构建流线纺锤体飘尾锦鲤几何体（uv.x 沿鱼头 0 -> 纱尾 1，供着色器正弦摆尾游动）
+ * 构建八角屋顶的 8 道立体高浮雕攒尖垂脊 / 戗脊 + 檐角昂首仙人走兽脊饰序列
+ * 贴合与 createChineseOctagonalRoofGeometry 完全一致的反宇凹曲弧线，使俯视呈现苍劲放射骨感
  */
-function createKoiGeometry(): THREE.BufferGeometry {
-  const lenSegs = 14;
-  const radSegs = 10;
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
+function createOctagonalRoofRidgesGeometry(
+  topRadius: number,
+  eaveRadius: number,
+  height: number,
+  upturn: number,
+  yOffset: number,
+): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const sides = 8;
+  const segs = 14;
+  const halfW = 0.095;
+  const ridgeH = 0.145;
 
-  for (let il = 0; il <= lenSegs; il++) {
-    const u = il / lenSegs; // 0 = 吻端 (+Z 朝前), 1 = 尾鳍末梢 (-Z)
-    const z = (0.42 - u) * 1.45;
-    let rx: number;
-    let ry: number;
-    if (u < 0.65) {
-      // 纤巧灵动的流线鱼头与鱼身
-      const k = u / 0.65;
-      const body = Math.sin(Math.pow(k, 0.62) * Math.PI);
-      rx = 0.014 + 0.105 * body;
-      ry = 0.014 + 0.115 * body;
-    } else {
-      // 轻盈展开的薄纱分叉尾鳍
-      const k = (u - 0.65) / 0.35;
-      rx = lerp(0.032, 0.010, k);
-      ry = lerp(0.055, 0.21, Math.pow(k, 0.75));
+  const ridgePoint = (ang: number, v: number): [number, number, number] => {
+    const sag = height * (1.0 - v) * (1.0 - 0.34 * v * (1.0 - v));
+    const wingFlare = 1.0 + Math.pow(v, 2.1) * 0.11;
+    const r = lerp(topRadius, eaveRadius, v) * wingFlare;
+    const y = yOffset + sag + upturn * Math.pow(v, 2.3);
+    return [Math.cos(ang) * r, y, Math.sin(ang) * r];
+  };
+
+  for (let s = 0; s < sides; s++) {
+    const ang = (s / sides) * Math.PI * 2;
+    const tx = -Math.sin(ang);
+    const tz = Math.cos(ang);
+    const pos: number[] = [];
+    const uvs: number[] = [];
+    const idx: number[] = [];
+
+    // 截面 4 个顶点：左底(0)、左顶(1)、右顶(2)、右底(3)
+    for (let i = 0; i <= segs; i++) {
+      const v = i / segs;
+      const [cx, cy, cz] = ridgePoint(ang, v);
+      // 顶端汇入鎏金宝顶莲座处平滑压低收束，彻底杜绝刺穿宝座产生破面斑点
+      const topTuck = smooth(clamp01(v / 0.12));
+      // 翘角尖端昂首微扬形成古典鸱吻戗脊收头
+      const tipHorn = v > 0.86 ? Math.pow((v - 0.86) / 0.14, 1.8) * 0.16 : 0.0;
+      const wScale = lerp(0.55, 1.08, v) * (v > 0.94 ? 0.78 : 1.0);
+      const w = halfW * wScale;
+      const h = (ridgeH * (0.88 + 0.22 * v) + tipHorn) * (0.15 + 0.85 * topTuck);
+
+      pos.push(
+        cx - tx * w, cy - 0.03, cz - tz * w,
+        cx - tx * (w * 0.52), cy + h, cz - tz * (w * 0.52),
+        cx + tx * (w * 0.52), cy + h, cz + tz * (w * 0.52),
+        cx + tx * w, cy - 0.03, cz + tz * w,
+      );
+      uvs.push(0.0, v, 0.36, v, 0.64, v, 1.0, v);
     }
 
-    for (let ir = 0; ir <= radSegs; ir++) {
-      const v = ir / radSegs;
+    for (let i = 0; i < segs; i++) {
+      const b0 = i * 4;
+      const b1 = (i + 1) * 4;
+      // 左侧坡、脊顶面、右侧坡
+      for (let k = 0; k < 3; k++) {
+        idx.push(b0 + k, b0 + k + 1, b1 + k, b0 + k + 1, b1 + k + 1, b1 + k);
+      }
+    }
+
+    // 封口端面（翘角前端）
+    const endB = segs * 4;
+    idx.push(endB, endB + 2, endB + 1, endB, endB + 3, endB + 2);
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    parts.push(g.toNonIndexed());
+
+    // 檐角脊背排布 3 尊精巧琉璃仙人走兽凸饰（v = 0.76, 0.84, 0.91）
+    const beastLocs = [0.76, 0.84, 0.91];
+    for (let bi = 0; bi < beastLocs.length; bi++) {
+      const bv = beastLocs[bi];
+      const [bx, by, bz] = ridgePoint(ang, bv);
+      const bSize = 0.068 + bi * 0.012;
+      const beast = new THREE.ConeGeometry(bSize * 0.72, bSize * 2.1, 5);
+      beast.rotateX(0.28);
+      beast.rotateY(-ang + Math.PI * 0.5);
+      beast.translate(bx, by + ridgeH + bSize * 0.75, bz);
+      const nonIdx = beast.toNonIndexed();
+      const cnt = nonIdx.attributes.position.count;
+      const buv = new Float32Array(cnt * 2);
+      for (let k = 0; k < cnt; k++) {
+        buv[k * 2] = 0.5;
+        buv[k * 2 + 1] = bv;
+      }
+      nonIdx.setAttribute('uv', new THREE.BufferAttribute(buv, 2));
+      parts.push(nonIdx);
+    }
+  }
+
+  return mergeGeometries(parts, false);
+}
+
+/**
+ * 构建三维解剖级东方灵韵锦鲤几何体：
+ * - uv.y in [0.0, 1.0]: 饱满流线纺锤鱼躯（前肩宽厚、隆背微垂腹、平滑收至尾柄）+ 吻须
+ * - uv.y in [1.10, 1.90]: 双叶深 V 分叉飘逸蝴蝶燕尾纱鳍（立体双翼斜展，俯视与侧视皆舒展灵动）
+ * - uv.y in [2.10, 2.90]: 鳃后两侧宽大扇形蝴蝶胸鳍与腹鳍（随游弋节奏上下轻柔划水扇动）
+ * - uv.y in [3.10, 3.90]: 背脊高扬流线旗状背鳍
+ */
+function createKoiGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // 1) 饱满流线鱼躯 (u in [0.0, 0.72], z: +0.70 -> -0.44)：吻端微扁收尖、鳃盖饱满宽肩、高隆背脊平滑收至尾柄
+  const bodyLenSegs = 26;
+  const bodyRadSegs = 18;
+  const bPos: number[] = [];
+  const bUvs: number[] = [];
+  const bIdx: number[] = [];
+
+  const evalBodySection = (tBody: number) => {
+    // 全段光滑流线纺锤轮廓：吻端柔和微扁收尖 -> 肩背饱满圆润过渡 -> 腰尾修长收束至尾柄（零分段折角）
+    const headProfile = Math.pow(Math.sin(Math.min(1.0, tBody / 0.28) * Math.PI * 0.5), 0.68);
+    const waistTaper = 1.0 - 0.83 * smooth(clamp01((tBody - 0.25) / 0.75));
+    const rx = tBody <= 0.001 ? 0.0 : 0.160 * headProfile * waistTaper;
+    const ryTop = rx * (0.76 + 0.30 * Math.sin(Math.pow(tBody, 0.62) * Math.PI * 0.88));
+    const ryBot = rx * (0.68 + 0.18 * Math.sin(Math.pow(tBody, 0.65) * Math.PI * 0.90));
+    const spineLift = 0.020 * Math.sin(tBody * Math.PI);
+    return { rx, ryTop, ryBot, spineLift };
+  };
+
+  for (let il = 0; il <= bodyLenSegs; il++) {
+    const tBody = il / bodyLenSegs;
+    const u = tBody * 0.72;
+    const z = (0.44 - u) * 1.58;
+    const { rx, ryTop, ryBot, spineLift } = evalBodySection(tBody);
+
+    for (let ir = 0; ir <= bodyRadSegs; ir++) {
+      const v = ir / bodyRadSegs;
       const theta = v * Math.PI * 2;
       const cx = Math.cos(theta);
       const sy = Math.sin(theta);
-      positions.push(cx * rx, sy * ry, z);
-      const nLen = Math.hypot(cx / Math.max(rx, 0.01), sy / Math.max(ry, 0.01)) || 1;
-      normals.push((cx / Math.max(rx, 0.01)) / nLen, (sy / Math.max(ry, 0.01)) / nLen, 0);
-      uvs.push(u, v);
+      const ry = sy >= 0 ? ryTop : ryBot;
+      // 背脊两侧微鼓的鲤鱼肌肉棱感
+      const flankFullness = 1.0 + 0.05 * Math.sin(theta * 2.0) * smooth(clamp01(tBody / 0.2)) * (1.0 - tBody);
+      bPos.push(cx * rx * flankFullness, sy * ry + spineLift, z);
+      bUvs.push(u, v);
     }
   }
 
-  const stride = radSegs + 1;
-  for (let il = 0; il < lenSegs; il++) {
-    for (let ir = 0; ir < radSegs; ir++) {
-      const a = il * stride + ir;
+  const bStride = bodyRadSegs + 1;
+  for (let il = 0; il < bodyLenSegs; il++) {
+    for (let ir = 0; ir < bodyRadSegs; ir++) {
+      const a = il * bStride + ir;
       const b = a + 1;
-      const c = (il + 1) * stride + ir;
+      const c = (il + 1) * bStride + ir;
       const d = c + 1;
-      indices.push(a, c, b, b, c, d);
+      bIdx.push(a, c, b, b, c, d);
     }
   }
+  const bodyGeo = new THREE.BufferGeometry();
+  bodyGeo.setAttribute('position', new THREE.Float32BufferAttribute(bPos, 3));
+  bodyGeo.setAttribute('uv', new THREE.Float32BufferAttribute(bUvs, 2));
+  bodyGeo.setIndex(bIdx);
+  bodyGeo.computeVertexNormals();
+  parts.push(bodyGeo.toNonIndexed());
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geo.setIndex(indices);
-  return geo;
+  // 1b) 锦鲤标志性嘴角一对灵动龙须 / 吻须 (Barbels, uv.y = 0.50, u in [0.02, 0.08])
+  for (const side of [-1, 1]) {
+    const wPos: number[] = [];
+    const wUvs: number[] = [];
+    const wIdx: number[] = [];
+    const segs = 5;
+    for (let i = 0; i <= segs; i++) {
+      const k = i / segs;
+      const u = 0.02 + k * 0.055;
+      const cx = side * (0.036 + 0.068 * Math.pow(k, 0.85));
+      const cy = -0.016 - 0.020 * k;
+      const cz = (0.44 - u) * 1.58 - 0.035 * k * k;
+      const rBarbel = 0.0085 * (1.0 - 0.78 * k);
+      wPos.push(cx, cy + rBarbel, cz, cx, cy - rBarbel, cz, cx + side * rBarbel * 0.6, cy, cz - rBarbel);
+      wUvs.push(u, 0.5, u, 0.5, u, 0.5);
+    }
+    for (let i = 0; i < segs; i++) {
+      const b0 = i * 3;
+      const b1 = (i + 1) * 3;
+      wIdx.push(
+        b0, b1, b0 + 1, b0 + 1, b1, b1 + 1,
+        b0 + 1, b1 + 1, b0 + 2, b0 + 2, b1 + 1, b1 + 2,
+        b0 + 2, b1 + 2, b0, b0, b1 + 2, b1,
+      );
+    }
+    const wGeo = new THREE.BufferGeometry();
+    wGeo.setAttribute('position', new THREE.Float32BufferAttribute(wPos, 3));
+    wGeo.setAttribute('uv', new THREE.Float32BufferAttribute(wUvs, 2));
+    wGeo.setIndex(wIdx);
+    wGeo.computeVertexNormals();
+    parts.push(wGeo.toNonIndexed());
+  }
+
+  // 2) 双叶深 V 分叉蝴蝶燕尾纱鳍 (u in [0.67, 1.00], uv.y in [1.10, 1.90])
+  // 从尾柄无缝柔和舒展为宽逸双叶燕尾，俯视与侧视皆飘逸如轻罗团扇
+  for (const wingSide of [-1, 1]) {
+    const uSegs = 9;
+    const vSegs = 9;
+    const tPos: number[] = [];
+    const tUvs: number[] = [];
+    const tIdx: number[] = [];
+
+    for (let iu = 0; iu <= uSegs; iu++) {
+      const k = iu / uSegs; // 0 = 尾柄根部, 1 = 燕尾末梢
+      const u = lerp(0.67, 1.0, k);
+      for (let iv = 0; iv <= vSegs; iv++) {
+        const lobeF = iv / vSegs; // 0 = 中央深 V 分叉内缘, 1 = 燕尾外翼前缘
+        // 真实燕尾后缘深 V 缺刻与圆润双叶弧度
+        const vNotch = (1.0 - smooth(clamp01(lobeF * 1.75))) * 0.21 * k * k;
+        const tipRound = Math.sin(Math.pow(lobeF, 0.72) * Math.PI * 0.90);
+        const z = (0.44 - u) * 1.58 + vNotch + (1.0 - tipRound) * 0.06 * k;
+
+        const spreadR = lerp(0.016, 0.285, Math.pow(k, 0.82)) * (0.10 + 0.90 * tipRound);
+        const wingX = wingSide * spreadR * (0.72 + 0.24 * k);
+        // 尾叶呈柔美微波曲面水平偏上舒展，不会僵硬下戳水底
+        const wingY = (lobeF - 0.34) * lerp(0.032, 0.19, Math.pow(k, 0.78))
+                    + Math.sin(k * Math.PI * 1.15) * 0.018;
+
+        tPos.push(wingX, wingY, z);
+        tUvs.push(u, 1.10 + lobeF * 0.80);
+      }
+    }
+    const tStride = vSegs + 1;
+    for (let iu = 0; iu < uSegs; iu++) {
+      for (let iv = 0; iv < vSegs; iv++) {
+        const a = iu * tStride + iv;
+        const b = a + 1;
+        const c = (iu + 1) * tStride + iv;
+        const d = c + 1;
+        tIdx.push(a, c, b, b, c, d);
+      }
+    }
+    const tailGeo = new THREE.BufferGeometry();
+    tailGeo.setAttribute('position', new THREE.Float32BufferAttribute(tPos, 3));
+    tailGeo.setAttribute('uv', new THREE.Float32BufferAttribute(tUvs, 2));
+    tailGeo.setIndex(tIdx);
+    tailGeo.computeVertexNormals();
+    parts.push(tailGeo.toNonIndexed());
+  }
+
+  // 3) 水平舒展扇形蝴蝶双胸鳍与腹鳍 (uv.y in [2.10, 2.90])
+  // uv.y 小数编码展向位置，并通过 vLocalOrig 保留前后缘信息以刻画胸鳍前缘硬骨
+  const addPairedFins = (
+    uRootStart: number,
+    uRootEnd: number,
+    rootX: number,
+    rootY: number,
+    spanX: number,
+    sweepU: number,
+    droopY: number,
+  ) => {
+    for (const side of [-1, 1]) {
+      const sSegs = 7;
+      const cSegs = 7;
+      const fPos: number[] = [];
+      const fUvs: number[] = [];
+      const fIdx: number[] = [];
+
+      for (let is = 0; is <= sSegs; is++) {
+        const s = is / sSegs; // 0 = 鱼体附着根部, 1 = 扇形鳍尖外缘
+        const chordWidth = Math.sin(Math.pow(s, 0.58) * Math.PI * 0.94);
+        for (let ic = 0; ic <= cSegs; ic++) {
+          const c = ic / cSegs; // 0 = 胸鳍前缘主骨, 1 = 胸鳍后缘薄纱
+          const uBase = lerp(uRootStart, uRootEnd, c);
+          const u = uBase + s * sweepU * (0.32 + 0.82 * c) + (c - 0.45) * chordWidth * 0.075;
+          const z = (0.44 - u) * 1.58;
+          const x = side * (rootX * (1.0 - 0.14 * c) + Math.sin(s * Math.PI * 0.56) * spanX * (0.76 + 0.24 * Math.sin(c * Math.PI)));
+          // 水平优雅平展微拱，消除过度下垂，使俯视与平视皆如灵蝶振翅
+          const arch = Math.sin(s * Math.PI) * 0.016 - s * s * droopY - c * s * 0.012;
+          const y = rootY + arch;
+
+          fPos.push(x, y, z);
+          fUvs.push(clamp01(u), 2.10 + s * 0.80);
+        }
+      }
+      const fStride = cSegs + 1;
+      for (let is = 0; is < sSegs; is++) {
+        for (let ic = 0; ic < cSegs; ic++) {
+          const a = is * fStride + ic;
+          const b = a + 1;
+          const c = (is + 1) * fStride + ic;
+          const d = c + 1;
+          fIdx.push(a, c, b, b, c, d);
+        }
+      }
+      const finGeo = new THREE.BufferGeometry();
+      finGeo.setAttribute('position', new THREE.Float32BufferAttribute(fPos, 3));
+      finGeo.setAttribute('uv', new THREE.Float32BufferAttribute(fUvs, 2));
+      finGeo.setIndex(fIdx);
+      finGeo.computeVertexNormals();
+      parts.push(finGeo.toNonIndexed());
+    }
+  };
+
+  // 鳃后宽大水平蝴蝶胸鳍 + 腰腹灵巧腹鳍
+  addPairedFins(0.16, 0.29, 0.122, -0.018, 0.285, 0.13, 0.014);
+  addPairedFins(0.41, 0.50, 0.068, -0.030, 0.135, 0.09, 0.012);
+
+  // 4) 背脊高扬流线旗状背鳍 (u in [0.24, 0.58], uv.y in [3.10, 3.90])
+  {
+    const dLen = 9;
+    const dH = 4;
+    const dPos: number[] = [];
+    const dUvs: number[] = [];
+    const dIdx: number[] = [];
+    for (let il = 0; il <= dLen; il++) {
+      const kl = il / dLen;
+      const uBase = lerp(0.24, 0.58, kl);
+      const tBody = uBase / 0.72;
+      const { ryTop, spineLift } = evalBodySection(tBody);
+      const baseTopY = ryTop * 0.96 + spineLift;
+      const maxH = 0.138 * Math.sin(Math.pow(kl, 0.52) * Math.PI * 0.95);
+
+      for (let ih = 0; ih <= dH; ih++) {
+        const kh = ih / dH;
+        const u = uBase + kh * 0.068;
+        const z = (0.44 - u) * 1.58;
+        const x = Math.sin(kl * Math.PI) * kh * 0.010;
+        const y = baseTopY + kh * maxH;
+        dPos.push(x, y, z);
+        dUvs.push(u, 3.10 + kh * 0.80);
+      }
+    }
+    const dStride = dH + 1;
+    for (let il = 0; il < dLen; il++) {
+      for (let ih = 0; ih < dH; ih++) {
+        const a = il * dStride + ih;
+        const b = a + 1;
+        const c = (il + 1) * dStride + ih;
+        const d = c + 1;
+        dIdx.push(a, c, b, b, c, d);
+      }
+    }
+    const dorsalGeo = new THREE.BufferGeometry();
+    dorsalGeo.setAttribute('position', new THREE.Float32BufferAttribute(dPos, 3));
+    dorsalGeo.setAttribute('uv', new THREE.Float32BufferAttribute(dUvs, 2));
+    dorsalGeo.setIndex(dIdx);
+    dorsalGeo.computeVertexNormals();
+    parts.push(dorsalGeo.toNonIndexed());
+  }
+
+  return mergeGeometries(parts, false);
 }
 
 // ======================== 着色器源码 ========================
@@ -964,7 +1262,7 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
   uniform vec3 uMainColor;
   uniform vec3 uFlameCore;
   uniform vec3 uFogColor;
-  uniform float uStyleKind; // 0=深朱檀漆木/直棂栏杆, 1=琉璃黛瓦飞檐, 2=夜色雕花青白石, 3=描金宝顶饰边, 4=御窑墨玉金砖铺地
+  uniform float uStyleKind; // 0=深朱檀漆木/直棂栏杆, 1=皇家琉璃筒瓦屋面, 2=夜色雕花青白石, 3=雕塑鎏金相轮宝顶, 4=御窑墨玉金砖铺地, 5=立体琉璃垂脊描金脊梁
   uniform float uMelodyGlow;
   uniform float uDropIgnite;
 
@@ -996,11 +1294,14 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     vec3 viewDir = normalize(uCamPos - vWorldPos);
     vec2 relXZ = vWorldPos.xz - vec2(0.0, -32.0);
     float rHoriz = length(relXZ);
+    vec3 outRadDir = normalize(vec3(relXZ.x, 0.0, relXZ.y) + vec3(1e-4, 0.0, 0.0));
+    vec3 tangDir = normalize(vec3(-relXZ.y, 0.0, relXZ.x) + vec3(0.0, 0.0, 1e-4));
 
     vec3 albedo = uBaseColor;
     float roughness = 0.52;
     float archAO = 1.0;
     float lightGain = 1.0;
+    bool isGlazedRoof = false;
 
     if (uStyleKind < 0.5) {
       // 0: 深朱檀漆木（金柱、斗拱、镂空直棂勾栏、束腰格眼框）
@@ -1009,15 +1310,59 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
       roughness = 0.46;
       lightGain = 0.88;
     } else if (uStyleKind < 1.5) {
-      // 1: 琉璃瓦垄凹凸法线与飞檐金边勾勒
-      float tileWave = sin(vUv.x * 6.28318 * 14.0);
-      float tileRidge = 0.84 + 0.16 * tileWave;
-      albedo *= tileRidge;
-      N = normalize(N + vec3(cos(vUv.x * 6.28318 * 14.0) * 0.16, 0.0, 0.0));
-      float eaveEdge = smoothstep(0.91, 0.99, vUv.y);
-      albedo = mix(albedo, uGoldColor * 0.82, eaveEdge * 0.50);
-      roughness = 0.34;
-      lightGain = 0.96;
+      // 1: 皇家琉璃阴阳筒瓦屋面（每扇 13 垄放射圆拱筒瓦 + 18 层错缝叠瓦阶梯 + 团花滴水瓦当 + 真实切向曲面法线）
+      isGlazedRoof = true;
+      float secIdx = floor(vUv.x);
+      float secF = fract(vUv.x);
+      float slopeV = clamp(vUv.y, 0.0, 1.0);
+
+      // 越靠近攒尖顶瓦垄稍微收密，向飞檐自然舒展
+      float tileCoord = secF * 13.0;
+      float tileId = floor(tileCoord);
+      float tileFrac = fract(tileCoord) - 0.5; // [-0.5, +0.5]
+
+      // 阳瓦（半圆凸起筒瓦）与阴瓦（平凹板瓦沟底）截面轮廓
+      float capArc = clamp(1.0 - pow(tileFrac * 2.55, 2.0), 0.0, 1.0);
+      float isCap = step(abs(tileFrac), 0.39);
+      float capHeight = sqrt(capArc) * isCap;
+
+      // 18 层横向叠瓦搭接阶梯缝（筒瓦与底瓦错半格搭接，还原真实古建叠瓦工艺）
+      float rowCoord = slopeV * 18.0 + (1.0 - isCap) * 0.45;
+      float rowId = floor(rowCoord);
+      float rowFrac = fract(rowCoord);
+      float overlapLip = smoothstep(0.80, 0.96, rowFrac);
+      float overlapShadow = 1.0 - 0.42 * smoothstep(0.83, 0.99, rowFrac);
+
+      // 单片琉璃瓦微窑变釉色丰富度与细微冰裂釉纹
+      float kilnVar = 0.86 + 0.24 * archHash(vec2(tileId + secIdx * 17.0, rowId));
+      float glazeCraze = 0.94 + 0.06 * archNoise(vec2(secF * 48.0, slopeV * 56.0));
+      // 筒瓦釉色温润透亮，底瓦沟槽深沉浓郁
+      vec3 valleyTint = albedo * 0.68;
+      vec3 capTint = mix(albedo * 1.22, mix(albedo, uMainColor * 0.48, 0.35), 0.65);
+      albedo = mix(valleyTint, capTint, isCap * (0.55 + 0.45 * capHeight)) * kilnVar * glazeCraze;
+
+      // 沿八角坡面真实周向切线 (tangDir) 与顺坡径向 (outRadDir) 偏转三维瓦垄法线
+      float dCap = -tileFrac * 2.75 * isCap;
+      float dRow = overlapLip * 0.48 - 0.09;
+      N = normalize(N + tangDir * (dCap * 0.46) + outRadDir * (dRow * 0.24));
+
+      // 沟底积聚环境光遮蔽 AO + 叠瓦阶梯深影
+      archAO = (0.48 + 0.52 * mix(0.35, capHeight, isCap)) * overlapShadow;
+
+      // 檐口立体封边唇与 13 枚温润同色系浮雕圆瓦当 / 细金边团花滴水（消除刺眼浅亮斑，古雅浑然一体）
+      if (vUv.y > 0.94) {
+        float lipLocal = clamp((vUv.y - 0.94) / 0.12, 0.0, 1.0);
+        float wadangDist = length(vec2(tileFrac * 2.35, (lipLocal - 0.50) * 2.15));
+        float wadangDisc = smoothstep(0.66, 0.44, wadangDist);
+        float wadangRing = smoothstep(0.56, 0.47, wadangDist) * smoothstep(0.36, 0.45, wadangDist);
+        float wadangCenter = smoothstep(0.22, 0.08, wadangDist);
+        vec3 wadangTint = mix(capTint * 0.88, uGoldColor * 0.62, (wadangRing * 0.65 + wadangCenter * 0.45));
+        albedo = mix(albedo * 0.76, wadangTint, wadangDisc);
+        archAO = mix(archAO * 0.85, 0.78 + 0.20 * (wadangRing + wadangCenter), wadangDisc);
+      }
+
+      roughness = 0.22;
+      lightGain = 1.08;
     } else if (uStyleKind < 2.5) {
       // 2: 夜色雕花青白石 / 苍青石须弥座与望柱（细腻石脉、凿石颗粒、砌石暗缝与结构遮蔽 AO，严禁泛白过曝）
       vec2 stoneUv = vec2(vWorldPos.x * 1.65 + vWorldPos.z * 1.35, vWorldPos.y * 2.8);
@@ -1045,13 +1390,27 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
       roughness = 0.58;
       lightGain = 0.65;
     } else if (uStyleKind < 3.5) {
-      // 3: 鎏金宝顶与悬莲垂珠自发光高光
-      vec3 H = normalize(viewDir + normalize(vec3(0.0, 0.8, 0.6)));
-      float spec = pow(max(dot(N, H), 0.0), 32.0);
-      vec3 goldLit = uGoldColor * (0.90 + 0.50 * uDropIgnite + 0.25 * uMelodyGlow) + uFlameCore * spec * 0.60;
-      gl_FragColor = vec4(goldLit, 1.0);
+      // 3: 雕塑级皇家纯金覆钵仰覆莲相轮宝顶（真实立体明暗过渡、拉丝金高光与凹槽古铜暗金 AO，告别平涂死白剪影）
+      float upLit = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+      float sideLit = clamp(dot(N, normalize(vec3(0.45, 0.68, 0.58))), 0.0, 1.0);
+      float backFill = clamp(dot(N, normalize(vec3(-0.55, 0.35, -0.45))), 0.0, 1.0);
+      float fluteGroove = 0.86 + 0.14 * sin(atan(relXZ.y, relXZ.x) * 16.0);
+
+      vec3 H1 = normalize(viewDir + normalize(vec3(0.35, 0.82, 0.45)));
+      vec3 H2 = normalize(viewDir + normalize(vec3(-0.48, 0.72, 0.50)));
+      float specSharp = pow(max(dot(N, H1), 0.0), 46.0) + pow(max(dot(N, H2), 0.0), 34.0) * 0.65;
+      float specBroad = pow(max(dot(N, H1), 0.0), 9.0);
+      float rimGold = pow(1.0 - max(dot(N, viewDir), 0.0), 2.8);
+
+      vec3 antiqueShadow = uGoldColor * 0.26;
+      vec3 warmGoldBody = uGoldColor * (0.38 + 0.52 * sideLit + 0.26 * upLit + 0.18 * backFill) * fluteGroove;
+      vec3 goldCol = mix(antiqueShadow, warmGoldBody, 0.85)
+                   + mix(uGoldColor, uFlameCore, 0.55) * (specSharp * 0.85 + specBroad * 0.28)
+                   + uGoldColor * rimGold * (0.32 + 0.35 * uDropIgnite + 0.18 * uMelodyGlow);
+      goldCol = goldCol / (vec3(1.0) + goldCol * 0.42);
+      gl_FragColor = vec4(goldCol, 1.0);
       return;
-    } else {
+    } else if (uStyleKind < 4.5) {
       // 4: 亭心御窑墨玉金砖铺地（错缝方砖暗格与温润水磨微反光）
       vec2 brickUv = relXZ * 1.45;
       float rowShift = mod(floor(brickUv.y), 2.0) * 0.5;
@@ -1062,6 +1421,18 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
       archAO = 0.65 + 0.35 * smoothstep(4.6, 1.6, rHoriz);
       roughness = 0.34;
       lightGain = 0.68;
+    } else {
+      // 5: 十六道立体攒尖琉璃垂脊、仙人走兽与皇家描金压脊线（赋予俯视屋顶苍劲的八芒放射骨感）
+      isGlazedRoof = true;
+      float ridgeSeg = 0.82 + 0.18 * sin(vUv.y * 6.28318 * 24.0);
+      float crownGoldMask = smoothstep(0.22, 0.07, abs(vUv.x - 0.5));
+      float tipBeastGlow = smoothstep(0.74, 0.95, vUv.y) * 0.35;
+      vec3 ridgeBase = mix(uBaseColor * 1.35, uMainColor * 0.45, 0.32) * ridgeSeg;
+      albedo = mix(ridgeBase, uGoldColor * 0.88, crownGoldMask * 0.72 + tipBeastGlow * crownGoldMask);
+      N = normalize(N + outRadDir * (cos(vUv.y * 6.28318 * 24.0) * 0.18));
+      archAO = 0.72 + 0.28 * crownGoldMask;
+      roughness = 0.20;
+      lightGain = 1.12;
     }
 
     // 1) 苍穹星夜漫射顶光
@@ -1083,7 +1454,6 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     float dUpperRing = length(vec2(rHoriz - 4.75, vWorldPos.y - 8.25));
     float dRailRing  = length(vec2(rHoriz - 14.1, vWorldPos.y - 1.25));
 
-    vec3 outRadDir = normalize(vec3(relXZ.x, 0.0, relXZ.y) + vec3(1e-4, 0.0, 0.0));
     float lanternWrap = 0.42 + 0.58 * clamp(dot(N, outRadDir) * 0.65 - N.y * 0.45, 0.0, 1.0);
     float lanternAtten = 1.25 / (1.0 + 0.18 * dLowerRing * dLowerRing)
                        + 0.98 / (1.0 + 0.22 * dUpperRing * dUpperRing)
@@ -1092,7 +1462,25 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     vec3 lanternWarm = mix(uGoldColor, uFlameCore, 0.24) * lanternAtten * lanternWrap * candleFlick
                      * (albedo * 2.05 * lightGain) * archAO;
 
-    // 4) 漫天千灯环境侧逆微高光（石材哑光克制，琉璃瓦与漆木温润）
+    // 4) 漫天千灯高空暖霞顶光 + 皇家琉璃瓦清漆釉面多方位高光（专门激活俯视视角下饱满的琉璃瓦垄光泽）
+    vec3 topGlazeTerm = vec3(0.0);
+    if (isGlazedRoof) {
+      float upFace = clamp(N.y * 0.75 + 0.25, 0.0, 1.0);
+      vec3 skyLanternDiff = mix(uMainColor, uGoldColor, 0.56) * albedo * upFace
+                          * (1.42 + 0.48 * uMelodyGlow + 0.55 * uDropIgnite) * archAO;
+      vec3 L1 = normalize(vec3(0.55, 0.78, 0.30));
+      vec3 L2 = normalize(vec3(-0.62, 0.74, 0.26));
+      vec3 L3 = normalize(vec3(0.04, 0.76, -0.65));
+      float gSpec = pow(max(dot(N, normalize(viewDir + L1)), 0.0), 34.0)
+                  + pow(max(dot(N, normalize(viewDir + L2)), 0.0), 30.0) * 0.88
+                  + pow(max(dot(N, normalize(viewDir + L3)), 0.0), 28.0) * 0.82;
+      float broadSheen = pow(max(dot(N, normalize(viewDir + vec3(0.0, 0.90, 0.42))), 0.0), 7.5);
+      vec3 glazeSpec = (mix(uGoldColor, uFlameCore, 0.36) * gSpec * 0.38
+                     + mix(uMainColor, uGoldColor, 0.48) * broadSheen * 0.18) * (0.35 + 0.65 * archAO);
+      topGlazeTerm = skyLanternDiff + glazeSpec * candleFlick;
+    }
+
+    // 5) 漫天千灯环境侧逆微高光
     vec3 rimLightDir = normalize(vec3(0.0, 0.65, -0.76));
     vec3 H = normalize(viewDir + rimLightDir);
     float specPow = mix(42.0, 12.0, roughness);
@@ -1100,11 +1488,11 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     float spec = pow(max(dot(N, H), 0.0), specPow) * specStrength;
     float fresnel = pow(1.0 - max(dot(N, viewDir), 0.0), 3.4) * (1.0 - roughness * 0.72) * lightGain;
 
-    vec3 col = skyAmb + poolBounce + lanternWarm
+    vec3 col = skyAmb + poolBounce + lanternWarm + topGlazeTerm
              + uGoldColor * (spec * 0.34 + fresnel * 0.12 * (1.0 + 0.6 * uDropIgnite)) * archAO;
 
-    // 胶片级柔和肩部压限，确保古建基座与栏杆永远温润沉稳不泛白，烘托宫灯与千灯主角
-    col = col / (vec3(1.0) + col * 0.62);
+    // 胶片级柔和肩部压限，确保古建基座、栏杆与琉璃瓦面温润润泽绝不泛白过曝
+    col = col / (vec3(1.0) + col * 0.58);
 
     float dist = length(uCamPos - vWorldPos);
     float fog = 1.0 - exp(-pow(dist * 0.0068, 1.8));
@@ -1146,8 +1534,9 @@ export class PavilionScene implements MvScene {
   private cloudsFloorMesh: THREE.Mesh;
   private cloudsFloorMaterial: THREE.ShaderMaterial;
   private stringsLines: THREE.Line[];
-  private koiInstanced: THREE.InstancedMesh;
-  private koiMaterial: THREE.ShaderMaterial;
+  readonly koiInstanced: THREE.InstancedMesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  readonly koiMaterial: THREE.ShaderMaterial;
+  private koiRipplesInstanced: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
   private koiStates: KoiState[] = [];
   readonly firefliesPoints: THREE.Points;
   readonly firefliesMaterial: THREE.ShaderMaterial;
@@ -1212,8 +1601,8 @@ export class PavilionScene implements MvScene {
       ? colorFromHsl(0, 0, 0.22)
       : colorFromHsl(stopMain.h, Math.min(0.68, stopMain.s * 0.85 + 0.12), 0.24);
     this.colorRoofTile = isMono
-      ? colorFromHsl(0, 0, 0.14)
-      : colorFromHsl(stopDeep.h, Math.min(0.42, stopDeep.s * 0.75), 0.15);
+      ? colorFromHsl(0, 0, 0.19)
+      : colorFromHsl(stopDeep.h, Math.min(0.48, stopDeep.s * 0.85 + 0.08), 0.21);
     this.colorJade = isMono
       ? colorFromHsl(0, 0, 0.33)
       : colorFromHsl(stopDeep.h, Math.min(0.16, stopDeep.s * 0.38), 0.34);
@@ -1383,7 +1772,7 @@ export class PavilionScene implements MvScene {
     this.cloudsFloorMesh.position.set(0, -3.6, PAVILION_Z);
     this.scene.add(this.cloudsFloorMesh);
 
-    // 6. 圆形瑶池水面平铺丝绸画卷封面 + 宫灯/河灯涟漪暖光倒影 (Silk Scroll Pool at Y = 0.05, Z = -32m)
+    // 6. 圆形瑶池清波水面映照画卷封面 + 菲涅尔夜水光学 + 宫灯/河灯涟漪倒影 (Silk Scroll Pool at Y = 0.05, Z = -32m)
     const poolGeo = new THREE.CircleGeometry(POOL_RADIUS, 72);
     this.silkPoolMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -1395,6 +1784,7 @@ export class PavilionScene implements MvScene {
         uGoldColor: this.uniforms.uGoldColor,
         uMainColor: this.uniforms.uMainColor,
         uFlameCore: this.uniforms.uFlameCore,
+        uFogColor: this.uniforms.uFogColor,
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -1415,48 +1805,70 @@ export class PavilionScene implements MvScene {
         uniform vec3 uGoldColor;
         uniform vec3 uMainColor;
         uniform vec3 uFlameCore;
+        uniform vec3 uFogColor;
         varying vec2 vUv;
         varying vec3 vWorldPos;
+
+        float poolHash(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.23);
+          return fract(p.x * p.y);
+        }
+        float poolNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(poolHash(i), poolHash(i + vec2(1.0, 0.0)), u.x),
+                     mix(poolHash(i + vec2(0.0, 1.0)), poolHash(i + vec2(1.0, 1.0)), u.x), u.y);
+        }
 
         void main() {
           vec2 centered = vUv - vec2(0.5);
           float r = length(centered) * 2.0;
 
           // 多频清澈水波微折射（严格保持原封面空间色块拓扑连贯）
-          float ripple = sin(r * 24.0 - uTime * 3.6) * 0.0055
-                       + cos((vWorldPos.x - vWorldPos.z) * 1.8 + uTime * 2.4) * 0.0025;
-          vec2 warpedUv = clamp(vUv + centered * ripple * 1.4, 0.0, 1.0);
+          float w1 = poolNoise(vWorldPos.xz * 0.85 + vec2(uTime * 0.36, -uTime * 0.28));
+          float w2 = poolNoise(vWorldPos.xz * 1.95 - vec2(uTime * 0.44, uTime * 0.31));
+          float ripple = sin(r * 22.0 - uTime * 3.2) * 0.0048 + (w1 + w2 - 1.0) * 0.0055;
+          vec2 warpedUv = clamp(vUv + centered * ripple * 1.35, 0.0, 1.0);
           vec4 coverColor = texture2D(uCover, warpedUv);
 
-          // 丝绸画卷细腻经纬光泽
-          float silkGrain = 0.95 + 0.05 * sin(vWorldPos.x * 110.0) * cos(vWorldPos.z * 110.0);
+          // 真实夜色瑶池深水透射与菲涅尔视角反射（既完整保留画卷封面连贯色块，又赋予幽静清波深水感）
+          vec3 viewDir = normalize(uCamPos - vWorldPos);
+          vec3 waterN = normalize(vec3((w1 - 0.5) * 0.10, 1.0, (w2 - 0.5) * 0.10));
+          float fresnel = pow(1.0 - clamp(dot(waterN, viewDir), 0.0, 1.0), 3.0);
+          float radialDepth = mix(0.76, 0.44, smoothstep(0.12, 0.96, r));
+          vec3 nightWaterBed = mix(uFogColor * 1.15, coverColor.rgb * radialDepth, 0.86);
 
-          // 八盏飞檐宫灯与外圈莲花河灯在水波上的拉丝暖光倒影
+          // 八盏飞檐宫灯与外圈莲花河灯在水波上的拉丝柔光倒影与细密水纹丝光
           float ang = atan(vWorldPos.z + 32.0, vWorldPos.x);
-          float eightFold = pow(0.5 + 0.5 * cos(ang * 8.0 + ripple * 18.0), 4.0);
-          float eaveReflBand = exp(-pow((r - 0.48) * 5.2, 2.0)) * eightFold;
-          float lotusReflBand = exp(-pow((r - 0.86) * 7.5, 2.0)) * (0.55 + 0.45 * sin(ang * 16.0 - uTime * 2.2));
-          float shimmer = 0.82 + 0.18 * sin(r * 38.0 - uTime * 5.2 + ang * 4.0);
-          vec3 lanternRefl = mix(uGoldColor, uFlameCore, 0.35) * (eaveReflBand * 0.42 + lotusReflBand * 0.48) * shimmer;
+          float eightFold = pow(0.5 + 0.5 * cos(ang * 8.0 + ripple * 20.0), 4.0);
+          float eaveReflBand = exp(-pow((r - 0.48) * 5.4, 2.0)) * eightFold;
+          float lotusReflBand = exp(-pow((r - 0.85) * 7.8, 2.0)) * (0.52 + 0.48 * sin(ang * 16.0 - uTime * 2.1));
+          float fineRipples = (0.5 + 0.5 * sin(r * 42.0 - uTime * 3.8 + w1 * 3.0)) * 0.045;
+          float shimmer = 0.82 + 0.18 * sin(r * 36.0 - uTime * 4.8 + ang * 4.0);
+          vec3 lanternRefl = mix(uGoldColor, uFlameCore, 0.30) * (eaveReflBand * 0.34 + lotusReflBand * 0.40 + fineRipples) * shimmer;
 
-          // 圆形鎏金嵌边与高潮太极水浪
-          float edgeRing = smoothstep(0.995, 0.945, r);
-          float goldBorder = smoothstep(0.925, 0.958, r) * smoothstep(1.0, 0.978, r);
-          float waveSurge = max(0.0, sin(r * 13.0 - uTime * 7.5)) * uDropIgnite * 0.30;
+          // 池畔温润石岸内缘暗金水际线与高潮水波律动
+          float edgeRing = smoothstep(0.996, 0.948, r);
+          float goldBorder = smoothstep(0.935, 0.962, r) * smoothstep(1.0, 0.980, r);
+          float waveSurge = max(0.0, sin(r * 13.0 - uTime * 7.2)) * uDropIgnite * 0.18;
 
-          vec3 finalRgb = coverColor.rgb * silkGrain * edgeRing;
-          finalRgb += lanternRefl * edgeRing;
-          finalRgb += uGoldColor * (goldBorder * 1.85 + waveSurge + uMelodyGlow * 0.16);
+          vec3 skyRefl = mix(uFogColor * 1.6, uGoldColor * 0.28, 0.35) * fresnel * 0.65;
+          vec3 finalRgb = (nightWaterBed + skyRefl + lanternRefl) * edgeRing;
+          finalRgb += uGoldColor * (goldBorder * 0.95 + waveSurge + uMelodyGlow * 0.08) * edgeRing;
 
           gl_FragColor = vec4(finalRgb, edgeRing);
         }
       `,
       transparent: true,
+      depthWrite: false,
       side: THREE.DoubleSide,
     });
     this.silkPoolMesh = new THREE.Mesh(poolGeo, this.silkPoolMaterial);
     this.silkPoolMesh.rotation.x = -Math.PI / 2;
     this.silkPoolMesh.position.set(0, 0.05, PAVILION_Z);
+    this.silkPoolMesh.renderOrder = 0;
     this.scene.add(this.silkPoolMesh);
 
     // 7. 重檐八角飞檐起翘天阙古建、汉白玉雕栏与 24 盏古典六角鎏金宫灯
@@ -1577,17 +1989,52 @@ export class PavilionScene implements MvScene {
     this.lotusLanternsMesh.frustumCulled = false;
     this.scene.add(this.lotusLanternsMesh);
 
-    // 10. 七弦发光古琴琴弦 (7 Luminous Zither Strings)
+    // 10. 七弦流光古琴仙弦（两端柔和羽化渐隐 + 俯视自动收敛，避免生硬横线割裂池面构图）
     this.stringsLines = [];
-    const stringMat = new THREE.LineBasicMaterial({
-      color: this.colorGold,
+    const stringMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: this.uniforms.uTime,
+        uCamPos: this.uniforms.uCamPos,
+        uGoldColor: this.uniforms.uGoldColor,
+        uMelodyGlow: this.uniforms.uMelodyGlow,
+      },
+      vertexShader: /* glsl */ `
+        attribute float aStrT;
+        varying float vStrT;
+        varying vec3 vWorldPos;
+        void main() {
+          vStrT = aStrT;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uCamPos;
+        uniform vec3 uGoldColor;
+        uniform float uMelodyGlow;
+        varying float vStrT;
+        varying vec3 vWorldPos;
+        void main() {
+          float endFade = sin(vStrT * 3.14159265);
+          endFade = endFade * endFade;
+          // 俯视高机位时柔和收敛琴弦光丝，不干扰亭顶与池鱼观赏
+          vec3 vDir = normalize(uCamPos - vWorldPos);
+          float topSuppress = 1.0 - 0.78 * smoothstep(0.45, 0.85, abs(vDir.y));
+          float wave = 0.72 + 0.28 * sin(vStrT * 18.0 - uTime * 4.2);
+          float alpha = endFade * topSuppress * wave * (0.24 + 0.22 * uMelodyGlow);
+          gl_FragColor = vec4(uGoldColor * alpha, 1.0);
+        }
+      `,
       transparent: true,
-      opacity: 0.72,
+      depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     for (let i = 0; i < NUM_STRINGS; i++) {
       const u = (i - (NUM_STRINGS - 1) * 0.5) * 1.5;
       const pts: THREE.Vector3[] = [];
+      const strT: number[] = [];
       const numPts = 36;
       for (let p = 0; p <= numPts; p++) {
         const tVal = p / numPts;
@@ -1595,72 +2042,299 @@ export class PavilionScene implements MvScene {
         const y = 1.95 + 0.32 * Math.sin(tVal * Math.PI) + (i % 2) * 0.16;
         const z = PAVILION_Z + u + Math.sin(tVal * Math.PI * 0.5) * 2.0;
         pts.push(new THREE.Vector3(x, y, z));
+        strT.push(tVal);
       }
       const stringGeo = new THREE.BufferGeometry().setFromPoints(pts);
+      stringGeo.setAttribute('aStrT', new THREE.Float32BufferAttribute(strT, 1));
       const strLine = new THREE.Line(stringGeo, stringMat);
       this.stringsLines.push(strLine);
       this.scene.add(strLine);
     }
 
-    // 11. 游弋摆尾流光锦鲤 (Graceful Swimming Luminous Koi)
+    // 11. 三维解剖级东方灵韵锦鲤（半浸瑶池清波、红白/丹顶/鎏金花斑、吻须鳃盖、珠光鱼鳞、蝴蝶胸尾鳍与伴游涟漪）
     const koiGeo = createKoiGeometry();
+    const koiMetaArr = new Float32Array(NUM_KOI * 2);
+    for (let i = 0; i < NUM_KOI; i++) {
+      const fishSeed = seedRand();
+      const pattern = i % 3; // 0: 经典红白大云斑 (Kohaku), 1: 鸿运丹顶 (Tancho), 2: 璀璨黄金鲤 (Ogon)
+      koiMetaArr[i * 2] = fishSeed;
+      koiMetaArr[i * 2 + 1] = pattern;
+      this.koiStates.push({
+        speed: 0.34 + seedRand() * 0.22,
+        phase: (i / NUM_KOI) * Math.PI * 2 + (seedRand() - 0.5) * 0.35,
+        radiusX: 5.0 + seedRand() * 6.6,
+        radiusZ: 4.8 + seedRand() * 6.3,
+        // 半浸于 y = 0.05 水面之下：鱼背微贴清波映光，鱼腹与蝴蝶胸尾鳍自然浸没水中
+        yBase: 0.012 + seedRand() * 0.026,
+        scale: 0.80 + seedRand() * 0.30,
+        seed: fishSeed,
+        pattern,
+      });
+    }
+    koiGeo.setAttribute('aKoiMeta', new THREE.InstancedBufferAttribute(koiMetaArr, 2));
+
     this.koiMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: this.uniforms.uTime,
+        uCamPos: this.uniforms.uCamPos,
         uGoldColor: this.uniforms.uGoldColor,
         uMainColor: this.uniforms.uMainColor,
         uFlameCore: this.uniforms.uFlameCore,
+        uFogColor: this.uniforms.uFogColor,
+        uMelodyGlow: this.uniforms.uMelodyGlow,
       },
       vertexShader: /* glsl */ `
+        attribute vec2 aKoiMeta;
         uniform float uTime;
         varying vec2 vUv;
         varying vec3 vNormalW;
+        varying vec3 vWorldPos;
+        varying vec3 vLocalOrig;
+        varying vec2 vMeta;
+
         void main() {
           vUv = uv;
+          vMeta = aKoiMeta;
+          vLocalOrig = position;
+
           vec3 p = position;
-          // 沿鱼身头(0)到纱尾(1)传递正弦推进摆尾波
-          float idPhase = instanceMatrix[3][0] * 0.37 + instanceMatrix[3][2] * 0.29;
-          float swimWave = sin(uTime * 6.8 - uv.x * 5.2 + idPhase) * (0.04 + 0.22 * uv.x * uv.x);
-          p.x += swimWave;
-          vec4 wp = modelMatrix * instanceMatrix * vec4(p, 1.0);
-          vNormalW = normalize(mat3(modelMatrix * instanceMatrix) * normal);
+          vec3 n = normal;
+          float u = clamp(uv.x, 0.0, 1.0);
+          float fishPhase = aKoiMeta.x * 37.699;
+
+          // 胸鳍与腹鳍 (uv.y in [2.10, 2.90]) 随游弋做优雅柔和划水扇动
+          if (uv.y > 2.05 && uv.y < 2.95) {
+            float finSpan = clamp((uv.y - 2.10) / 0.80, 0.0, 1.0);
+            float flap = sin(uTime * 5.2 + fishPhase - finSpan * 1.35) * 0.055 * finSpan * finSpan;
+            p.y += flap;
+            p.z -= abs(flap) * 0.20;
+          }
+
+          // 生物力学鲹科/鲤科行波S形推进曲线：头部稳健微摆，腰尾至双叶燕尾柔顺推进
+          float waveArg = uTime * 6.2 - u * 5.2 + fishPhase;
+          float amp = 0.014 + 0.21 * pow(u, 1.90);
+          float dx = sin(waveArg) * amp;
+          float slope = -5.2 * cos(waveArg) * amp * (1.0 / 1.58);
+          float yawAng = clamp(atan(slope) * 0.65, -0.46, 0.46);
+          float cy = cos(yawAng);
+          float sy = sin(yawAng);
+
+          // 横截面与表面法线随脊椎弯曲自然偏转，保持鱼体饱满圆润
+          vec3 bentPos = vec3(p.x * cy + dx, p.y, -p.x * sy + p.z);
+          vec3 bentNorm = normalize(vec3(n.x * cy + n.z * sy, n.y, -n.x * sy + n.z * cy));
+
+          vec4 wp = modelMatrix * instanceMatrix * vec4(bentPos, 1.0);
+          vWorldPos = wp.xyz;
+          vNormalW = normalize(mat3(modelMatrix * instanceMatrix) * bentNorm);
           gl_Position = projectionMatrix * viewMatrix * wp;
         }
       `,
       fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uCamPos;
         uniform vec3 uGoldColor;
         uniform vec3 uMainColor;
         uniform vec3 uFlameCore;
+        uniform vec3 uFogColor;
+        uniform float uMelodyGlow;
+
         varying vec2 vUv;
         varying vec3 vNormalW;
+        varying vec3 vWorldPos;
+        varying vec3 vLocalOrig;
+        varying vec2 vMeta;
+
+        float koiHash(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.23);
+          return fract(p.x * p.y);
+        }
+
+        float koiNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(koiHash(i), koiHash(i + vec2(1.0, 0.0)), u.x),
+            mix(koiHash(i + vec2(0.0, 1.0)), koiHash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+
         void main() {
-          float headToTail = clamp(vUv.x, 0.0, 1.0);
-          float bodyGlow = 1.0 - smoothstep(0.55, 1.0, headToTail) * 0.55;
-          float spineHighlight = smoothstep(0.1, 0.85, abs(vNormalW.y));
-          vec3 col = mix(uGoldColor * 1.35, uMainColor * 1.05, headToTail * 0.65)
-                   + uFlameCore * (1.0 - headToTail) * spineHighlight * 0.55;
-          float alpha = mix(0.92, 0.32, smoothstep(0.62, 1.0, headToTail)) * bodyGlow;
-          gl_FragColor = vec4(col, alpha);
+          vec3 N = normalize(vNormalW);
+          if (!gl_FrontFacing) N = -N;
+          vec3 viewDir = normalize(uCamPos - vWorldPos);
+          float seed = vMeta.x;
+          float pattern = vMeta.y;
+
+          // 真实吃水线光学：水面在 y = 0.05，鱼背贴水湿亮，鱼腹与鱼鳍浸入清波带柔和折射水雾与弯月面水环
+          float waterLevel = 0.052 + 0.005 * sin(vWorldPos.x * 3.5 + uTime * 3.0);
+          float submerge = clamp((waterLevel - vWorldPos.y) / 0.145, 0.0, 1.0);
+          float meniscus = exp(-pow((vWorldPos.y - waterLevel) / 0.011, 2.0));
+          vec3 waterTint = mix(uFogColor * 1.45, uMainColor * 0.42, 0.48);
+
+          // 温润暖玉象牙白底色与醇厚绯金/赤金锦斑（黑白封面下严格保持 S=0 水墨银鳞）
+          vec3 ivoryWhite = mix(vec3(0.90), uFlameCore, 0.56);
+          vec3 vermilionBrocade = mix(uMainColor * 1.25, uGoldColor * 0.92, 0.24);
+          vec3 goldenBrocade = mix(uGoldColor * 1.12, uFlameCore, 0.20);
+
+          // 1) 半透明丝绢鱼鳍（双叶燕尾 1.1..1.9 / 蝴蝶胸腹鳍 2.1..2.9 / 旗状背鳍 3.1..3.9）
+          if (vUv.y > 1.05) {
+            float finLocal = clamp(fract(vUv.y - 0.10) / 0.80, 0.0, 1.0);
+            float rayCoord = (vUv.y < 2.0 ? finLocal * 24.0 : vUv.x * 48.0);
+            float rays = 0.76 + 0.24 * pow(0.5 + 0.5 * sin(rayCoord * 6.28318), 1.5);
+            float edgeFeather = smoothstep(1.0, 0.26, finLocal);
+            float rootTint = exp(-finLocal * 2.4);
+
+            vec3 finBase = mix(ivoryWhite * 0.96, pattern > 1.5 ? goldenBrocade : vermilionBrocade, rootTint * 0.52);
+            float upLit = 0.68 + 0.32 * clamp(N.y, 0.0, 1.0);
+            float rimGlow = pow(1.0 - abs(dot(N, viewDir)), 2.0) * 0.32;
+            vec3 finCol = finBase * rays * upLit + uGoldColor * rimGlow;
+            // 浸入水下的鱼鳍柔和融入瑶池清波色泽
+            finCol = mix(finCol, mix(finCol, waterTint + uGoldColor * 0.14, 0.42), submerge);
+            float alpha = clamp((0.16 + 0.66 * edgeFeather) * (0.82 + 0.18 * rays) * (1.0 - 0.22 * submerge), 0.05, 0.86);
+            gl_FragColor = vec4(finCol, alpha);
+            return;
+          }
+
+          // 2) 饱满流线鱼躯：名贵锦鲤“切边”花斑 + 鳃盖弧线 + 交错菱形珠光鱼鳞 + 乌润双眸 + 水线折射
+          float u = clamp(vUv.x / 0.72, 0.0, 1.0); // 0=吻端与龙须, 1=尾柄
+          float bellyMask = smoothstep(-0.18, 0.32, vLocalOrig.y / 0.15);
+
+          float patchMask = 0.0;
+          if (pattern < 0.5) {
+            // 款式0：御苑红白锦鲤 (Kohaku) —— 大块圆润饱满的云朵状绯金斑块，边缘利落（Kiwa 切边）
+            vec2 pUv = vec2(u * 3.8 + seed * 13.7, vLocalOrig.x * 5.2 + seed * 7.3);
+            float n = koiNoise(pUv) * 0.70 + koiNoise(pUv * 2.2 + 3.1) * 0.30;
+            patchMask = smoothstep(0.45, 0.52, n) * bellyMask;
+          } else if (pattern < 1.5) {
+            // 款式1：鸿运丹顶锦鲤 (Tancho) —— 欺霜赛雪玉白银鳞，额顶正中一轮圆润朱金丹印
+            float crownDist = length(vec2((u - 0.135) * 5.4, vLocalOrig.x * 7.0));
+            float crownSpot = smoothstep(0.56, 0.42, crownDist) * step(0.0, vLocalOrig.y);
+            float tailSpot = smoothstep(0.86, 0.94, u) * bellyMask * 0.70;
+            patchMask = clamp(crownSpot + tailSpot, 0.0, 1.0);
+          } else {
+            // 款式2：鎏金皇室黄金鲤 (Yamabuki Ogon) —— 满背璀璨鎏金锦鳞，腹部温润象牙白
+            patchMask = smoothstep(0.12, 0.58, bellyMask);
+          }
+
+          vec3 bodyPalette = pattern > 1.5
+            ? mix(ivoryWhite * 0.94, goldenBrocade, patchMask)
+            : mix(ivoryWhite, vermilionBrocade, patchMask);
+
+          // 鳃盖柔和弧缝细节 (u ≈ 0.185)
+          float gillCurve = abs(u - 0.185 + 0.022 * clamp(vLocalOrig.y * 8.0, -1.0, 1.0));
+          float gillLine = (1.0 - 0.18 * exp(-pow(gillCurve / 0.008, 2.0))) * step(-0.06, vLocalOrig.y);
+          bodyPalette *= gillLine;
+
+          // 交错菱形珠光鱼鳞网格（头盖 u < 0.19 光滑玉润，躯干 u >= 0.19 排布细密鱼鳞）
+          float hasScales = smoothstep(0.17, 0.22, u);
+          vec2 scaleGrid = vec2(u * 28.0, atan(vLocalOrig.y, vLocalOrig.x) * 4.5);
+          scaleGrid.y += mod(floor(scaleGrid.x), 2.0) * 0.5;
+          vec2 sf = fract(scaleGrid) - 0.5;
+          float scaleArc = clamp(1.0 - dot(sf, sf) * 3.1, 0.0, 1.0);
+          float scaleRim = smoothstep(0.18, 0.02, abs(length(sf) - 0.44)) * step(sf.x, 0.15);
+          bodyPalette *= mix(1.0, 0.87 + 0.19 * scaleArc, hasScales);
+          N = normalize(N + vec3(sf.x, sf.y, 0.0) * (0.18 * hasScales));
+
+          // 头部两侧乌润灵动鱼眼与细金眼圈 (u ≈ 0.095, 侧上方)
+          float sideX = abs(vLocalOrig.x);
+          float eyeDist = length(vec2((u - 0.098) * 15.0, (vLocalOrig.y - 0.024) * 19.0));
+          if (sideX > 0.042 && eyeDist < 0.52) {
+            float pupil = smoothstep(0.32, 0.20, eyeDist);
+            float goldRing = smoothstep(0.52, 0.36, eyeDist) * (1.0 - pupil);
+            bodyPalette = mix(bodyPalette, uGoldColor * 1.18, goldRing * 0.92);
+            bodyPalette = mix(bodyPalette, vec3(0.03), pupil * 0.96);
+          }
+
+          // 活鱼生物组织次表面暖玉透射 (SSS) + 清波涟漪焦散 + 水膜清漆高光
+          float topLight = clamp(N.y * 0.55 + 0.45, 0.0, 1.0);
+          float sssWarmth = 0.22 * (1.0 - topLight);
+          float sideFill = 0.80 + 0.20 * clamp(dot(N, normalize(vec3(0.4, 0.78, 0.5))), 0.0, 1.0);
+          float caustics = 0.5 + 0.5 * sin(vWorldPos.x * 5.8 + uTime * 3.8) * cos(vWorldPos.z * 5.8 - uTime * 3.1);
+
+          vec3 H = normalize(viewDir + normalize(vec3(0.25, 0.88, 0.40)));
+          float wetSpec = pow(max(dot(N, H), 0.0), 42.0) * (1.0 - 0.55 * submerge);
+          float pearlGlint = pow(max(dot(N, H), 0.0), 13.0) * scaleRim * hasScales;
+
+          vec3 col = bodyPalette * (0.42 + 0.68 * topLight * sideFill)
+                   + mix(bodyPalette, uGoldColor, 0.45) * sssWarmth
+                   + mix(uGoldColor, uFlameCore, 0.48) * (wetSpec * 0.62 + pearlGlint * 0.52 + meniscus * 0.28 + caustics * 0.11)
+                   + bodyPalette * uMelodyGlow * 0.12;
+
+          // 水下部分柔和融合清波深水色调，呈现真实“半浸瑶池清波”体积感
+          col = mix(col, mix(col * 0.72, waterTint + caustics * uGoldColor * 0.12, 0.46), submerge);
+          col = col / (vec3(1.0) + col * 0.36);
+
+          float bodyAlpha = mix(0.99, 0.84, submerge);
+          gl_FragColor = vec4(col, bodyAlpha);
         }
       `,
       transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
+      blending: THREE.NormalBlending,
+      depthWrite: true,
       side: THREE.DoubleSide,
     });
     this.koiInstanced = new THREE.InstancedMesh(koiGeo, this.koiMaterial, NUM_KOI);
     this.koiInstanced.frustumCulled = false;
-    for (let i = 0; i < NUM_KOI; i++) {
-      this.koiStates.push({
-        speed: 0.48 + seedRand() * 0.36,
-        phase: (i / NUM_KOI) * Math.PI * 2,
-        radiusX: 5.8 + seedRand() * 5.8,
-        radiusZ: 5.4 + seedRand() * 5.2,
-        yBase: 0.14 + seedRand() * 0.38,
-        scale: 0.65 + seedRand() * 0.30,
-      });
-    }
+    this.koiInstanced.renderOrder = 2;
     this.scene.add(this.koiInstanced);
+
+    // 锦鲤伴游水波纹与水下柔影（紧贴 y = 0.054 水面，含鱼腹水下暗影、扩散金环与 V 形游鱼分水尾迹）
+    const ripplePlane = new THREE.PlaneGeometry(1.95, 2.75);
+    ripplePlane.rotateX(-Math.PI / 2);
+    const koiRippleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: this.uniforms.uTime,
+        uGoldColor: this.uniforms.uGoldColor,
+        uFlameCore: this.uniforms.uFlameCore,
+        uFogColor: this.uniforms.uFogColor,
+      },
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uGoldColor;
+        uniform vec3 uFlameCore;
+        uniform vec3 uFogColor;
+        varying vec2 vUv;
+        void main() {
+          // PlaneGeometry 绕 X 旋 -90° 后：vUv.y=0 为前方(+Z)，vUv.y=1 为后方(-Z)
+          vec2 p = vec2((vUv.x - 0.5) * 2.0, (vUv.y - 0.38) * 1.65);
+          float r = length(p);
+          if (r > 1.05) discard;
+
+          // 1) 鱼身正下方的水下柔和投影，使鱼体稳稳浸融于池水不再悬浮
+          float shadowBody = exp(-(p.x * p.x * 16.0 + (p.y - 0.08) * (p.y - 0.08) * 5.2)) * 0.42;
+
+          // 2) 两道向外轻柔扩散的同心椭圆涟漪 + V 形分水尾波
+          float p1 = fract(uTime * 0.58);
+          float p2 = fract(uTime * 0.58 + 0.5);
+          float ring1 = exp(-pow((r - (0.16 + p1 * 0.78)) * 13.0, 2.0)) * (1.0 - p1);
+          float ring2 = exp(-pow((r - (0.16 + p2 * 0.78)) * 13.0, 2.0)) * (1.0 - p2);
+          float vWake = exp(-pow((abs(p.x) - max(0.0, p.y + 0.12) * 0.48) * 14.0, 2.0))
+                      * smoothstep(-0.10, 0.15, p.y) * smoothstep(0.95, 0.25, r) * 0.55;
+
+          float glint = (ring1 + ring2 + vWake) * smoothstep(1.02, 0.20, r) * 0.52;
+          float alpha = clamp(shadowBody + glint, 0.0, 0.75);
+          vec3 wakeCol = mix(uGoldColor, uFlameCore, 0.38);
+          vec3 col = mix(uFogColor * 0.25, wakeCol, glint / max(alpha, 1e-4));
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.koiRipplesInstanced = new THREE.InstancedMesh(ripplePlane, koiRippleMat, NUM_KOI);
+    this.koiRipplesInstanced.frustumCulled = false;
+    this.koiRipplesInstanced.renderOrder = 1;
+    this.scene.add(this.koiRipplesInstanced);
 
     // 12. 圆润晶莹高斯流萤金尘（自定义圆形柔光点精灵，彻底根除正方形像素块）
     const fireflyGeo = new THREE.BufferGeometry();
@@ -2122,26 +2796,63 @@ export class PavilionScene implements MvScene {
       dougong.translate(Math.cos(a) * 4.35, 1.62, Math.sin(a) * 4.35);
       woodParts.push(dougong.toNonIndexed());
     }
+
+    // 下层重檐内口八角平座暗层围墙与围脊压边（彻底封堵下檐顶口镂空，令俯视严丝合缝）
+    const mezzanineWall = new THREE.CylinderGeometry(2.92, 2.98, 0.55, 8);
+    mezzanineWall.translate(0, 3.16, 0);
+    woodParts.push(mezzanineWall.toNonIndexed());
+    const mezzanineCollar = new THREE.CylinderGeometry(3.08, 2.96, 0.14, 8);
+    mezzanineCollar.translate(0, 3.04, 0);
+    pavJadeParts.push(mezzanineCollar.toNonIndexed());
+
     this.pavilionGroup.add(new THREE.Mesh(mergeGeometries(pavJadeParts, false), jadeMat));
     this.pavilionGroup.add(new THREE.Mesh(mergeGeometries(woodParts, false), lacquerMat));
 
-    // 5) 双层八角凹曲反宇飞檐琉璃瓦顶（带起翘翼角）+ 鎏金火焰宝珠刹顶
+    // 5) 双层八角凹曲反宇飞檐琉璃瓦顶 + 16 道立体攒尖垂脊走兽 + 6 层精雕鎏金覆钵仰覆莲相轮宝顶
     const lowerRoofGeo = createChineseOctagonalRoofGeometry(2.85, 6.75, 1.55, 0.62);
     lowerRoofGeo.translate(0, 1.52, 0);
-    const upperRoofGeo = createChineseOctagonalRoofGeometry(0.08, 5.05, 2.15, 0.56);
+    const upperRoofGeo = createChineseOctagonalRoofGeometry(0.36, 5.05, 2.15, 0.56);
     upperRoofGeo.translate(0, 3.32, 0);
     this.pavilionGroup.add(new THREE.Mesh(mergeGeometries([lowerRoofGeo.toNonIndexed(), upperRoofGeo.toNonIndexed()], false), roofTileMat));
 
-    // 鎏金宝顶相轮与八脊吻兽金饰
-    const finialBase = new THREE.CylinderGeometry(0.18, 0.42, 0.36, 8);
-    finialBase.translate(0, 5.55, 0);
-    goldParts.push(finialBase.toNonIndexed());
-    const finialOrb1 = new THREE.SphereGeometry(0.24, 12, 10);
-    finialOrb1.translate(0, 5.92, 0);
+    const ridgeMat = makeArchMat(this.colorRoofTile, 5);
+    const lowerRidges = createOctagonalRoofRidgesGeometry(2.85, 6.75, 1.55, 0.62, 1.52);
+    const upperRidges = createOctagonalRoofRidgesGeometry(0.36, 5.05, 2.15, 0.56, 3.32);
+    this.pavilionGroup.add(new THREE.Mesh(mergeGeometries([lowerRidges, upperRidges], false), ridgeMat));
+
+    // 六层精雕皇家鎏金覆钵仰覆莲相轮宝顶（双层厚实压脊莲座完全包覆脊顶消除穿模 -> 束腰仰莲 -> 饱满覆钵 -> 三重相轮 -> 摩尼宝珠 -> 火焰刹针）
+    const finialSkirt = new THREE.CylinderGeometry(0.62, 0.84, 0.30, 8);
+    finialSkirt.translate(0, 5.46, 0);
+    goldParts.push(finialSkirt.toNonIndexed());
+
+    const finialLotusPad = new THREE.CylinderGeometry(0.50, 0.64, 0.16, 16);
+    finialLotusPad.translate(0, 5.66, 0);
+    goldParts.push(finialLotusPad.toNonIndexed());
+
+    const finialWaist = new THREE.CylinderGeometry(0.44, 0.35, 0.16, 16);
+    finialWaist.translate(0, 5.80, 0);
+    goldParts.push(finialWaist.toNonIndexed());
+
+    const finialBowl = new THREE.SphereGeometry(0.38, 16, 12);
+    finialBowl.scale(1.0, 0.74, 1.0);
+    finialBowl.translate(0, 6.02, 0);
+    goldParts.push(finialBowl.toNonIndexed());
+
+    for (let ri = 0; ri < 3; ri++) {
+      const rRing = 0.29 - ri * 0.04;
+      const ring = new THREE.CylinderGeometry(rRing, rRing * 1.08, 0.055, 16);
+      ring.translate(0, 6.30 + ri * 0.115, 0);
+      goldParts.push(ring.toNonIndexed());
+    }
+
+    const finialOrb1 = new THREE.SphereGeometry(0.21, 16, 12);
+    finialOrb1.translate(0, 6.72, 0);
     goldParts.push(finialOrb1.toNonIndexed());
-    const finialSpire = new THREE.ConeGeometry(0.10, 0.75, 8);
-    finialSpire.translate(0, 6.45, 0);
+
+    const finialSpire = new THREE.ConeGeometry(0.085, 0.68, 12);
+    finialSpire.translate(0, 7.14, 0);
     goldParts.push(finialSpire.toNonIndexed());
+
     this.pavilionGroup.add(new THREE.Mesh(mergeGeometries(goldParts, false), goldMat));
 
     // 5) 24 盏精雕古典六角鎏金宫灯实例（水榭上下两层飞檐共 16 盏 + 汉白玉池栏 8 盏）
@@ -2319,12 +3030,14 @@ export class PavilionScene implements MvScene {
       poseLookAt(pos, quat, x, y, z, -1.0 * dir, 7.0, PAVILION_Z - 2.0);
       return CAM_FOV + 1.0;
     } else if (variant === 'zenith') {
-      // 凌霄俯瞰视点：凝视展开的丝绸封面画卷、环池莲灯与八角重檐天阙
-      const x = lerp(-1.2 * dir, 1.2 * dir, e);
-      const y = lerp(22.5, 18.5, e);
-      const z = lerp(-26.5, -28.5, e);
-      poseLookAt(pos, quat, x, y, z, 0, 0.5, PAVILION_Z);
-      return CAM_FOV + 3.0;
+      // 凌霄环绕俯瞰视点：尽览重檐八角放射琉璃筒瓦、16 道描金垂脊走兽、鎏金相轮宝顶与环池游鲤莲灯
+      const ang = lerp(-0.34 * dir, 0.34 * dir, e);
+      const rad = lerp(9.6, 7.2, e);
+      const x = Math.sin(ang) * rad;
+      const y = lerp(23.2, 19.6, e);
+      const z = PAVILION_Z + Math.cos(ang) * rad;
+      poseLookAt(pos, quat, x, y, z, 0, 3.1, PAVILION_Z);
+      return CAM_FOV + 2.0;
     } else {
       // pavilion: 正面全景黄金构图（默认）
       const theta = lerp(-0.20 * dir, 0.20 * dir, e);
@@ -2497,27 +3210,39 @@ export class PavilionScene implements MvScene {
     const activeLanterns = this.updateSkyAndLotusLanterns(t, melodyGlow, dropIgnite, isBreak);
     this.skyDomeUniforms.uLanternWarmth.value = clamp01(activeLanterns / 240) * (0.75 + 0.45 * melodyGlow);
 
-    // 5. 更新游弋流光锦鲤位置与切向朝向
+    // 5. 更新贴水游弋真锦鲤与伴游水纹涟漪（自然游鱼蜿蜒巡游轨迹，紧贴瑶池清波）
     const dummy = this.reusableDummy;
+    const evalKoiPos = (ks: KoiState, tau: number, idx: number, out: THREE.Vector3) => {
+      const th = tau * ks.speed + ks.phase;
+      const wanderR = 1.0 + 0.14 * Math.sin(tau * 0.37 + ks.seed * 19.0);
+      const x = Math.cos(th) * ks.radiusX * wanderR;
+      const z = PAVILION_Z + Math.sin(th) * ks.radiusZ * wanderR;
+      const y = ks.yBase + Math.sin(tau * 1.35 + idx * 1.7) * 0.012 + (isDrop ? 0.022 : 0.0);
+      out.set(x, y, z);
+    };
+    const curKoiPos = new THREE.Vector3();
+    const nxtKoiPos = new THREE.Vector3();
     for (let i = 0; i < NUM_KOI; i++) {
       const ks = this.koiStates[i];
-      const theta = t * ks.speed + ks.phase;
-      const x = Math.cos(theta) * ks.radiusX;
-      const z = PAVILION_Z + Math.sin(theta) * ks.radiusZ;
-      const y = ks.yBase + Math.sin(t * 1.45 + i * 1.3) * 0.14 + (isDrop ? 0.45 : 0.0);
+      evalKoiPos(ks, t, i, curKoiPos);
+      evalKoiPos(ks, t + 0.05, i, nxtKoiPos);
 
-      const nextTheta = theta + 0.04;
-      const nextX = Math.cos(nextTheta) * ks.radiusX;
-      const nextZ = PAVILION_Z + Math.sin(nextTheta) * ks.radiusZ;
-      const nextY = ks.yBase + Math.sin((t + 0.04 / ks.speed) * 1.45 + i * 1.3) * 0.14 + (isDrop ? 0.45 : 0.0);
-
-      dummy.position.set(x, y, z);
-      dummy.lookAt(nextX, nextY, nextZ);
-      dummy.scale.set(ks.scale, ks.scale, ks.scale * (1.0 + kickPulse * 0.22));
+      dummy.position.copy(curKoiPos);
+      dummy.lookAt(nxtKoiPos);
+      const s = ks.scale;
+      dummy.scale.set(s, s, s * (1.0 + kickPulse * 0.08));
       dummy.updateMatrix();
       this.koiInstanced.setMatrixAt(i, dummy.matrix);
+
+      // 伴游水波纹紧贴水面 y = 0.054 跟随鱼身水平朝向
+      dummy.position.set(curKoiPos.x, 0.054, curKoiPos.z);
+      dummy.lookAt(nxtKoiPos.x, 0.054, nxtKoiPos.z);
+      dummy.scale.set(s, s, s);
+      dummy.updateMatrix();
+      this.koiRipplesInstanced.setMatrixAt(i, dummy.matrix);
     }
     this.koiInstanced.instanceMatrix.needsUpdate = true;
+    this.koiRipplesInstanced.instanceMatrix.needsUpdate = true;
 
     // 6. 更新圆润高斯流萤金尘纯函数飘升轨迹
     const posAttr = this.firefliesPoints.geometry.getAttribute('position') as THREE.BufferAttribute;
