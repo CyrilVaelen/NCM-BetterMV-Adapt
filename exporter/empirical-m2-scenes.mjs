@@ -463,6 +463,8 @@ test('M2 4大新场景：黑白封面中性灰保护真实饱和度断言 (S <= 
     ['eclipse.colorRockMid', eclipse.colorRockMid],
     ['eclipse.colorRockLight', eclipse.colorRockLight],
     ['eclipse.colorLightning', eclipse.colorLightning],
+    ['eclipse.colorLightningCore', eclipse.colorLightningCore],
+    ['eclipse.colorLightningAura', eclipse.colorLightningAura],
     ['eclipse.lightningMaterial.color', eclipse.lightningMaterial.color],
   ];
   for (const [name, col] of eclipColors) {
@@ -740,6 +742,80 @@ test('EclipseScene：火山柱状玄武岩与黑曜石断崖立体几何、内�
   );
   // 校验 ridge 机位处于峡谷净空内（|x| < 10.5m），绝不穿入两侧岩体
   assert.ok(Math.abs(eclipse.camera.position.x) < 10.5, `ridge 机位不得穿入峡谷岩体: x=${eclipse.camera.position.x.toFixed(3)}`);
+});
+
+test('EclipseScene：三维分形体积闪电树拓扑多样性、梯级先导/多重回击动力学、近场线光源照明与 Seek 幂等性校验', () => {
+  const { music, lyrics, palette, init } = buildMockFixture();
+  const eclipse = new mods.EclipseScene(init, 'pulse');
+  const shot = { scene: 'eclipse', start: 8, end: 24, variant: 'canyon', seed: 11, section: music.a.sections[1], sectionIndex: 1 };
+
+  assert.ok(eclipse.strikeEvents.length >= 25, `预烘焙雷击事件数应充足 (>=25)，实测=${eclipse.strikeEvents.length}`);
+  assert.ok(eclipse.canyonMaterial.fragmentShader.includes('evalBoltSegmentLight'), '峡谷岩石着色器必须启用三维闪电近场线光源照明');
+  assert.ok(eclipse.magmaRiverMaterial.fragmentShader.includes('evalRiverBoltGlint'), '谷底熔岩河着色器必须启用落雷电弧倒影高光');
+
+  // 1. 校验相邻雷击事件绝不原地重复同一路径（分形原型与三维空间落点均动态轮换）
+  for (let i = 1; i < Math.min(20, eclipse.strikeEvents.length); i++) {
+    const prev = eclipse.strikeEvents[i - 1];
+    const curr = eclipse.strikeEvents[i];
+    assert.notEqual(curr.archetype, prev.archetype, `相邻雷击事件 [${i - 1}] 与 [${i}] 不得复用同一棵分形闪电树原型`);
+    const endDist = Math.hypot(curr.bx - prev.bx, curr.by - prev.by, curr.bz - prev.bz);
+    assert.ok(endDist > 4.0, `相邻雷击事件落点必须产生明显三维空间迁移 (>4m)，实测=${endDist.toFixed(2)}m`);
+  }
+
+  // 2. 选取一次独立雷击校验：梯级先导半途 -> 主回击全贯通 -> 静默期归零
+  const ev = eclipse.strikeEvents.find((e, idx) => {
+    const next = eclipse.strikeEvents[idx + 1];
+    const prev = eclipse.strikeEvents[idx - 1];
+    return e.hasCloudSheet && e.t0 > 9.0 && e.t0 < 22.0 && (!prev || e.t0 - prev.t0 > 0.5) && (!next || next.t0 - e.t0 > 0.5);
+  }) ?? eclipse.strikeEvents[5];
+
+  const tLeadMid = ev.t0 + ev.leadDur * 0.45;
+  eclipse.update({ t: tLeadMid, dt: 1 / 60, shotT: tLeadMid - shot.start, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  const leadSegs = eclipse.lightningMesh.geometry.instanceCount;
+
+  const tPeak = ev.t0 + ev.leadDur + 0.004;
+  eclipse.update({ t: tPeak, dt: 1 / 60, shotT: tPeak - shot.start, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  const peakSegs = eclipse.lightningMesh.geometry.instanceCount;
+  const peakFlares = eclipse.lightningFlaresMesh.geometry.instanceCount;
+  const peakPower = eclipse.canyonMaterial.uniforms.uBoltPower.value.clone();
+  const peakStartSample = Array.from(eclipse.lightningMesh.geometry.getAttribute('aStart').array.slice(0, 18));
+
+  assert.ok(peakSegs >= 120, `单道分形闪电主回击激活段数应具备丰富三级树状细节 (>=120)，实测=${peakSegs}`);
+  assert.ok(leadSegs > 0 && leadSegs < peakSegs, `先导击穿半途段数 (${leadSegs}) 应小于接地主回击全贯通段数 (${peakSegs})`);
+  assert.ok(peakFlares >= 2, `主回击瞬间应同时点亮天顶雷云漫射闪光与落点接触电浆爆光 (>=2)，实测=${peakFlares}`);
+  assert.ok(peakPower.x > 0.6, `主回击瞬间近场岩石照明功率必须显著激活 (>0.6)，实测=${peakPower.x.toFixed(3)}`);
+
+  const boltB0 = eclipse.canyonMaterial.uniforms.uBoltB0.value;
+  assert.ok(
+    Math.hypot(boltB0.x - ev.bx, boltB0.y - ev.by, boltB0.z - ev.bz) < 1e-3,
+    '近场岩石照明线段终点 uBoltB0 必须精确锚定当前闪电真实三维落点',
+  );
+
+  // 3. 跨 Drop 三雷齐轰与静默帧随机 Seek 后再回到 tPeak，所有实例数据比特级严格一致（误差=0）
+  const dropShot = { scene: 'eclipse', start: 40, end: 64, variant: 'corona', seed: 22, section: music.a.sections[3], sectionIndex: 3 };
+  eclipse.update({ t: 40.08, dt: 1 / 60, shotT: 0.08, shot: dropShot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.ok(eclipse.lightningMesh.geometry.instanceCount >= 240, 'Drop 首拍多雷齐劈应并发渲染大规模分形闪电群');
+
+  // 找一个远离所有雷击的静默时刻
+  let tQuiet = 0.05;
+  for (let probe = 1.0; probe < 38.0; probe += 0.11) {
+    if (eclipse.strikeEvents.every(e => probe < e.t0 - 0.05 || probe > e.t0 + 0.45)) {
+      tQuiet = probe;
+      break;
+    }
+  }
+  eclipse.update({ t: tQuiet, dt: 1 / 60, shotT: 0.5, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.equal(eclipse.lightningMesh.geometry.instanceCount, 0, '非雷击静默期闪电实例数必须严格归零');
+  assert.equal(eclipse.canyonMaterial.uniforms.uBoltPower.value.x, 0, '非雷击静默期近场闪电照明功率必须严格归零');
+
+  // 逆向 Seek 回 tPeak
+  eclipse.update({ t: tPeak, dt: 1 / 60, shotT: tPeak - shot.start, shot, music, lyrics, palette, fx: mods.defaultFx(), aspect: 16 / 9 });
+  assert.equal(eclipse.lightningMesh.geometry.instanceCount, peakSegs, 'Seek 回主回击时刻实例段数必须严格一致');
+  assert.equal(eclipse.canyonMaterial.uniforms.uBoltPower.value.x, peakPower.x, 'Seek 回主回击时刻近场照明功率必须严格一致');
+  const afterSeekSample = Array.from(eclipse.lightningMesh.geometry.getAttribute('aStart').array.slice(0, 18));
+  for (let k = 0; k < peakStartSample.length; k++) {
+    assert.equal(afterSeekSample[k], peakStartSample[k], `Seek 后第 ${k} 个闪电顶点分量不一致`);
+  }
 });
 
 test('设置面板缩略图完整性：全部 49 个场景与 6 种媒介滤镜在 public/previews 下均存在有效 WebP 示意图', () => {
