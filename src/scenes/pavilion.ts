@@ -1449,7 +1449,7 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     vec3 poolBounce = mix(uMainColor, uGoldColor, 0.52) * albedo * nDotPool * poolAtten
                     * (1.35 + 0.65 * uDropIgnite + 0.32 * uMelodyGlow) * lightGain * archAO;
 
-    // 3) 双层八角飞檐悬挂宫灯环形暖光源（精准照亮飞檐翘角底部、廊柱上部与雕花围栏上沿）
+    // 3) 双层八角飞檐悬挂宫灯环形暖光源与外围望柱宫灯精准近场照明
     float dLowerRing = length(vec2(rHoriz - 6.35, vWorldPos.y - 6.35));
     float dUpperRing = length(vec2(rHoriz - 4.75, vWorldPos.y - 8.25));
     float dRailRing  = length(vec2(rHoriz - 14.1, vWorldPos.y - 1.25));
@@ -1461,6 +1461,37 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     float candleFlick = 0.94 + 0.06 * sin(uTime * 8.0 + rHoriz);
     vec3 lanternWarm = mix(uGoldColor, uFlameCore, 0.24) * lanternAtten * lanternWrap * candleFlick
                      * (albedo * 2.05 * lightGain) * archAO;
+
+    // 外围天池 8 根精雕石望柱与挑臂的精准近场点光源照明（大幅增强望柱八角棱柱、莲花承盘、铜箍与雀替立体明暗对比与镜面微高光）
+    vec3 curbPostSpotWarm = vec3(0.0);
+    if (rHoriz > 11.5) {
+      float angFragment = atan(relXZ.y, relXZ.x);
+      float postIndex = floor((angFragment - 0.392699) / 0.785398 + 0.5);
+      float aNearestPost = postIndex * 0.785398 + 0.392699;
+      vec3 nearestLampPos = vec3(cos(aNearestPost) * 13.65, 1.05, -32.0 + sin(aNearestPost) * 13.65);
+      vec3 toPostLamp = nearestLampPos - vWorldPos;
+      float dPostLamp = length(toPostLamp);
+      vec3 postLampDir = toPostLamp / max(dPostLamp, 0.01);
+      float postAtten = 1.0 / (1.0 + 1.25 * dPostLamp * dPostLamp);
+      float nDotPost = max(dot(N, postLampDir), 0.0);
+
+      // 望柱近场漫反射照亮与玉石微次表面透温（迎光面温润通透，背光面有千灯与池水漫射层次）
+      float subSurfWarm = pow(clamp(dot(-viewDir, postLampDir) * 0.5 + 0.5, 0.0, 1.0), 2.0) * (1.0 - roughness * 0.5);
+      float backAmbient = (1.0 - nDotPost) * 0.22 * (0.8 + 0.2 * uMelodyGlow);
+      vec3 postDiffuse = mix(uGoldColor, uFlameCore, 0.38) * albedo * (nDotPost + subSurfWarm * 0.22 + backAmbient) * postAtten * 5.5 * candleFlick * archAO;
+
+      // 望柱近场 Blinn-Phong 镜面微高光（迎光面八棱棱边、仰莲承盘与青铜鎏金抱箍闪耀温润反光）
+      vec3 H_post = normalize(viewDir + postLampDir);
+      float nDotH_post = max(dot(N, H_post), 0.0);
+      bool isBronzeGold = (uStyleKind > 2.5 && uStyleKind < 3.5);
+      bool isStoneJade = (uStyleKind > 0.5 && uStyleKind < 2.5);
+      float specExp = isBronzeGold ? 42.0 : (isStoneJade ? 24.0 : 18.0);
+      float specGain = isBronzeGold ? 1.85 : (isStoneJade ? 0.45 : 0.65);
+      float postSpec = pow(nDotH_post, specExp) * specGain * postAtten * candleFlick;
+      vec3 postSpecCol = isBronzeGold ? mix(uGoldColor, uFlameCore, 0.5) : mix(uGoldColor, vec3(1.0), 0.35);
+
+      curbPostSpotWarm = postDiffuse + postSpecCol * postSpec * archAO;
+    }
 
     // 4) 漫天千灯高空暖霞顶光 + 皇家琉璃瓦清漆釉面多方位高光（专门激活俯视视角下饱满的琉璃瓦垄光泽）
     vec3 topGlazeTerm = vec3(0.0);
@@ -1488,7 +1519,7 @@ const PAVILION_ARCH_FRAG = /* glsl */ `
     float spec = pow(max(dot(N, H), 0.0), specPow) * specStrength;
     float fresnel = pow(1.0 - max(dot(N, viewDir), 0.0), 3.4) * (1.0 - roughness * 0.72) * lightGain;
 
-    vec3 col = skyAmb + poolBounce + lanternWarm + topGlazeTerm
+    vec3 col = skyAmb + poolBounce + lanternWarm + curbPostSpotWarm + topGlazeTerm
              + uGoldColor * (spec * 0.34 + fresnel * 0.12 * (1.0 + 0.6 * uDropIgnite)) * archAO;
 
     // 胶片级柔和肩部压限，确保古建基座、栏杆与琉璃瓦面温润润泽绝不泛白过曝
@@ -1772,8 +1803,8 @@ export class PavilionScene implements MvScene {
     this.cloudsFloorMesh.position.set(0, -3.6, PAVILION_Z);
     this.scene.add(this.cloudsFloorMesh);
 
-    // 6. 圆形瑶池清波水面映照画卷封面 + 菲涅尔夜水光学 + 宫灯/河灯涟漪倒影 (Silk Scroll Pool at Y = 0.05, Z = -32m)
-    const poolGeo = new THREE.CircleGeometry(POOL_RADIUS, 72);
+    // 6. 圆形瑶池清波水面映照画卷封面 + 物理菲涅尔与水波光线追踪倒影系统 (Silk Scroll Pool at Y = 0.05, Z = -32m)
+    const poolGeo = new THREE.CircleGeometry(POOL_RADIUS, 96);
     this.silkPoolMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uCover: this.uniforms.uCover,
@@ -1824,41 +1855,156 @@ export class PavilionScene implements MvScene {
 
         void main() {
           vec2 centered = vUv - vec2(0.5);
-          float r = length(centered) * 2.0;
+          float rNorm = length(centered) * 2.0;
+          vec2 relPoolXZ = vWorldPos.xz - vec2(0.0, -32.0);
+          float distCenter = length(relPoolXZ);
 
-          // 多频清澈水波微折射（严格保持原封面空间色块拓扑连贯）
-          float w1 = poolNoise(vWorldPos.xz * 0.85 + vec2(uTime * 0.36, -uTime * 0.28));
-          float w2 = poolNoise(vWorldPos.xz * 1.95 - vec2(uTime * 0.44, uTime * 0.31));
-          float ripple = sin(r * 22.0 - uTime * 3.2) * 0.0048 + (w1 + w2 - 1.0) * 0.0055;
-          vec2 warpedUv = clamp(vUv + centered * ripple * 1.35, 0.0, 1.0);
+          // 1. 多尺度动态物理水波法线系统（同心扩散微波 + 双交错风浪 + 高频微流体毛细张力波）
+          float w1 = sin(distCenter * 3.2 - uTime * 2.4 + poolNoise(vWorldPos.xz * 0.42) * 2.4);
+          float w2 = sin((relPoolXZ.x * 0.72 + relPoolXZ.y * 1.08) * 1.95 - uTime * 1.75);
+          float w3 = cos((relPoolXZ.x * 1.42 - relPoolXZ.y * 0.82) * 3.25 + uTime * 2.65);
+
+          vec2 capUv1 = vWorldPos.xz * 2.6 + vec2(uTime * 0.38, -uTime * 0.28);
+          vec2 capUv2 = vWorldPos.xz * 5.8 - vec2(uTime * 0.58, uTime * 0.48);
+          float cn1 = poolNoise(capUv1);
+          float cn2 = poolNoise(capUv2);
+
+          float dNx = (w1 * (relPoolXZ.x / max(distCenter, 0.08)) * 0.040 + w2 * 0.72 * 0.034 + w3 * 1.42 * 0.022)
+                    + (cn1 - 0.5) * 0.078 + (cn2 - 0.5) * 0.042;
+          float dNz = (w1 * (relPoolXZ.y / max(distCenter, 0.08)) * 0.040 + w2 * 1.08 * 0.034 - w3 * 0.82 * 0.022)
+                    + (cn2 - 0.5) * 0.078 + (cn1 - 0.5) * 0.042;
+          vec3 waterN = normalize(vec3(-dNx, 1.0, -dNz));
+
+          // 2. 真实视线向量与物理菲涅尔反射率 (Schlick 模型)
+          vec3 V = normalize(uCamPos - vWorldPos);
+          float nDotV = clamp(dot(waterN, V), 0.0, 1.0);
+          float F0 = 0.038;
+          float fresnel = F0 + (1.0 - F0) * pow(1.0 - nDotV, 5.0);
+
+          // 3. 真实物理视线反射射线 R = reflect(-V, waterN)
+          vec3 R = reflect(-V, waterN);
+
+          // 4. 水下丝绸画卷封面折射透射与动态微焦散光斑（彻底告别发黑发暗，保全封面原始瑰丽色泽）
+          vec2 refrOffset = waterN.xz * 0.015;
+          vec2 warpedUv = clamp(vUv + refrOffset, 0.0, 1.0);
           vec4 coverColor = texture2D(uCover, warpedUv);
 
-          // 真实夜色瑶池深水透射与菲涅尔视角反射（既完整保留画卷封面连贯色块，又赋予幽静清波深水感）
-          vec3 viewDir = normalize(uCamPos - vWorldPos);
-          vec3 waterN = normalize(vec3((w1 - 0.5) * 0.10, 1.0, (w2 - 0.5) * 0.10));
-          float fresnel = pow(1.0 - clamp(dot(waterN, viewDir), 0.0, 1.0), 3.0);
-          float radialDepth = mix(0.76, 0.44, smoothstep(0.12, 0.96, r));
-          vec3 nightWaterBed = mix(uFogColor * 1.15, coverColor.rgb * radialDepth, 0.86);
+          // 丝绸细腻经纬金丝微织纹
+          float silkWeave = 0.97 + 0.03 * sin(vWorldPos.x * 135.0) * cos(vWorldPos.z * 135.0);
+          // 纯净水深温润透明度（浅水高透，深水温润保真 88%~96%）
+          float waterClarity = mix(0.96, 0.86, smoothstep(0.12, 0.96, rNorm));
+          // 水下微波焦散聚焦金网光斑
+          float caustic = pow(0.5 + 0.5 * sin(vWorldPos.x * 4.2 + cn1 * 3.4 - uTime * 2.1)
+                                  * cos(vWorldPos.z * 4.2 + cn2 * 3.4 + uTime * 1.8), 2.2);
+          vec3 waterBedRgb = coverColor.rgb * silkWeave * waterClarity
+                           + mix(uGoldColor, uFlameCore, 0.32) * caustic * 0.15 * (1.0 + 0.45 * uDropIgnite);
 
-          // 八盏飞檐宫灯与外圈莲花河灯在水波上的拉丝柔光倒影与细密水纹丝光
-          float ang = atan(vWorldPos.z + 32.0, vWorldPos.x);
-          float eightFold = pow(0.5 + 0.5 * cos(ang * 8.0 + ripple * 20.0), 4.0);
-          float eaveReflBand = exp(-pow((r - 0.48) * 5.4, 2.0)) * eightFold;
-          float lotusReflBand = exp(-pow((r - 0.85) * 7.8, 2.0)) * (0.52 + 0.48 * sin(ang * 16.0 - uTime * 2.1));
-          float fineRipples = (0.5 + 0.5 * sin(r * 42.0 - uTime * 3.8 + w1 * 3.0)) * 0.045;
-          float shimmer = 0.82 + 0.18 * sin(r * 36.0 - uTime * 4.8 + ang * 4.0);
-          vec3 lanternRefl = mix(uGoldColor, uFlameCore, 0.30) * (eaveReflBand * 0.34 + lotusReflBand * 0.40 + fineRipples) * shimmer;
+          // 5. 水榭大殿与 16 盏飞檐宫灯真实物理平面光追倒影 (Ray-Plane Traced Pavilion & Eaves Reflection)
+          vec3 pavReflColor = vec3(0.0);
+          float tPav = (-32.0 - vWorldPos.z) / (R.z - 0.001);
+          if (tPav > 0.0 && tPav < 35.0) {
+            float xHit = vWorldPos.x + tPav * (R.x + dNx * 0.35);
+            float yHit = vWorldPos.y + tPav * (R.y + dNz * 0.35);
 
-          // 池畔温润石岸内缘暗金水际线与高潮水波律动
-          float edgeRing = smoothstep(0.996, 0.948, r);
-          float goldBorder = smoothstep(0.935, 0.962, r) * smoothstep(1.0, 0.980, r);
-          float waveSurge = max(0.0, sin(r * 13.0 - uTime * 7.2)) * uDropIgnite * 0.18;
+            // 1) 亭内通明金色灯火与朱红大殿倒影（Golden Chamber Core Glow）
+            float hallMask = smoothstep(5.4, 1.0, abs(xHit)) * smoothstep(1.5, 2.5, yHit) * smoothstep(6.2, 4.8, yHit);
+            // 八根廊柱在水面形成的金色光影竖纹
+            float pillarRibs = 0.70 + 0.30 * cos(xHit * 1.8);
+            vec3 hallGlow = mix(uMainColor, uFlameCore, 0.45) * hallMask * pillarRibs * (1.8 + 0.8 * uDropIgnite);
 
-          vec3 skyRefl = mix(uFogColor * 1.6, uGoldColor * 0.28, 0.35) * fresnel * 0.65;
-          vec3 finalRgb = (nightWaterBed + skyRefl + lanternRefl) * edgeRing;
-          finalRgb += uGoldColor * (goldBorder * 0.95 + waveSurge + uMelodyGlow * 0.08) * edgeRing;
+            // 2) 飞檐悬挂六角鎏金宫灯的金色耀斑（Eaves Palace Lanterns）
+            // 下檐宫灯 (y in [5.4, 7.0], |x| in [3.0, 7.0])
+            float lowerEaveLamps = smoothstep(5.4, 6.2, yHit) * smoothstep(7.2, 6.4, yHit)
+                                 * smoothstep(2.8, 4.2, abs(xHit)) * smoothstep(7.2, 5.8, abs(xHit))
+                                 * (0.6 + 0.4 * cos(xHit * 2.5 + dNx * 6.0));
+            // 上檐宫灯 (y in [7.0, 8.8], |x| in [2.0, 5.5])
+            float upperEaveLamps = smoothstep(7.0, 7.8, yHit) * smoothstep(8.8, 8.0, yHit)
+                                 * smoothstep(1.8, 3.2, abs(xHit)) * smoothstep(5.6, 4.6, abs(xHit))
+                                 * (0.6 + 0.4 * cos(xHit * 3.0));
+            vec3 lampGlow = mix(uGoldColor, uFlameCore, 0.52) * (lowerEaveLamps * 2.8 + upperEaveLamps * 2.2);
 
-          gl_FragColor = vec4(finalRgb, edgeRing);
+            // 3) 歇山飞檐琉璃瓦垄青翠金光倒影
+            float roofMask = smoothstep(1.5, 7.5, abs(xHit)) * smoothstep(5.8, 7.0, yHit) * smoothstep(9.4, 7.8, yHit);
+            vec3 roofGlow = mix(uMainColor * 0.85, uGoldColor, 0.42) * roofMask * 0.95;
+
+            // 4) 鎏金宝顶冲天璀璨倒影（Golden Finial Reflection）
+            float finialMask = smoothstep(1.4, 0.0, abs(xHit)) * smoothstep(8.8, 9.6, yHit) * smoothstep(11.2, 10.0, yHit);
+            vec3 finialGlow = mix(uGoldColor, uFlameCore, 0.6) * finialMask * 3.4 * (1.0 + 0.6 * uDropIgnite);
+
+            // 5) 水榭须弥座基座与御窑金砖地基倒影
+            float baseMask = smoothstep(6.0, 2.0, abs(xHit)) * smoothstep(0.1, 0.8, yHit) * smoothstep(2.2, 1.4, yHit);
+            vec3 baseGlow = mix(uGoldColor * 0.4, uMainColor * 0.35, 0.5) * baseMask;
+
+            pavReflColor = hallGlow + lampGlow + roofGlow + finialGlow + baseGlow;
+          }
+
+          // 6. 池畔 8 根精雕石望柱与 8 盏引路宫灯在水面的近岸粼粼倒影光柱 (8 Curb Baluster Glitter Trails)
+          vec3 curbReflColor = vec3(0.0);
+          for (int i = 0; i < 8; i++) {
+            float aPost = float(i) * 0.785398 + 0.392699;
+            vec3 lPos = vec3(cos(aPost) * 13.65, 1.05, -32.0 + sin(aPost) * 13.65);
+            vec3 toL = lPos - vWorldPos;
+            float distL = length(toL);
+            if (distL < 18.0) {
+              vec3 L = toL / distL;
+              vec3 H = normalize(V + L);
+              float nDotH = max(dot(waterN, H), 0.0);
+              float specTight = pow(nDotH, 48.0) * 3.2;
+              float specBroad = pow(nDotH, 12.0) * 1.5;
+              float distAtten = 1.0 / (1.0 + 0.07 * distL * distL);
+              float candleFlick = 0.94 + 0.06 * sin(uTime * 8.0 + float(i) * 1.57);
+              curbReflColor += mix(uGoldColor, uFlameCore, 0.45) * (specTight + specBroad * 0.6)
+                             * distAtten * candleFlick * (1.2 + 0.4 * uMelodyGlow);
+            }
+          }
+
+          // 7. 漫天升腾孔明灯海的天空倒映与星河水光 (Sky Lantern Galaxy Reflection)
+          vec3 skyGalaxyRefl = vec3(0.0);
+          if (R.y > 0.01) {
+            float skyElev = R.y;
+            float skyAzim = atan(R.z, R.x);
+            float skyWarmBand = exp(-abs(skyElev - 0.22) * 2.8);
+            vec3 skyBase = mix(uFogColor * 1.35, uMainColor * 0.65, skyWarmBand * 0.8)
+                         + uGoldColor * (skyWarmBand * 0.55);
+            vec2 lanternSkyUv = vec2(skyAzim * 24.0, skyElev * 32.0) + vec2(uTime * 0.06, -uTime * 0.12);
+            float starCell = poolNoise(lanternSkyUv * 3.6);
+            float stars = pow(max(0.0, starCell - 0.55) * 2.8, 3.5) * smoothstep(0.02, 0.70, skyElev);
+            skyGalaxyRefl = skyBase + mix(uGoldColor, uFlameCore, 0.45) * stars * 2.6;
+          }
+
+          // 8. 32 盏外圈天池莲花河灯在水面的近距柔润倒影
+          float angP = atan(relPoolXZ.y, relPoolXZ.x);
+          float lotusReflBand = exp(-pow((rNorm - 0.86) * 7.2, 2.0)) * (0.55 + 0.45 * sin(angP * 16.0 - uTime * 2.2));
+          vec3 lotusRefl = mix(uGoldColor, uFlameCore, 0.32) * lotusReflBand * (0.45 + 0.20 * cn1);
+
+          // 9. 物理菲涅尔混合：水下清波透射与水面真实倒影系统
+          vec3 totalReflection = pavReflColor + curbReflColor + skyGalaxyRefl + lotusRefl;
+
+          // 10. 双层水波波峰镜面碎金高光（Micro-facet Glints & Water Sparkles）
+          vec3 L_main = normalize(vec3(0.0, 5.2, -32.0) - vWorldPos);
+          vec3 H_main = normalize(V + L_main);
+          float glintMain = pow(max(dot(waterN, H_main), 0.0), 56.0) * 2.8;
+
+          vec3 L_sky = normalize(vec3(0.18, 0.88, 0.32));
+          vec3 H_sky = normalize(V + L_sky);
+          float glintSky = pow(max(dot(waterN, H_sky), 0.0), 42.0) * 1.4;
+
+          float microGlint = pow(max(0.0, (cn1 * cn2 - 0.25) * 3.4), 3.8) * (0.6 + 0.4 * sin(uTime * 10.0 + distCenter * 6.0));
+          vec3 waterSparkles = mix(uGoldColor, uFlameCore, 0.40) * (glintMain + glintSky * 0.5 + microGlint * 1.6)
+                             * (1.0 + 0.5 * uDropIgnite);
+
+          // 真实物理水体混合：透射光 + 菲涅尔表面镜面倒影 + 碎金波光粼粼
+          vec3 finalWater = mix(waterBedRgb, totalReflection, clamp(fresnel * 1.35, 0.0, 0.95)) + waterSparkles;
+
+          // 绝对安全无未定义行为的边缘蒙版
+          float edgeRing = 1.0 - smoothstep(0.965, 0.998, rNorm);
+          float goldBorder = smoothstep(0.938, 0.968, rNorm) * (1.0 - smoothstep(0.978, 0.998, rNorm));
+          float waveSurge = max(0.0, sin(rNorm * 13.0 - uTime * 7.2)) * uDropIgnite * 0.18;
+
+          vec3 col = finalWater * edgeRing;
+          col += uGoldColor * (goldBorder * 1.35 + waveSurge + uMelodyGlow * 0.10) * edgeRing;
+
+          gl_FragColor = vec4(col, edgeRing);
         }
       `,
       transparent: true,
@@ -2592,39 +2738,173 @@ export class PavilionScene implements MvScene {
     const floorBrickColor = this.colorRoofTile.clone().multiplyScalar(1.18);
     const floorBrickMat = makeArchMat(floorBrickColor, 4);
 
-    // 1) 天池外围夜色青白石池沿、石雕莲瓣望柱与挑灯木臂（固定于池畔世界坐标）
+    // 1) 天池外围皇家八角须弥石雕望柱、雀替云梁挑臂、鎏金铜箍与青白石雕花池沿
     const poolCurbParts: THREE.BufferGeometry[] = [];
     const poolWoodParts: THREE.BufferGeometry[] = [];
-    const curbOuter = new THREE.CylinderGeometry(POOL_RADIUS + 0.98, POOL_RADIUS + 1.28, 0.36, 64, 1, true);
-    curbOuter.translate(0, 0.15, PAVILION_Z);
-    poolCurbParts.push(curbOuter.toNonIndexed());
-    const curbTop = new THREE.RingGeometry(POOL_RADIUS - 0.04, POOL_RADIUS + 1.02, 64);
-    curbTop.rotateX(-Math.PI / 2);
-    curbTop.translate(0, 0.33, PAVILION_Z);
-    poolCurbParts.push(curbTop.toNonIndexed());
+    const poolGoldParts: THREE.BufferGeometry[] = [];
+
+    // 双层青石亲水池沿立壁 (openEnded: true 严禁生成封底顶面遮蔽整片天池清波) 与外围平台踏步
+    const curbInnerLip = new THREE.CylinderGeometry(POOL_RADIUS - 0.06, POOL_RADIUS - 0.06, 0.22, 72, 1, true);
+    curbInnerLip.translate(0, 0.16, PAVILION_Z);
+    poolCurbParts.push(curbInnerLip.toNonIndexed());
+
+    const curbTopPave = new THREE.RingGeometry(POOL_RADIUS - 0.06, POOL_RADIUS + 1.45, 72);
+    curbTopPave.rotateX(-Math.PI / 2);
+    curbTopPave.translate(0, 0.27, PAVILION_Z);
+    poolCurbParts.push(curbTopPave.toNonIndexed());
+
+    const curbStepDrop = new THREE.CylinderGeometry(POOL_RADIUS + 1.45, POOL_RADIUS + 1.62, 0.36, 72, 1, true);
+    curbStepDrop.translate(0, 0.07, PAVILION_Z);
+    poolCurbParts.push(curbStepDrop.toNonIndexed());
+
+    const rPost = POOL_RADIUS + 0.65; // 14.15m
 
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
-      const px = Math.cos(a) * (POOL_RADIUS + 0.62);
-      const pz = PAVILION_Z + Math.sin(a) * (POOL_RADIUS + 0.62);
-      const post = new THREE.CylinderGeometry(0.15, 0.18, 1.28, 8);
-      post.translate(px, 0.82, pz);
-      poolCurbParts.push(post.toNonIndexed());
+      const aNext = ((i + 1) / 8) * Math.PI * 2 + Math.PI / 8;
+      const px = Math.cos(a) * rPost;
+      const pz = PAVILION_Z + Math.sin(a) * rPost;
 
-      const postCap = new THREE.SphereGeometry(0.145, 10, 8);
-      postCap.scale(1.0, 1.25, 1.0);
-      postCap.translate(px, 1.54, pz);
-      poolCurbParts.push(postCap.toNonIndexed());
+      // A. 八角须弥座柱础五层石雕线脚 (下枋圭角 -> 下枭覆莲 -> 深凹束腰 -> 上枭仰莲 -> 上枋承台)
+      const baseFang = new THREE.CylinderGeometry(0.36, 0.40, 0.14, 8);
+      baseFang.rotateY(a);
+      baseFang.translate(px, 0.35, pz);
+      poolCurbParts.push(baseFang.toNonIndexed());
 
-      // 望柱伸出朱檀挑灯曲臂
-      const arm = new THREE.CylinderGeometry(0.036, 0.046, 0.62, 6);
-      arm.rotateZ(Math.PI * 0.42);
+      const baseLowerLotus = new THREE.CylinderGeometry(0.30, 0.36, 0.12, 8);
+      baseLowerLotus.rotateY(a);
+      baseLowerLotus.translate(px, 0.48, pz);
+      poolCurbParts.push(baseLowerLotus.toNonIndexed());
+
+      const baseWaist = new THREE.CylinderGeometry(0.22, 0.22, 0.14, 8);
+      baseWaist.rotateY(a);
+      baseWaist.translate(px, 0.61, pz);
+      poolCurbParts.push(baseWaist.toNonIndexed());
+
+      const baseUpperLotus = new THREE.CylinderGeometry(0.33, 0.24, 0.12, 8);
+      baseUpperLotus.rotateY(a);
+      baseUpperLotus.translate(px, 0.74, pz);
+      poolCurbParts.push(baseUpperLotus.toNonIndexed());
+
+      const baseCap = new THREE.CylinderGeometry(0.34, 0.33, 0.08, 8);
+      baseCap.rotateY(a);
+      baseCap.translate(px, 0.84, pz);
+      poolCurbParts.push(baseCap.toNonIndexed());
+
+      // 柱脚两侧如意抱角抱鼓石（沿池边圆弧切向稳固生根）
+      for (const side of [-1, 1]) {
+        const drumAng = a + side * 0.18;
+        const dx = Math.cos(drumAng) * (rPost + 0.04);
+        const dz = PAVILION_Z + Math.sin(drumAng) * (rPost + 0.04);
+        const drum = new THREE.CylinderGeometry(0.09, 0.14, 0.36, 6);
+        drum.translate(dx, 0.45, dz);
+        poolCurbParts.push(drum.toNonIndexed());
+      }
+
+      // B. 八棱修长雕花柱身 + 上下雕花颈环线脚
+      const shaftBaseRing = new THREE.CylinderGeometry(0.24, 0.22, 0.06, 8);
+      shaftBaseRing.rotateY(a);
+      shaftBaseRing.translate(px, 0.91, pz);
+      poolCurbParts.push(shaftBaseRing.toNonIndexed());
+
+      const shaft = new THREE.CylinderGeometry(0.185, 0.21, 1.10, 8);
+      shaft.rotateY(a);
+      shaft.translate(px, 1.49, pz);
+      poolCurbParts.push(shaft.toNonIndexed());
+
+      const shaftTopRing = new THREE.CylinderGeometry(0.22, 0.19, 0.06, 8);
+      shaftTopRing.rotateY(a);
+      shaftTopRing.translate(px, 2.07, pz);
+      poolCurbParts.push(shaftTopRing.toNonIndexed());
+
+      // C. 八角出檐仰莲承盘
+      const capital = new THREE.CylinderGeometry(0.31, 0.19, 0.11, 8);
+      capital.rotateY(a);
+      capital.translate(px, 2.15, pz);
+      poolCurbParts.push(capital.toNonIndexed());
+
+      // D. 双层仰莲托座与圆润摩尼宝珠柱头 + 顶珠收尖
+      const finialLotus = new THREE.CylinderGeometry(0.22, 0.29, 0.10, 12);
+      finialLotus.translate(px, 2.25, pz);
+      poolCurbParts.push(finialLotus.toNonIndexed());
+
+      const finialJewel = new THREE.SphereGeometry(0.14, 14, 10);
+      finialJewel.scale(1.0, 1.25, 1.0);
+      finialJewel.translate(px, 2.41, pz);
+      poolCurbParts.push(finialJewel.toNonIndexed());
+
+      const finialTip = new THREE.ConeGeometry(0.06, 0.10, 8);
+      finialTip.translate(px, 2.58, pz);
+      poolCurbParts.push(finialTip.toNonIndexed());
+
+      // E. 朱檀雀替月梁挑臂 + 结构雀替斜撑托角 + 梢端云纹收头
+      // 挑臂自柱身内部 (r=14.24) 向水面平挑至引路宫灯悬挂点 (r=13.65)
+      const armLen = 0.68;
+      const armMidR = rPost - 0.25; // 13.90m
+      const arm = new THREE.BoxGeometry(0.056, 0.082, armLen);
       arm.rotateY(-a);
-      arm.translate(Math.cos(a) * (POOL_RADIUS + 0.35), 1.42, PAVILION_Z + Math.sin(a) * (POOL_RADIUS + 0.35));
+      arm.translate(Math.cos(a) * armMidR, 1.66, PAVILION_Z + Math.sin(a) * armMidR);
       poolWoodParts.push(arm.toNonIndexed());
+
+      // 挑臂梢端古典如意云头卷拱收口
+      const cloudCap = new THREE.CylinderGeometry(0.046, 0.046, 0.062, 8);
+      cloudCap.rotateZ(Math.PI * 0.5);
+      cloudCap.rotateY(-a);
+      cloudCap.translate(Math.cos(a) * (armMidR - armLen * 0.5), 1.66, PAVILION_Z + Math.sin(a) * (armMidR - armLen * 0.5));
+      poolWoodParts.push(cloudCap.toNonIndexed());
+
+      // 雀替斜撑三角木托（自柱身斜向稳固托角）
+      const bracket = new THREE.BoxGeometry(0.050, 0.20, 0.26);
+      bracket.rotateX(0.55);
+      bracket.rotateY(-a);
+      bracket.translate(Math.cos(a) * (rPost - 0.18), 1.50, PAVILION_Z + Math.sin(a) * (rPost - 0.18));
+      poolWoodParts.push(bracket.toNonIndexed());
+
+      // F. 柱身鎏金青铜双抱箍与挑臂梢端悬垂吊环铜钩
+      for (const yFerrule of [1.54, 1.74]) {
+        const ferrule = new THREE.CylinderGeometry(0.228, 0.228, 0.068, 8, 1, true);
+        ferrule.rotateY(a);
+        ferrule.translate(px, yFerrule, pz);
+        poolGoldParts.push(ferrule.toNonIndexed());
+      }
+
+      // 挑臂梢端鎏金青铜吊环（正对 r=13.65, y=1.585，宫灯挂链顶端在此精准扣接）
+      const hookRing = new THREE.TorusGeometry(0.045, 0.010, 8, 16);
+      hookRing.rotateY(-a);
+      hookRing.translate(Math.cos(a) * (POOL_RADIUS + 0.15), 1.585, PAVILION_Z + Math.sin(a) * (POOL_RADIUS + 0.15));
+      poolGoldParts.push(hookRing.toNonIndexed());
+
+      // G. 望柱之间低矮青白石雕花栏板与地栿条石（典雅连贯围合，高仅0.48m不挡水面）
+      const numRailSegs = 4;
+      for (let s = 0; s < numRailSegs; s++) {
+        const fa = lerp(a + 0.11, aNext - 0.11, (s + 0.5) / numRailSegs);
+        const rx0 = Math.cos(fa) * rPost;
+        const rz0 = PAVILION_Z + Math.sin(fa) * rPost;
+        const railYaw = fa + Math.PI * 0.5;
+
+        // 地栿石
+        const railPlinth = new THREE.BoxGeometry(0.14, 0.10, 0.88);
+        railPlinth.rotateY(-railYaw);
+        railPlinth.translate(rx0, 0.32, rz0);
+        poolCurbParts.push(railPlinth.toNonIndexed());
+
+        // 镂空荷叶如意雕花栏板
+        const railPanel = new THREE.BoxGeometry(0.068, 0.26, 0.82);
+        railPanel.rotateY(-railYaw);
+        railPanel.translate(rx0, 0.49, rz0);
+        poolCurbParts.push(railPanel.toNonIndexed());
+
+        // 寻杖石压顶
+        const railTop = new THREE.CylinderGeometry(0.048, 0.048, 0.88, 6);
+        railTop.rotateZ(Math.PI * 0.5);
+        railTop.rotateY(-railYaw);
+        railTop.translate(rx0, 0.64, rz0);
+        poolCurbParts.push(railTop.toNonIndexed());
+      }
     }
     this.scene.add(new THREE.Mesh(mergeGeometries(poolCurbParts, false), jadeMat));
     this.scene.add(new THREE.Mesh(mergeGeometries(poolWoodParts, false), lacquerMat));
+    this.scene.add(new THREE.Mesh(mergeGeometries(poolGoldParts, false), goldMat));
 
     // 2) 水榭五层古典青石须弥座地基 + 亭心御窑墨玉金砖铺地 + 阶梯云托底座
     const pavJadeParts: THREE.BufferGeometry[] = [];
