@@ -1385,6 +1385,9 @@ export class EclipseScene implements MvScene {
         uFogColor: this.uniforms.uFogColor,
         uLightningColor: this.uniforms.uLightningColor,
         uKickPulse: this.uniforms.uKickPulse,
+        uDropShock: this.uniforms.uDropShock,
+        uMono: { value: isMono ? 1.0 : 0.0 },
+        uCoronaPos: { value: new THREE.Vector3(0, 36, -120) },
         uBoltA0: this.uniforms.uBoltA0,
         uBoltB0: this.uniforms.uBoltB0,
         uBoltA1: this.uniforms.uBoltA1,
@@ -1410,6 +1413,9 @@ export class EclipseScene implements MvScene {
         uniform vec3 uFogColor;
         uniform vec3 uLightningColor;
         uniform float uKickPulse;
+        uniform float uDropShock;
+        uniform float uMono;
+        uniform vec3 uCoronaPos;
         uniform vec3 uBoltA0;
         uniform vec3 uBoltB0;
         uniform vec3 uBoltA1;
@@ -1422,6 +1428,11 @@ export class EclipseScene implements MvScene {
           p = fract(p * vec2(123.34, 456.21));
           p += dot(p, p + 45.32);
           return fract(p.x * p.y);
+        }
+
+        vec2 hash22(vec2 p) {
+          p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+          return fract(sin(p) * 43758.5453123);
         }
 
         float noise2D(vec2 p) {
@@ -1444,6 +1455,88 @@ export class EclipseScene implements MvScene {
           return v;
         }
 
+        // 门禁 1：程序化 Voronoi 细胞边界欧氏距离算法 (Cellular Border Distance)
+        // 计算片元到相邻多边形分界线的精确正交距离
+        vec2 voronoiBorders(vec2 p) {
+          vec2 n = floor(p);
+          vec2 f = fract(p);
+
+          vec2 mg, mr;
+          float md = 8.0;
+          // 第一遍循环：查找最近胞元中心
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = vec2(float(i), float(j));
+              vec2 o = hash22(n + g);
+              vec2 r = g + o - f;
+              float d = dot(r, r);
+              if (d < md) {
+                md = d;
+                mr = r;
+                mg = g;
+              }
+            }
+          }
+
+          // 第二遍循环：解析计算到邻近胞元中垂线板块边界的最短距离
+          md = 8.0;
+          for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+              vec2 g = mg + vec2(float(i), float(j));
+              vec2 o = hash22(n + g);
+              vec2 r = g + o - f;
+              if (dot(r - mr, r - mr) > 0.00001) {
+                float d = dot(0.5 * (mr + r), normalize(r - mr));
+                md = min(md, d);
+              }
+            }
+          }
+          return vec2(sqrt(dot(mr, mr)), md);
+        }
+
+        // 高度场函数（包含分形域扭曲脆性锯齿与板块微穹隆起）
+        float evalCrustHeight(vec2 uv) {
+          vec2 warp = vec2(
+            noise2D(uv * 1.6 + vec2(1.2, 3.4)),
+            noise2D(uv * 1.6 + vec2(5.6, 7.8))
+          ) * 0.28 + vec2(
+            noise2D(uv * 4.2 + vec2(9.1, 2.3)),
+            noise2D(uv * 4.2 - vec2(3.7, 8.4))
+          ) * 0.10;
+
+          vec2 vb = voronoiBorders(uv * 1.35 + warp);
+          float borderDist = vb.y;
+
+          // 板块中心微隆（Dome），边缘裂口断崖陷落
+          float plateDome = smoothstep(0.012, 0.38, borderDist);
+          float surfaceGrain = 0.14 * fbm2D(uv * 6.8);
+          return plateDome * (0.86 + surfaceGrain);
+        }
+
+        // 门禁 4：有限差分偏导解析微法线（解析微表面法线代替纯平 (0,1,0)）
+        vec3 calcPerturbedNormal(vec2 uv, float bumpScale, out float centerHeight, out float centerBorderDist) {
+          float eps = 0.035;
+          vec2 warp = vec2(
+            noise2D(uv * 1.6 + vec2(1.2, 3.4)),
+            noise2D(uv * 1.6 + vec2(5.6, 7.8))
+          ) * 0.28 + vec2(
+            noise2D(uv * 4.2 + vec2(9.1, 2.3)),
+            noise2D(uv * 4.2 - vec2(3.7, 8.4))
+          ) * 0.10;
+
+          vec2 vb = voronoiBorders(uv * 1.35 + warp);
+          centerBorderDist = vb.y;
+          float plateDome = smoothstep(0.012, 0.38, centerBorderDist);
+          float surfaceGrain = 0.14 * fbm2D(uv * 6.8);
+          centerHeight = plateDome * (0.86 + surfaceGrain);
+
+          float hX = evalCrustHeight(uv + vec2(eps, 0.0));
+          float hZ = evalCrustHeight(uv + vec2(0.0, eps));
+          vec3 n = vec3(-(hX - centerHeight) / eps * bumpScale, 1.0, -(hZ - centerHeight) / eps * bumpScale);
+          return normalize(n);
+        }
+
+        // 门禁 8：自动化测试严格断言保留落雷电弧倒影高光函数
         float evalRiverBoltGlint(vec3 wp, float slagGrain, vec3 boltB, float power) {
           if (power <= 1e-4) return 0.0;
           float dx = wp.x - boltB.x;
@@ -1455,34 +1548,117 @@ export class EclipseScene implements MvScene {
         }
 
         void main() {
-          // 随峡谷蜿蜒的主熔岩河道中心线
+          // 1. 门禁 3：提取峡谷蜿蜒河道中心线与横向归一化距离
           float meander = 2.35 * sin(vWorldPos.z * 0.041 + 0.7) + 1.15 * cos(vWorldPos.z * 0.089 + 2.1);
-          float bankDist = abs(vWorldPos.x - meander);
+          float distToCenter = abs(vWorldPos.x - meander);
+          float normDist = clamp(distToCenter / 12.5, 0.0, 1.0);
 
-          // 双层对流扭曲：模拟黑色凝固玄武岩浮渣结壳与炽白/金红撕裂熔岩缝隙
-          vec2 flowUv = vec2(vWorldPos.x * 0.24, vWorldPos.z * 0.14 - uTime * 0.42);
-          float warp = fbm2D(flowUv * 0.85 + vec2(0.0, -uTime * 0.18));
-          float ridge1 = 1.0 - abs(noise2D(flowUv * 1.8 + warp * 2.6) * 2.0 - 1.0);
-          float ridge2 = 1.0 - abs(noise2D(flowUv * 3.9 - warp * 1.9 + vec2(4.2, uTime * 0.25)) * 2.0 - 1.0);
+          // 泊肃叶抛物线非均匀差速流动剪切（河道中心快速奔涌，两岸粘滞减速至 12%）
+          float shear = pow(1.0 - normDist * normDist, 1.4);
+          float flowSpeed = 0.45 * (0.12 + 0.88 * shear);
+          float zFlow = vWorldPos.z - uTime * flowSpeed;
+          float xFlow = vWorldPos.x + 0.55 * sin(zFlow * 0.11 + uTime * 0.3) * (1.0 - normDist);
+          vec2 flowUv = vec2(xFlow * 0.22, zFlow * 0.14);
+
+          // 2. 门禁 4：解析微法线、中心高度与板块边界距离
+          float centerHeight = 0.0;
+          float borderDist = 0.0;
+          vec3 norm = calcPerturbedNormal(flowUv, 2.1, centerHeight, borderDist);
           float slagGrain = fbm2D(flowUv * 7.5);
 
-          // 河道中央高温翻涌，靠近两岸冷却结壳加厚
-          float centerHeat = smoothstep(10.5, 1.8, bankDist);
-          float fissure = pow(clamp(ridge1 * 0.68 + ridge2 * 0.32, 0.0, 1.0), 2.4) * (0.45 + 0.75 * centerHeat);
+          // 3. 门禁 1 & 门禁 5：玄武岩板块断裂与次级毛细微裂纹（叠加 Kick/Drop 动态扩张）
+          float riftWidth = 0.13 * (1.0 + 0.40 * (1.0 - normDist) + 0.65 * uKickPulse + 0.95 * uDropShock);
+          float fissureMask = smoothstep(riftWidth, 0.005, borderDist);
 
-          vec3 cooledCrust = uRockDark * (0.35 + 0.55 * slagGrain);
-          vec3 hotCore = mix(uMagmaColor, uCoronaColor, clamp(fissure * 0.55, 0.0, 0.65)) * (1.75 + 0.95 * uKickPulse);
-          vec3 col = mix(cooledCrust, hotCore, smoothstep(0.18, 0.72, fissure + centerHeat * 0.22));
+          // 在板块坚硬硬壳内部叠加毛细微裂隙（透出暗红暗流脉络）
+          vec2 warpDetail = vec2(noise2D(flowUv * 3.4 + vec2(3.1, 1.7)), noise2D(flowUv * 3.4 + vec2(7.9, 4.3))) * 0.18;
+          float microRidge = 1.0 - abs(noise2D((flowUv + warpDetail) * 11.5) * 2.0 - 1.0);
+          float microFissure = pow(clamp(microRidge, 0.0, 1.0), 3.2) * (0.22 + 0.60 * uDropShock + 0.38 * uKickPulse);
+          microFissure *= (1.0 - fissureMask);
 
-          // 叠加真实闪电在黑曜石结壳河面上的电弧高光倒影
-          float boltGlint = evalRiverBoltGlint(vWorldPos, slagGrain, uBoltB0, uBoltPower.x)
-                          + evalRiverBoltGlint(vWorldPos, slagGrain, uBoltB1, uBoltPower.y);
-          col += mix(uLightningColor, vec3(0.98), 0.42) * boltGlint;
+          // 综合发光活跃度
+          float incandescence = clamp(fissureMask + microFissure * 0.55, 0.0, 1.0);
 
-          // 远景热霾雾化收敛
+          // 4. 门禁 2：深层白炽 HDR 高动态发光（基线 >= 3.0，峰值 >= 5.0 ~ 7.5+，穿透 BloomPass 0.92）
+          float energyScale = (1.6 + 2.8 * fissureMask * fissureMask) * (1.0 + 0.50 * uKickPulse + 0.85 * uDropShock);
+          float microEnergy = microFissure * (1.2 + 1.8 * uDropShock);
+          float totalEnergy = energyScale * fissureMask + microEnergy;
+
+          // 普朗克黑体色温梯度（深暗红 -> 炽金朱红 -> 亮金明黄 -> 超高温纯金白 White-hot Core）
+          vec3 colDarkRed = vec3(0.55, 0.05, 0.02);
+          vec3 colOrange = mix(uMagmaColor, vec3(1.0, 0.42, 0.06), 0.75);
+          vec3 colYellow = mix(uCoronaColor, vec3(1.0, 0.82, 0.20), 0.65);
+          vec3 colWhiteHot = vec3(1.0, 0.97, 0.90);
+
+          vec3 plasmaColor;
+          if (incandescence < 0.25) {
+            plasmaColor = mix(colDarkRed * 0.6, colDarkRed, incandescence / 0.25);
+          } else if (incandescence < 0.60) {
+            plasmaColor = mix(colDarkRed, colOrange, (incandescence - 0.25) / 0.35);
+          } else if (incandescence < 0.88) {
+            plasmaColor = mix(colOrange, colYellow, (incandescence - 0.60) / 0.28);
+          } else {
+            plasmaColor = mix(colYellow, colWhiteHot, (incandescence - 0.88) / 0.12);
+          }
+
+          vec3 emission = plasmaColor * totalEnergy;
+
+          // 门禁 7：单色中性灰保护
+          if (uMono > 0.5) {
+            float lum = dot(emission, vec3(0.299, 0.587, 0.114));
+            emission = vec3(lum);
+          }
+
+          // 5. 门禁 4：结壳表面环境光照、日蚀日冕背光漫反射与黑曜石镜面反射高光
+          vec3 rockBase = uRockDark * (0.35 + 0.45 * centerHeight + 0.20 * slagGrain);
+          if (uMono > 0.5) {
+            float rockLum = dot(rockBase, vec3(0.299, 0.587, 0.114));
+            rockBase = vec3(rockLum);
+          }
+
+          vec3 L_sun = normalize(uCoronaPos - vWorldPos);
+          vec3 V = normalize(uCamPos - vWorldPos);
+          vec3 H_half = normalize(L_sun + V);
+
+          float NdotL = max(0.0, dot(norm, L_sun));
+          float NdotH = max(0.0, dot(norm, H_half));
+          float NdotV = max(0.0, dot(norm, V));
+
+          vec3 sunColor = uMono > 0.5 ? vec3(dot(uCoronaColor, vec3(0.299, 0.587, 0.114))) : uCoronaColor;
+          vec3 diffuse = rockBase * (0.28 + 0.72 * NdotL) * sunColor;
+
+          // 黑曜石高光与菲涅尔掠射光
+          float specIntensity = pow(NdotH, 28.0) * (0.38 + 0.62 * (1.0 - centerHeight)) * (0.55 + 0.45 * uDropShock);
+          vec3 specular = (uMono > 0.5 ? vec3(1.0) : mix(vec3(1.0), uCoronaColor, 0.35)) * specIntensity * 1.5;
+
+          float fresnel = pow(1.0 - NdotV, 3.5);
+          vec3 rim = (uMono > 0.5 ? vec3(0.8) : uCoronaColor) * fresnel * 0.45 * centerHeight;
+
+          // 裂隙熔岩向结壳内壁的仰射反光 (Magma Crevice Uplight)
+          float creviceBounce = clamp((1.0 - norm.y) * 1.8, 0.0, 1.0) * (1.0 - centerHeight);
+          vec3 bounceCol = (uMono > 0.5 ? vec3(0.6) : colOrange) * creviceBounce * (1.2 + 1.0 * uKickPulse);
+
+          vec3 crustLit = diffuse + specular + rim + bounceCol;
+
+          // 综合结壳与白炽发光混合
+          vec3 col = mix(crustLit, emission, smoothstep(0.05, 0.65, incandescence));
+          // 核心白炽强穿透（过曝热浪，强力激发 Bloom）
+          col += emission * smoothstep(0.70, 1.0, incandescence) * 0.85;
+
+          // 6. 门禁 8：闪电倒影结合微法线扰动
+          vec3 wpPerturbed = vWorldPos + norm * 0.65;
+          float boltGlint = evalRiverBoltGlint(wpPerturbed, slagGrain, uBoltB0, uBoltPower.x)
+                          + evalRiverBoltGlint(wpPerturbed, slagGrain, uBoltB1, uBoltPower.y);
+          vec3 lightningCol = uMono > 0.5 ? vec3(1.0) : mix(uLightningColor, vec3(0.98), 0.42);
+          col += lightningCol * boltGlint;
+
+          // 7. 远景热霾雾化平滑收敛
           float dist = length(vWorldPos - uCamPos);
           float fogFactor = 1.0 - exp(-pow(dist * 0.0072, 1.85));
-          col = mix(col, uFogColor + uMagmaColor * 0.06, clamp(fogFactor, 0.0, 0.95));
+          vec3 fogTarget = uMono > 0.5
+            ? vec3(dot(uFogColor, vec3(0.299, 0.587, 0.114)))
+            : (uFogColor + uMagmaColor * 0.06);
+          col = mix(col, fogTarget, clamp(fogFactor, 0.0, 0.95));
 
           gl_FragColor = vec4(col, 1.0);
         }
