@@ -1273,8 +1273,10 @@ export class EclipseScene implements MvScene {
     this.moonMesh.position.set(0, 36, -120);
     this.scene.add(this.moonMesh);
 
-    // 5. 狂暴日冕能量环与贝利珠耀斑 (Solar Corona Ring & Baily's Beads)
-    const coronaGeo = new THREE.RingGeometry(moonRadius * 0.97, moonRadius * 2.85, 72);
+    // 5. 苍穹日全食四射光芒与多尺度体积日冕 (Solar Corona & Tyndall God Rays)
+    // 彻底摒弃小半径 RingGeometry，采用广域大幅面面片配合着色器径向平滑消融
+    const coronaPlaneSize = 280.0;
+    const coronaGeo = new THREE.PlaneGeometry(coronaPlaneSize, coronaPlaneSize, 1, 1);
     this.coronaMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: this.uniforms.uTime,
@@ -1283,9 +1285,10 @@ export class EclipseScene implements MvScene {
         uKickPulse: this.uniforms.uKickPulse,
       },
       vertexShader: /* glsl */ `
-        varying vec2 vUv;
+        varying vec2 vWorldOffset;
         void main() {
-          vUv = uv;
+          // 局部物理位移（原点为中心 (0, 0)，范围 [-140m, +140m]）
+          vWorldOffset = position.xy;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -1294,27 +1297,70 @@ export class EclipseScene implements MvScene {
         uniform vec3 uCoronaColor;
         uniform float uDropShock;
         uniform float uKickPulse;
-        varying vec2 vUv;
+        varying vec2 vWorldOffset;
 
         void main() {
-          vec2 d = vUv - vec2(0.5);
-          float r = length(d) * 2.0;
-          float angle = atan(d.y, d.x);
+          float r = length(vWorldOffset);
+          float angle = atan(vWorldOffset.y, vWorldOffset.x);
+          float rNorm = max(0.0, (r - 14.2) / 14.5); // 归一化太阳半径 (0 在日轮边缘)
 
-          // 多频日冕等离子羽流丝缕
-          float streamer = sin(angle * 12.0 + uTime * 2.2) * 0.15
-                         + sin(angle * 27.0 - uTime * 3.6) * 0.08
-                         + cos(angle * 43.0 + uTime * 1.4) * 0.04;
-          float innerEdge = smoothstep(0.32, 0.37 + streamer * 0.09, r);
-          float outerFalloff = pow(smoothstep(1.0, 0.36, r), 1.45);
+          // 1. 月轮边缘平滑遮罩 (防止背光侵蚀中央月盘浮雕)
+          float innerMask = smoothstep(13.8, 15.0, r);
 
-          // Drop 瞬间边缘迸发贝利珠钻石环耀斑 (Baily's Beads)
-          float beads = pow(max(0.0, sin(angle * 16.0 + uTime * 0.5)), 32.0) * uDropShock * 3.5;
+          // 2. 宏观头盔状羽流 (Helmet Streamers: 3~4 个主扇区，随时间缓慢漂移)
+          float macroStreamer = sin(angle * 3.0 + 0.85 + uTime * 0.12) * 0.35
+                              + cos(angle * 5.0 - 1.15 - uTime * 0.09) * 0.22
+                              + sin(angle * 2.0 + 2.30 + uTime * 0.07) * 0.38;
+          macroStreamer = macroStreamer * 0.5 + 0.5;
 
-          float intensity = innerEdge * outerFalloff * (1.25 + 0.65 * uKickPulse + 2.0 * uDropShock) + beads;
-          vec3 col = uCoronaColor * (1.05 + beads * 1.5);
+          // 3. 中频多尺度发散云隙光束 (Crepuscular Rays & Coronal Beams)
+          float rayAngle = angle + sin(angle * 4.0 + uTime * 0.35) * 0.07;
+          float rays1 = pow(abs(sin(rayAngle * 8.0 + uTime * 0.55)), 7.0);
+          float rays2 = pow(abs(cos(rayAngle * 15.0 - uTime * 0.85)), 10.0) * 0.72;
+          float rays3 = pow(abs(sin(rayAngle * 27.0 + uTime * 1.25)), 14.0) * 0.45;
+          float mesoRays = rays1 + rays2 + rays3;
 
-          gl_FragColor = vec4(col, clamp(intensity * 0.86, 0.0, 1.0));
+          // 4. 微观磁纤丝细缕 (Micro Magnetic Filaments)
+          float microFilament = max(0.0, sin(angle * 64.0 + uTime * 1.6) * sin(angle * 108.0 - uTime * 2.2)) * 0.30;
+
+          // 5. 真实贝利珠 (Baily's Beads: 严格约束在月缘薄层 r in [14.2, 15.2])
+          float limbBeadBand = exp(-pow((r - 14.65) / 0.52, 2.0));
+          float beadPoints = pow(max(0.0, sin(angle * 18.0 + 1.2)), 22.0)
+                           + pow(max(0.0, cos(angle * 28.0 - 0.8)), 32.0) * 0.85;
+          float bailyBeads = limbBeadBand * beadPoints * (0.6 + 2.4 * uDropShock);
+
+          // 6. 主钻石环耀斑与衍射星芒 (Diamond Ring Flare @ ~38度)
+          float diamondAngleDiff = cos(angle - 0.66);
+          float diamondCore = pow(max(0.0, diamondAngleDiff), 72.0) * limbBeadBand * (1.2 + 3.2 * uDropShock);
+          // 顺应月轮切向与法向的耀斑衍射星芒
+          vec2 spikeCoord = vWorldOffset - vec2(cos(0.66), sin(0.66)) * 14.65;
+          float normalDist = dot(spikeCoord, vec2(cos(0.66), sin(0.66)));
+          float tangentDist = dot(spikeCoord, vec2(-sin(0.66), cos(0.66)));
+          float spikeCross = exp(-abs(tangentDist) * 0.55) * exp(-abs(normalDist) * 2.4)
+                           + exp(-abs(normalDist) * 0.85) * exp(-abs(tangentDist) * 2.4);
+          float diamondSpike = spikeCross * (0.15 + 0.65 * uDropShock) * limbBeadBand;
+
+          // 7. 大气前向散射体积云隙光 (Mie Tyndall Volume)
+          float tyndallRays = mesoRays * (0.55 + 0.45 * macroStreamer);
+
+          // 8. 二阶渐近连续径向衰减 (严格平滑消融于背景，绝无几何硬边缘)
+          float nearFalloff = 1.0 / pow(1.0 + rNorm * 0.68, 2.15);
+          float farFade = smoothstep(110.0, 42.0, r); // 在 42m 到 110m 间平滑递减至严格 0
+          float radialEnvelope = nearFalloff * farFade;
+
+          // 9. 综合强度合成
+          float innerCoreGlow = exp(-rNorm * 2.4) * 1.75;
+          float streamerLayer = (macroStreamer * 0.35 + tyndallRays * 0.88 + microFilament) * radialEnvelope;
+          float dynamicBreath = 1.0 + 0.48 * uKickPulse + 1.35 * uDropShock;
+          float totalCorona = (innerCoreGlow + streamerLayer) * dynamicBreath;
+
+          float finalIntensity = innerMask * (totalCorona + bailyBeads * 2.2 + diamondCore * 3.6 + diamondSpike * 1.8);
+
+          // 10. 出光色彩合成 (核心白炽高光 + 边缘纯正色调)
+          vec3 coreHotWhite = mix(uCoronaColor, vec3(1.0), clamp(innerCoreGlow * 0.55 + (diamondCore + diamondSpike) * 0.75, 0.0, 1.0));
+          vec3 finalColor = mix(uCoronaColor, coreHotWhite, clamp(finalIntensity * 0.38, 0.0, 1.0));
+
+          gl_FragColor = vec4(finalColor * (1.06 + 0.40 * uDropShock), clamp(finalIntensity * 0.86, 0.0, 1.0));
         }
       `,
       transparent: true,
@@ -1323,7 +1369,8 @@ export class EclipseScene implements MvScene {
       side: THREE.DoubleSide,
     });
     this.coronaMesh = new THREE.Mesh(coronaGeo, this.coronaMaterial);
-    this.coronaMesh.position.set(0, 36, -119.8);
+    // 稍微置于月轮后方 (-120.1)，月轮实体 (Z=-120) 自然遮挡中心
+    this.coronaMesh.position.set(0, 36, -120.1);
     this.scene.add(this.coronaMesh);
 
     // 6. 谷底结壳板块液态熔金河（联动真实落雷倒影与接触耀斑）

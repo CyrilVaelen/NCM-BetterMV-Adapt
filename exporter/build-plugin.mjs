@@ -4,7 +4,7 @@ import { build } from 'vite';
 import JSZip from 'jszip';
 import { loadSettings, PROJECT } from './server.mjs';
 
-const VERSION = '0.9.0-local-export.102';
+const VERSION = '0.9.0-local-export.103';
 const PLUGIN_NAME = 'BetterMV（增强定制版）';
 const PLUGIN_AUTHOR = 'CyrilVaelen (基于 XIAOMING6680 v0.9.0 原版定制)';
 const PLUGIN_REPO = 'https://github.com/CyrilVaelen/NCM-BetterMV-Adapt';
@@ -40,7 +40,7 @@ manifest.name=PLUGIN_NAME;
 manifest.version=VERSION;
 manifest.author=PLUGIN_AUTHOR;
 manifest.author_link=PLUGIN_REPO;
-manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 49 个实时 3D 舞台场景（完整集成琉璃圣堂、午夜高架、千灯天阙、日蚀裂谷 4 大新场景）、全局铺垫坍缩与 Drop 折射冲击波后处理转场、段落媒介滤镜（彩绘镶嵌玻璃、工程蓝图线稿）、5 种母风格，支持手动选择音乐风格并动态调整各场景出现概率。';
+manifest.description='大幅提速画面准备与切歌速度（音频分析磁盘缓存、常驻 WebGL 着色器保活池、全场景静态着色器与 D3D11 编译加速、场景懒实例化与前瞻渐进预热，实现秒开秒切）；内置 49 个实时 3D 舞台场景（完整集成琉璃圣堂、午夜高架、千灯天阙、日蚀裂谷 4 大新场景，重构日全食高保真体积日冕丁达尔光芒）、全局铺垫坍缩与 Drop 折射冲击波后处理转场、段落媒介滤镜（彩绘镶嵌玻璃、工程蓝图线稿）、5 种母风格，支持手动选择音乐风格并动态调整各场景出现概率。';
 const manifestJson = JSON.stringify(manifest,null,2);
 zip.file('manifest.json',manifestJson);
 for(const [source,target] of [['dist/plugin/bettermv.js','bettermv.js'],['plugin/preview.jpg','preview.jpg'],['LICENSE','LICENSE']])zip.file(target,await fs.readFile(path.join(PROJECT,source)));
