@@ -22,6 +22,44 @@ import { colorFromHsl, rgbToHsl } from './coverTone.ts';
 /** 激光色板总槽位数（从专辑封面像素中深度挖掘最多 6 组独立色彩波长） */
 const LASER_PALETTE_SIZE = 6;
 
+/**
+ * 经典高冲击力电音节舞美配色预设（红、蓝、紫、白、粉五大色相全覆盖，专为黑白/纯灰度单调专辑打造震撼舞台视效）：
+ * 中央巨幕严格保持原始中性黑白灰阶不强行染色，舞台全场（单束激光、振镜光幕、旋转光笼、两侧半音频谱灯塔、水面倒影等）
+ * 注入极具冲击力的红蓝紫白粉全光谱激光动效。
+ */
+const MONO_COVER_VIVID_PRESETS: Array<Array<{ r: number; g: number; b: number }>> = [
+  // 预设 1: 经典高能 Rave 狂暴电音节 (Skrillex / ISOxo 震撼现场)
+  // 烈焰红、霓虹粉、赛博紫、宝石钴蓝、极光青、爆闪高光纯白
+  [
+    { r: 0.98, g: 0.06, b: 0.16 }, // 烈焰激光红
+    { r: 0.98, g: 0.16, b: 0.65 }, // 霓虹高能粉
+    { r: 0.66, g: 0.14, b: 0.98 }, // 赛博电光紫
+    { r: 0.10, g: 0.42, b: 0.98 }, // 宝石皇家蓝
+    { r: 0.08, g: 0.88, b: 0.98 }, // 极光电光青
+    { r: 0.99, g: 0.99, b: 1.00 }, // 爆闪高光纯冷白
+  ],
+  // 预设 2: 深邃赛博霓虹脉冲 (Cyber Neon Pulse)
+  // 宝石皇家蓝、极光电光青、赛博深紫、荧光品红粉、烈焰朱红、爆闪冰芯纯白
+  [
+    { r: 0.08, g: 0.38, b: 0.98 }, // 宝石皇家蓝
+    { r: 0.08, g: 0.86, b: 0.96 }, // 极光电光青
+    { r: 0.62, g: 0.12, b: 0.98 }, // 赛博深紫
+    { r: 0.98, g: 0.18, b: 0.70 }, // 荧光品红粉
+    { r: 0.98, g: 0.08, b: 0.20 }, // 烈焰朱红
+    { r: 0.99, g: 0.99, b: 1.00 }, // 爆闪冰芯纯白
+  ],
+  // 预设 3: 烈焰血月霓虹 (Blood & Neon Bass)
+  // 极光紫罗兰、霓虹热粉、烈焰血红、爆闪纯白、极光冰青、穿透深蓝
+  [
+    { r: 0.70, g: 0.16, b: 0.98 }, // 极光紫罗兰
+    { r: 0.98, g: 0.16, b: 0.58 }, // 霓虹热粉
+    { r: 0.98, g: 0.06, b: 0.14 }, // 烈焰血红
+    { r: 0.99, g: 0.99, b: 1.00 }, // 爆闪纯白
+    { r: 0.08, g: 0.90, b: 0.96 }, // 极光冰青
+    { r: 0.12, g: 0.46, b: 0.98 }, // 穿透宝石蓝
+  ],
+];
+
 /** 舞台与中央巨幅微距 LED 主屏几何常量 */
 const STAGE_Z = -54.5;
 const SCREEN_SIZE = 15.6;
@@ -741,29 +779,52 @@ function buildCoverLaserColors(init: SceneInit, scheme: CoverRecolorScheme): Cov
     }
   }
 
-  // 检测重配色后仍为无彩色的退化情形（90% 分位真实色度差 < 0.045）
+  // 检测重配色后仍为无彩色或过于灰且单调的退化情形（黑白素描/水泥灰等无彩色专辑）：
+  // 在此情形下，中央巨幕严格保持原始中性灰阶不强行染色，
+  // 但将舞台激光全面注入红蓝紫白粉等经典高冲击力电音舞美全光谱色彩，消除灰白沉闷感。
   const dSorted = samples.map(s => s.d).sort((a, b) => a - b);
   const d90 = dSorted.length > 0 ? dSorted[Math.min(dSorted.length - 1, Math.floor(dSorted.length * 0.90))] : 0;
-  if ((!scheme.enabled && init.palette.mono) || samples.length < 8 || d90 < 0.045) {
-    const monoVs = [0.68, 0.73, 0.78, 0.83, 0.89, 0.94];
-    const swatches = monoVs.map(v => clusterRgbToLaserSwatch(v, v, v, 1 / 6));
-    const laserPalette = swatches.map(s => s.col);
-    const laserCores = swatches.map(s => s.core);
+  const d50 = dSorted.length > 0 ? dSorted[Math.floor(dSorted.length * 0.50)] : 0;
+  const d75 = dSorted.length > 0 ? dSorted[Math.floor(dSorted.length * 0.75)] : 0;
+  const isMonoOrDull =
+    (!scheme.enabled && init.palette.mono) ||
+    samples.length < 8 ||
+    d90 < 0.045 ||
+    (d50 < 0.035 && d75 < 0.048);
+
+  if (isMonoOrDull) {
+    const seed = (init.seed ?? 0x9e3779b9) >>> 0;
+    const presetIdx = Math.abs((seed ^ 0x6c8e9cf5) >>> 0) % MONO_COVER_VIVID_PRESETS.length;
+    const preset = MONO_COVER_VIVID_PRESETS[presetIdx];
+    const rawSwatches = preset.map((c, i) =>
+      clusterRgbToLaserSwatch(c.r, c.g, c.b, 1 / 6, (i % 2 === 1 ? -0.02 : 0.02)),
+    );
+    const ordered = orderSwatchesAsSmoothGradient(rawSwatches);
+    const unisonSlots = buildDistinctUnisonOrder(ordered);
+    const laserPalette = ordered.map(s => s.col);
+    const laserCores = ordered.map(s => s.core);
+
+    const primaryIdx = unisonSlots[0] ?? 1;
+    const secondaryIdx = unisonSlots[1] ?? 3;
+    const lyricIdx = unisonSlots[2] ?? 2;
+    const lyricSw = ordered[lyricIdx];
+    const lyricHsl = rgbToHsl(lyricSw.outR, lyricSw.outG, lyricSw.outB);
+
     return {
-      mono: true,
-      lyricHue: 215,
-      lyricSat: 0.04,
+      mono: false,
+      lyricHue: lyricHsl.h,
+      lyricSat: clampRange(lyricSw.sOut * 1.15, 0.65, 0.95),
       laserPalette,
       laserCores,
-      unisonSlots: [4, 1, 3, 2],
-      laserPrimary: laserPalette[1].clone(),
-      laserSecondary: laserPalette[5].clone(),
-      laserPrimaryCore: laserCores[1].clone(),
-      laserSecondaryCore: laserCores[5].clone(),
-      blinderWarm: laserPalette[4].clone(),
-      coverGlow: srgbToLinearVec3(0.45, 0.45, 0.46),
-      envDark: new THREE.Vector3(0.0015, 0.0016, 0.0018),
-      bgHex: colorFromHsl(215, 0.04, 0.012),
+      unisonSlots,
+      laserPrimary: laserPalette[primaryIdx].clone(),
+      laserSecondary: laserPalette[secondaryIdx].clone(),
+      laserPrimaryCore: laserCores[primaryIdx].clone(),
+      laserSecondaryCore: laserCores[secondaryIdx].clone(),
+      blinderWarm: srgbToLinearVec3(1.0, 0.98, 1.0),
+      coverGlow: srgbToLinearVec3(0.35, 0.15, 0.48),
+      envDark: new THREE.Vector3(0.0016, 0.0012, 0.0028),
+      bgHex: colorFromHsl(250, 0.45, 0.012),
     };
   }
 

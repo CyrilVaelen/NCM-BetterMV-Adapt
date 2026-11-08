@@ -2706,6 +2706,97 @@ test('Music 瞬态提取校准：真实音色与主奏起音回拨检测器延�
   assert.equal(leads[0][0], 0.998, '主奏瞬态峰值应扣除 12 ms 检测器延迟对齐 1.000 s 节拍');
 });
 
+test('LaserScene 激光舞台：黑白/单调灰封面下注入红蓝紫白粉高能激光且主屏严格保持黑白不染色', () => {
+  const m = mods;
+  const { music, lyrics, init } = buildMockFixture();
+
+  // 构造模拟 fuze 风格的 48x48 黑白水泥素描/单调灰度封面
+  const W = 48;
+  const H = 48;
+  const monoPixels = new Uint8ClampedArray(W * H * 4);
+  for (let idx = 0; idx < W * H; idx++) {
+    const o = idx * 4;
+    const grey = Math.round(110 + 35 * Math.sin(idx * 0.17));
+    monoPixels[o] = grey;
+    monoPixels[o + 1] = grey;
+    monoPixels[o + 2] = grey;
+    monoPixels[o + 3] = 255;
+  }
+  const monoCoverTex = new THREE.DataTexture(monoPixels, W, H, THREE.RGBAFormat);
+  monoCoverTex.needsUpdate = true;
+
+  const monoPalette = {
+    ...init.palette,
+    mono: true,
+  };
+
+  // 测试 12 组不同播放种子
+  for (let s = 0; s < 12; s++) {
+    const testSeed = (0x9e3779b9 + s * 0x1234567) >>> 0;
+    const laserScene = new m.LaserScene(
+      {
+        ...init,
+        cover: monoCoverTex,
+        coverPixels: monoPixels,
+        palette: monoPalette,
+        music,
+        lyrics,
+        seed: testSeed,
+      },
+      'pulse',
+    );
+
+    // 1. 封面本身严格保持原始黑白，绝不启用染色
+    assert.equal(
+      laserScene.uniforms.uRecolorExtra.value.x,
+      0,
+      '黑白封面必须保持 uRecolorExtra.x === 0，着色器直通原始灰度而不染色',
+    );
+
+    // 2. 激光色板 6 槽必须包含红、蓝、紫、白、粉等高冲击力色彩
+    const pal = laserScene.pal;
+    assert.equal(pal.laserPalette.length, 6);
+
+    let hasRed = false;
+    let hasBlue = false;
+    let hasViolet = false;
+    let hasWhite = false;
+    let hasPink = false;
+
+    for (let i = 0; i < 6; i++) {
+      const v = pal.laserPalette[i];
+      const r = Math.pow(v.x, 1 / 2.2);
+      const g = Math.pow(v.y, 1 / 2.2);
+      const b = Math.pow(v.z, 1 / 2.2);
+
+      if (r > 0.82 && g < 0.28 && b < 0.35) hasRed = true;
+      if (b > 0.82 && r < 0.32) hasBlue = true;
+      if (b > 0.82 && r > 0.48 && g < 0.30) hasViolet = true;
+      if (r > 0.82 && b > 0.45 && g < 0.35) hasPink = true;
+      // 纯白/冷白中性高光激光（高明度且三通道相近无偏色）
+      if (r > 0.78 && g > 0.78 && b > 0.78 && Math.abs(r - g) < 0.05 && Math.abs(r - b) < 0.05) hasWhite = true;
+    }
+
+    assert.ok(hasRed, `[seed#${s}] 激光色板必须包含高冲击力红色激光`);
+    assert.ok(hasBlue, `[seed#${s}] 激光色板必须包含宝石蓝色激光`);
+    assert.ok(hasViolet, `[seed#${s}] 激光色板必须包含赛博紫色激光`);
+    assert.ok(hasWhite, `[seed#${s}] 激光色板必须包含爆闪高光纯白激光`);
+    assert.ok(hasPink, `[seed#${s}] 激光色板必须包含高能霓虹粉色激光`);
+
+    // 3. 验证主激光与副激光具有高穿透力与饱和度
+    const lp = pal.laserPrimary;
+    const lpR = Math.pow(lp.x, 1 / 2.2);
+    const lpG = Math.pow(lp.y, 1 / 2.2);
+    const lpB = Math.pow(lp.z, 1 / 2.2);
+    const lpV = Math.max(lpR, lpG, lpB);
+    const lpSat = (lpV - Math.min(lpR, lpG, lpB)) / Math.max(1e-4, lpV);
+    assert.ok(lpSat > 0.60, `[seed#${s}] 主激光应具有高饱和度电音视觉冲击力 (sat=${lpSat.toFixed(2)})`);
+
+    // 4. 盲眼灯应保持致盲级高能白光
+    assert.ok(pal.blinderWarm.x > 0.90 && pal.blinderWarm.y > 0.90 && pal.blinderWarm.z > 0.90);
+  }
+});
+
 
 
 
