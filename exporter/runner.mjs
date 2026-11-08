@@ -309,25 +309,22 @@ export async function renderJob(job, options, update = () => {}) {
     encoder.stdin.on('error', error => { encoderFailure ??= error; });
     encoder.stderr.on('data', chunk => { encoderStderr = (encoderStderr + chunk).slice(-64_000); });
     let lastUpdate = 0;
-    for (let n = 0; n < finalFrame; n++) {
+    for (let n = firstFrame; n < finalFrame; n++) {
       check();
-      const image = await page.evaluate(({ time, dt, capture }) => {
+      const image = await page.evaluate(({ time, dt }) => {
         const renderer = window.BMV_EXPORT;
         if (renderer.lost()) throw new Error('The WebGL context was lost.');
         renderer.frame(time, dt);
         if (renderer.lost()) throw new Error('The WebGL context was lost.');
-        return capture ? renderer.capture() : null;
-      }, { time: n / fps, dt, capture:n>=firstFrame });
+        return renderer.capture();
+      }, { time: n / fps, dt });
       check();
-      if (n >= firstFrame) {
-        check();
-        // Wait for the pipe's write callback before creating the next PNG; at most one frame is queued.
-        await new Promise((resolve, reject) => encoder.stdin.write(Buffer.from(image, 'base64'), error => error ? reject(error) : resolve()));
-        captured++;
-      }
+      // Wait for the pipe's write callback before creating the next PNG; at most one frame is queued.
+      await new Promise((resolve, reject) => encoder.stdin.write(Buffer.from(image, 'base64'), error => error ? reject(error) : resolve()));
+      captured++;
       if (Date.now() - lastUpdate >= 500 || n + 1 === finalFrame) {
         lastUpdate = Date.now();
-        await update({ state: 'rendering', progress: 0.05 + 0.88 * (n + 1) / finalFrame, frames: captured, totalFrames, renderedFrames: n + 1, warmupFrames: firstFrame, time: n / fps, elapsedMs: Date.now() - started });
+        await update({ state: 'rendering', progress: 0.05 + 0.88 * captured / totalFrames, frames: captured, totalFrames, renderedFrames: n + 1, warmupFrames: firstFrame, time: n / fps, elapsedMs: Date.now() - started });
       }
     }
     check();

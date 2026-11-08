@@ -7,7 +7,9 @@ import { parseWiki, type SongWiki } from '../src/meta/wiki.ts';
 import { parseChorus } from '../src/plugin/source.ts';
 import { loadFonts } from '../src/render/text.ts';
 import { LOOKS, SCENES } from '../src/scenes/catalog.ts';
-import type { LookId, SceneId } from '../src/scenes/types.ts';
+import type { LookId, SceneId, Shot } from '../src/scenes/types.ts';
+import type { Music } from '../src/director/music.ts';
+import type { Section } from '../src/types.ts';
 import { isVibePresetId, STYLES, type StyleId, type VibePresetId } from '../src/style/style.ts';
 import type { LyricLine } from '../src/types.ts';
 
@@ -44,6 +46,13 @@ interface JobInput {
     showLyrics?: boolean;
     /** 兼容已启动旧版导出服务进程的画面前瞻透传字段（毫秒，0..200）。 */
     exportLeadMs?: number;
+    /** 离线导出自定义强制镜头时间轴编排（精准指定指定时间区间的场景、变体机位与段落属性） */
+    forcePlan?: Array<{
+      scene: SceneId;
+      variant?: string;
+      start: number;
+      end: number;
+    }>;
   };
 }
 
@@ -170,7 +179,52 @@ async function initialise(): Promise<void> {
   ]);
   const delayMs = Number(config.lyricDelays?.[String(input.song.id)] ?? 0);
   if (!Number.isFinite(delayMs)) throw new Error('Invalid lyric delay');
-  player.load(song, style, off, undefined, undefined, delayMs / 1000, seed, undefined, showLyrics, vibe);
+  const retake = config.forcePlan && config.forcePlan.length > 0
+    ? (plannedShots: Shot[], music: Music): Shot[] => {
+        const sortedPlan = [...config.forcePlan!].sort((a, b) => a.start - b.start);
+        const result: Shot[] = [];
+        for (const shot of plannedShots) {
+          let currentStart = shot.start;
+          const currentEnd = shot.end;
+          for (const fp of sortedPlan) {
+            if (fp.end <= currentStart || fp.start >= currentEnd) continue;
+            if (fp.start > currentStart) {
+              result.push({
+                ...shot,
+                start: currentStart,
+                scene: (shot.scene === 'laser' && fp.scene !== 'laser') ? 'tunnel' : shot.scene,
+                end: fp.start,
+              });
+              currentStart = fp.start;
+            }
+            const segEnd = Math.min(currentEnd, fp.end);
+            const matchedSection = music.a.sections.find((s: Section) => !(segEnd <= s.start || currentStart >= s.end))
+              ?? shot.section;
+            const sectionLabel = fp.scene === 'laser' ? 'drop' : (matchedSection.label === 'drop' ? 'chorus' : matchedSection.label);
+            const sectionEnergy = fp.scene === 'laser' ? 1.0 : matchedSection.energy;
+            result.push({
+              scene: fp.scene,
+              variant: fp.variant ?? (fp.scene === 'laser' ? 'arena' : shot.variant),
+              start: currentStart,
+              end: segEnd,
+              section: { ...matchedSection, label: sectionLabel, energy: sectionEnergy },
+              sectionIndex: shot.sectionIndex,
+              seed: (seed ^ Math.round(currentStart * 100)) >>> 0,
+            });
+            currentStart = segEnd;
+          }
+          if (currentStart < currentEnd) {
+            result.push({
+              ...shot,
+              start: currentStart,
+              end: currentEnd,
+            });
+          }
+        }
+        return result;
+      }
+    : undefined;
+  player.load(song, style, off, undefined, undefined, delayMs / 1000, seed, retake, showLyrics, vibe);
   await player.warm(yieldToPage);
   await document.fonts.ready;
   info = { duration: song.duration, name: input.song.name, artists: input.song.artists ?? [], width, height, fps, visualLeadMs, seed, style: style.id };
@@ -193,6 +247,10 @@ function frame(time: number, dt?: number): void {
   // Replaying skipped output frames keeps that schedule identical after gaps.
   const maxStep = 1 / 60;
   const mediaTime = (t: number): number => Math.min(info!.duration, t + visualLeadSec);
+  // 当首次请求的帧位置处于歌曲中后段（切片截取导出）时，仅预热最后 8 帧平滑相机与粒子初态，杜绝同步执行数千次冗余离屏空渲染卡死主线程
+  if (lastFrame < 0 && target > 8) {
+    lastFrame = target - 8;
+  }
   for (let n = lastFrame + 1; n <= target; n++) {
     if (n === 0) { player.frame(mediaTime(0), maxStep); continue; }
     const end = n * step;
