@@ -66,6 +66,14 @@ const SCREEN_SIZE = 15.6;
 const SCREEN_CENTER_Y = 10.1;
 const STAGE_DECK_H = 1.82;
 const STAGE_LIP_Z = -46.8;
+/** 巡演主舞台平台物理宽度（原 31.0m 增大至 54.0m，为两侧延伸至 ±25.0m 的氛围灯条提供坚实的物理依托，杜绝悬空） */
+const STAGE_DECK_W = 54.0;
+/** 舞台平台台唇前沿延伸量（使台唇边缘灯条与冷焰火喷口稳妥座落于舞台顶面甲板上） */
+const STAGE_DECK_FRONT_EXT = 0.5;
+const STAGE_DECK_FRONT_Z = STAGE_LIP_Z + STAGE_DECK_FRONT_EXT;
+/** 舞台平台纵深（后沿延伸至 -56.3m，完整承载中央 LED 巨幕、灯塔与 DJ 控台） */
+const STAGE_DECK_DEPTH = 10.0;
+const STAGE_DECK_CENTER_Z = STAGE_DECK_FRONT_Z - STAGE_DECK_DEPTH * 0.5;
 
 /** 六大舞台灯光系统实例容量（均含天空本体 + 湿润水面反射/倒影对偶） */
 const SHEET_EMITTER_COUNT = 12;
@@ -1997,7 +2005,7 @@ void main() {
   float w1 = sin(P.z * 2.35 - uTime * 3.8 + sin(P.x * 1.15 + uTime * 1.4) * 1.3);
   float w2 = cos(P.x * 2.85 + P.z * 1.45 - uTime * 3.1);
   float w3 = sin((P.x - P.z) * 5.2 + uTime * 5.6) * 0.45;
-  float distStage = length(vec2(P.x * 0.72, P.z - (${STAGE_LIP_Z.toFixed(1)})));
+  float distStage = length(vec2(P.x * 0.72, P.z - (${STAGE_DECK_FRONT_Z.toFixed(1)})));
   float bassRipple = sin(distStage * 3.2 - uTime * 11.5) * exp(-distStage * 0.038) * (0.35 + 0.85 * uKickPunch);
 
   float nx = (w2 * 0.020 + w3 * 0.010 + bassRipple * 0.022 * sign(P.x)) * rippleFade;
@@ -2121,8 +2129,8 @@ void main() {
 
   if (N.y > 0.5) {
     // 舞台顶面：深炭黑防滑巡演甲板（1.22m x 2.44m 标准拼装锁扣暗缝 + 磨砂颗粒 + 台唇枪灰金属压条）
-    float deckSeamX = smoothstep(0.0, 0.020, abs(fract(vWorldPos.x * 0.41) - 0.5));
-    float deckSeamZ = smoothstep(0.0, 0.025, abs(fract(vWorldPos.z * 0.82) - 0.5));
+    float deckSeamX = smoothstep(0.0, 0.020, abs(fract(vWorldPos.x * 0.41 + 100.0) - 0.5));
+    float deckSeamZ = smoothstep(0.0, 0.025, abs(fract(vWorldPos.z * 0.82 + 100.0) - 0.5));
     float gripGrain = mix(0.5, stageHash(floor(vWorldPos.xz * 48.0)), detailFade * 0.45);
     float fresnel = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.6);
 
@@ -2132,16 +2140,16 @@ void main() {
     col += uCoverGlow * screenProx * (0.09 + 0.06 * uDropPower);
     col += stageLight * fresnel * 0.26;
 
-    // 舞台最前缘 9cm 拉丝枪灰铝合金防踏空护边压条
-    float lipMetal = 1.0 - smoothstep(0.0, 0.09, abs(vWorldPos.z - (${STAGE_LIP_Z.toFixed(2)})));
+    // 舞台最前缘 9cm 拉丝枪灰铝合金防踏空护边压条（精准贴合扩展后的舞台前唇）
+    float lipMetal = 1.0 - smoothstep(0.0, 0.09, abs(vWorldPos.z - (${STAGE_DECK_FRONT_Z.toFixed(2)})));
     col += (vec3(0.012) + stageLight * 0.28) * lipMetal;
 
     gl_FragColor = vec4(col, 1.0);
     return;
   }
 
-  // 舞台正面与侧立面：模块化重型超低音炮声学阵列舱（16 舱位）+ 工字钢立柱 + 六角穿孔声学钢网
-  float bayCoord = vWorldPos.x * 0.52 + 8.0;
+  // 舞台正面与侧立面：模块化重型超低音炮声学阵列舱（28 舱位对称延展）+ 工字钢立柱 + 六角穿孔声学钢网
+  float bayCoord = vWorldPos.x * 0.52 + 100.0;
   float bx = fract(bayCoord); // [0..1] 单舱局部横向坐标
   float by = vUv.y;           // [0..1] 底部至台唇高度
 
@@ -3652,8 +3660,8 @@ export class LaserScene implements MvScene {
       fragmentShader: DJ_BOOTH_FRAG,
     });
 
-    const stageRiser = new THREE.Mesh(new THREE.BoxGeometry(31.0, STAGE_DECK_H, 9.4), riserMat);
-    stageRiser.position.set(0, STAGE_DECK_H * 0.5, STAGE_LIP_Z - 4.7);
+    const stageRiser = new THREE.Mesh(new THREE.BoxGeometry(STAGE_DECK_W, STAGE_DECK_H, STAGE_DECK_DEPTH), riserMat);
+    stageRiser.position.set(0, STAGE_DECK_H * 0.5, STAGE_DECK_CENTER_Z);
     stageRiser.renderOrder = 0;
     this.scene.add(stageRiser);
 

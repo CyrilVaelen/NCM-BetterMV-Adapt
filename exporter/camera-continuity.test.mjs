@@ -2797,6 +2797,61 @@ test('LaserScene 激光舞台：黑白/单调灰封面下注入红蓝紫白粉�
   }
 });
 
+test('LaserScene 激光舞台：主舞台平台面积增大以承托所有氛围灯，杜绝任何氛围灯在平台外悬空', () => {
+  const m = mods;
+  const { music, lyrics, init } = buildMockFixture();
+  const laserScene = new m.LaserScene(init, 'pulse');
+
+  // 1. 寻找主舞台平台 Mesh
+  let stageRiserMesh = null;
+  laserScene.scene.traverse((obj) => {
+    if (obj instanceof THREE.Mesh && obj.geometry instanceof THREE.BoxGeometry) {
+      const p = obj.geometry.parameters;
+      if (Math.abs(p.height - 1.82) < 0.05 && p.width > 20.0) {
+        stageRiserMesh = obj;
+      }
+    }
+  });
+
+  assert.ok(stageRiserMesh, '场景中必须存在主舞台平台 stageRiser');
+  const geo = stageRiserMesh.geometry.parameters;
+  const halfW = geo.width * 0.5;
+  const halfD = geo.depth * 0.5;
+  const pos = stageRiserMesh.position;
+  const minX = pos.x - halfW;
+  const maxX = pos.x + halfW;
+  const minZ = pos.z - halfD;
+  const maxZ = pos.z + halfD;
+
+  assert.ok(geo.width >= 50.0, `主舞台平台宽度必须大幅拓宽 (>= 50m)，实际为 ${geo.width}m`);
+  assert.ok(geo.depth >= 9.8, `主舞台平台纵深必须充足 (>= 9.8m)，实际为 ${geo.depth}m`);
+
+  // 2. 检查所有高度为 Y (STAGE_DECK_H 附近) 的台唇及两侧延伸氛围灯条 (kind=1)
+  const washSpecs = laserScene.washSpecs;
+  assert.ok(washSpecs && washSpecs.length >= 12, '必须定义氛围灯 washSpecs 规格列表');
+  const lipWashFixtures = washSpecs.filter((w) => w.kind === 1);
+  assert.equal(lipWashFixtures.length, 12, '必须包含 12 组台唇与两侧延伸横排双管氛围灯条');
+
+  for (let i = 0; i < lipWashFixtures.length; i++) {
+    const f = lipWashFixtures[i];
+    // 灯条半宽约 0.62m
+    const lampHalfLen = 0.62;
+    assert.ok(
+      f.x - lampHalfLen >= minX && f.x + lampHalfLen <= maxX,
+      `氛围灯 #${i} (x=${f.x}) 必须完全处于舞台平台横向范围内 [${minX.toFixed(2)}, ${maxX.toFixed(2)}]，绝不可在平台外悬空`
+    );
+    assert.ok(
+      f.z >= minZ && f.z <= maxZ,
+      `氛围灯 #${i} (z=${f.z}) 必须坐落在舞台平台纵向表面内 [${minZ.toFixed(2)}, ${maxZ.toFixed(2)}]`
+    );
+    assert.ok(
+      Math.abs(f.y - (1.82 + 0.28)) < 0.05,
+      `氛围灯 #${i} 高度必须在舞台顶面正常底座高度处 (y=2.10)，实际为 ${f.y}`
+    );
+  }
+});
+
+
 
 
 
