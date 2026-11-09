@@ -9,7 +9,7 @@ import { lastIndex } from '../director/music.ts';
 import { colorFromHsl, extractCoverTone, tuneCoverStop } from './coverTone.ts';
 import { blendCameraPose, poseLookAt, stableShotSeed } from './cameraBlend.ts';
 
-const NUM_FLOATING_ROCKS = 34;
+const NUM_FLOATING_ROCKS = 24;
 const CAM_FOV = 50;
 const NUM_BOLT_ARCHETYPES = 18;
 const MAX_ACTIVE_BOLTS = 4;
@@ -17,14 +17,76 @@ const MAX_LIGHTNING_SEGMENTS = 1280;
 const MAX_LIGHTNING_FLARES = 12;
 
 interface RockInitState {
-  x: number;
+  side: -1 | 1;
+  laneX: number;
   y: number;
   z: number;
   scaleX: number;
   scaleY: number;
   scaleZ: number;
+  maxRadius: number;
   rotSpeed: number;
   phase: number;
+}
+
+/**
+ * 精确计算给定纵深 z、高度 y 与左右侧 side 处，大裂谷连续断崖网格与凸出玄武岩柱向中央航道探出的最内侧安全距离（相对蜿蜒中心 meander）：
+ * 1) 对当前 z 前后 ±2.2m（覆盖巨石自身 Z 向半径）以及高度 u 上下邻域采样 createSculptedChasmSideGeometry 同源公式，取最小值；
+ * 2) 同时扣除 20 座交错凸出柱状玄武岩柱（buttress 内缘最深探至 7.8m）的包络；
+ * 确保悬浮巨石外缘与摄像机轨迹始终保持在真实岩壁与岩柱净空之内，100% 杜绝石头嵌入岩壁或摄像机穿入岩体。
+ */
+function evalSingleWallAbsX(z: number, u: number, side: -1 | 1, phi1: number, phi2: number, phi3: number): number {
+  const halfGorge = 9.4 + 2.2 * Math.cos(z * 0.052 + phi1) + 1.1 * Math.sin(z * 0.125 + phi2);
+  const gully = Math.pow(0.5 + 0.5 * Math.cos(z * 0.17 + u * 2.2 + phi2), 2.6);
+  const terraceWave =
+    0.95 * triWave(u * 19.5 + z * 0.08 + phi1) +
+    0.55 * triWave(u * 37.0 - z * 0.14 + phi3);
+  const cragJut = 1.65 * triWave(z * 0.22 + u * 5.4 + phi2) + 0.85 * Math.sin(z * 0.43 - u * 8.1 + phi1);
+
+  let absX: number;
+  if (u <= 0.18) {
+    const k = u / 0.18;
+    const shoreJagged = 1.35 * triWave(z * 0.28 + phi3) + 0.75 * Math.sin(z * 0.62 + phi1);
+    absX = lerp(halfGorge - 1.6, halfGorge + 2.1, k) + shoreJagged * (1.0 - 0.35 * k);
+  } else {
+    const k = clamp01((u - 0.18) / 0.56);
+    const overhang = Math.sin(k * Math.PI * 2.5 + phi1) * 1.45 - gully * 2.3;
+    absX =
+      lerp(halfGorge + 2.1, halfGorge + 10.6, Math.pow(k, 0.88)) +
+      overhang +
+      cragJut * 0.85 +
+      terraceWave * 0.65;
+  }
+  const m = chasmMeanderX(z);
+  const worldX = side * absX + m * (1.0 - 0.45 * u);
+  return side * (worldX - m);
+}
+
+function evalExactCanyonWallInnerAbsX(z: number, y: number, side: -1 | 1, wallSeed: number): number {
+  const phi1 = (wallSeed % 101) * 0.0622 + (side > 0 ? 1.37 : 0.0);
+  const phi2 = ((wallSeed >> 4) % 97) * 0.0647 + (side > 0 ? 2.81 : 0.0);
+  const phi3 = ((wallSeed >> 8) % 89) * 0.0705 + (side > 0 ? 0.93 : 0.0);
+
+  const rimPeakHeight =
+    31.5 +
+    5.8 * triWave(z * 0.068 + phi1) +
+    3.6 * triWave(z * 0.155 + phi2) +
+    2.1 * Math.sin(z * 0.31 + phi3);
+
+  const kCenter = clamp01((y + 2.1) / Math.max(10.0, rimPeakHeight + 2.1));
+  const uCenter = 0.18 + kCenter * 0.56;
+
+  // 在巨石三维球体所覆盖的 (z ± 1.8m, u ± 0.06) 邻域内取岩壁最内突点
+  let minWall = 99.0;
+  for (let dz = -1.8; dz <= 1.8; dz += 1.8) {
+    for (let du = -0.06; du <= 0.06; du += 0.06) {
+      const uSample = Math.max(0.10, Math.min(0.74, uCenter + du));
+      const d = evalSingleWallAbsX(z + dz, uSample, side, phi1, phi2, phi3);
+      if (d < minWall) minWall = d;
+    }
+  }
+  // 同时受限于凸出柱状玄武岩柱（buttress 内缘约 8.2m）
+  return Math.max(4.5, Math.min(minWall, 8.2));
 }
 
 /** 局部归一化坐标系下的单段分形闪电微元（起点 (0,0,0) -> 终点 (0,0,1)） */
@@ -1082,6 +1144,8 @@ export class EclipseScene implements MvScene {
   readonly canyonMaterial!: THREE.ShaderMaterial;
   readonly boulderMaterial!: THREE.ShaderMaterial;
   readonly rocksInstanced: THREE.InstancedMesh;
+  private readonly wallSeedLeft: number;
+  private readonly wallSeedRight: number;
   private rockStates: RockInitState[] = [];
 
   // 体积分形闪电光带与电浆闪光节点
@@ -1147,6 +1211,8 @@ export class EclipseScene implements MvScene {
     const tone = extractCoverTone(init);
     const isMono = tone.mono || init.palette.mono;
     const seed = init.seed ?? 1001;
+    this.wallSeedLeft = seed ^ 0x1357;
+    this.wallSeedRight = seed ^ 0x2468;
     const seedRand = rng((seed ^ 0x66cc4422) >>> 0);
     const deltaHue = isMono ? 0 : (seedRand() < 0.5 ? -1 : 1) * (6 + 10 * seedRand());
 
@@ -1779,21 +1845,69 @@ export class EclipseScene implements MvScene {
     this.scene.add(this.canyonGroup);
 
     // 8. 悬浮反重力碎裂黑曜石巨砾 (Textured Anti-gravity Fractured Obsidian Boulders)
+    // 采用分层错落 + 三维球体排斥（Poisson-like 最小间距）+ 峡谷蜿蜒中心对齐，彻底根除石头互相穿模、石头穿入岩壁及阻挡相机航道
     const rockGeo = createFracturedBoulderGeometry(seed ^ 0x51a9);
     this.rocksInstanced = new THREE.InstancedMesh(rockGeo, this.boulderMaterial, NUM_FLOATING_ROCKS);
     this.rocksInstanced.frustumCulled = false;
     for (let i = 0; i < NUM_FLOATING_ROCKS; i++) {
-      const rx = (seedRand() < 0.5 ? -1 : 1) * (5.2 + seedRand() * 7.2);
-      const ry = 0.2 + seedRand() * 23.0;
-      const rz = -12.0 - seedRand() * 92.0;
-      const baseScale = 0.72 + seedRand() * 1.55;
+      const side: -1 | 1 = i % 2 === 0 ? -1 : 1;
+      const wallSeed = side < 0 ? this.wallSeedLeft : this.wallSeedRight;
+      // 纵向均匀独立分槽（24 颗石头平均每 3.6m 一颗，前后天然拉开 > 3.2m 间距，无需堆叠碰撞）
+      const slotZ = -18.0 - ((i + 0.5) / NUM_FLOATING_ROCKS) * 84.0;
+      let rz = slotZ + (seedRand() - 0.5) * 1.4;
+      // 悬浮巨石布置在峡谷上空开阔区（y in [7.5, 25.5]）；z > -50m 的近中景区域保持 y in [7.5, 14.5] 低于 ridge 高空俯瞰视线，远景自由升腾
+      const maxNearY = rz > -50.0 ? 14.2 : 25.5;
+      let ry = lerp(7.5, maxNearY, ((i * 7) % 11) / 10.0 * 0.75 + seedRand() * 0.25);
+      const baseScale = 0.50 + seedRand() * 0.68;
+      const sx = baseScale * (0.84 + seedRand() * 0.28);
+      const sy = baseScale * (0.74 + seedRand() * 0.36);
+      const sz = baseScale * (0.84 + seedRand() * 0.28);
+      // Icosahedron(1.18) 经断口切削最大外接半径约 1.55 * maxScale
+      const maxRadius = 1.56 * Math.max(sx, sy, sz);
+
+      // 精确求取当前 (rz, ry, side) 处真实断崖内表面距离，确保巨石外缘距离岩壁 >= 1.8m，内缘距离中轴相机航道 >= 1.8m
+      const exactWallDist = evalExactCanyonWallInnerAbsX(rz, ry, side, wallSeed);
+      const minCamClearance = 1.8 + maxRadius;
+      const maxWallClearance = Math.max(minCamClearance + 0.2, exactWallDist - maxRadius - 1.8);
+      let laneAbs = lerp(minCamClearance, maxWallClearance, 0.15 + 0.45 * seedRand());
+
+      // 对已生成的全部巨石执行三维球体排斥（若距离过近则沿高度 Y 与纵深 Z 分离，并实时重新对齐真实岩壁安全带）
+      for (let pass = 0; pass < 10; pass++) {
+        for (let j = 0; j < this.rockStates.length; j++) {
+          const other = this.rockStates[j];
+          const mCur = chasmMeanderX(rz);
+          const mOther = chasmMeanderX(other.z);
+          const wx = mCur + side * laneAbs;
+          const ox = mOther + other.side * other.laneX;
+          const dx = wx - ox;
+          const dy = ry - other.y;
+          const dz = rz - other.z;
+          const minDist = maxRadius + other.maxRadius + 1.85;
+          const distSq = dx * dx + dy * dy + dz * dz;
+          if (distSq < minDist * minDist) {
+            const dist = Math.sqrt(Math.max(0.01, distSq));
+            const push = (minDist - dist) + 0.50;
+            const yCeil = rz > -50.0 ? 14.5 : 26.5;
+            ry = Math.max(7.2, Math.min(yCeil, ry + (dy >= 0 ? 1 : -1) * push * 0.75));
+            rz = Math.max(-104.0, Math.min(-16.5, rz + (dz >= 0 ? 1 : -1) * push * 0.65));
+          }
+        }
+      }
+
+      // 最终严格以上界优先钳制在真实断崖内壁之内（距岩壁 >= 2.8m，同时距中轴 >= 2.2 + maxRadius）
+      const finalWallDist = evalExactCanyonWallInnerAbsX(rz, ry, side, wallSeed);
+      const safeOuterLimit = Math.max(2.2 + maxRadius, finalWallDist - maxRadius - 2.8);
+      laneAbs = Math.min(Math.max(laneAbs, 2.2 + maxRadius), safeOuterLimit);
+
       this.rockStates.push({
-        x: rx,
+        side,
+        laneX: laneAbs,
         y: ry,
         z: rz,
-        scaleX: baseScale * (0.82 + seedRand() * 0.42),
-        scaleY: baseScale * (0.70 + seedRand() * 0.55),
-        scaleZ: baseScale * (0.82 + seedRand() * 0.42),
+        scaleX: sx,
+        scaleY: sy,
+        scaleZ: sz,
+        maxRadius,
         rotSpeed: 0.16 + seedRand() * 0.34,
         phase: seedRand() * Math.PI * 2,
       });
@@ -2496,14 +2610,14 @@ export class EclipseScene implements MvScene {
       for (const side of [-1, 1] as const) {
         const z = zBase - cliffRand() * 5.5;
         const meander = 2.35 * Math.sin(z * 0.041 + 0.7) + 1.15 * Math.cos(z * 0.089 + 2.1);
-        const distFromCenter = 14.2 + cliffRand() * 6.8;
+        const distFromCenter = 15.6 + cliffRand() * 6.4;
         const hScale = 0.82 + cliffRand() * 0.46;
-        const wScale = 0.85 + cliffRand() * 0.38;
+        const wScale = 0.80 + cliffRand() * 0.32;
 
         const geo = buttressGeos[(i + (side > 0 ? 1 : 0)) % buttressGeos.length];
         const monolith = new THREE.Mesh(geo, this.canyonMaterial);
         monolith.position.set(
-          side * distFromCenter + meander * 0.75,
+          side * distFromCenter + meander * 0.88,
           9.5 + (hScale - 0.85) * 14.0,
           z,
         );
@@ -2528,7 +2642,11 @@ export class EclipseScene implements MvScene {
     return leftWall;
   }
 
-  /** 四组电影级运镜机位（canyon / corona / ridge / abyss）纯函数姿态求值 */
+  /**
+   * 四组电影级运镜机位（canyon / corona / ridge / abyss）纯函数姿态求值：
+   * 全部机位横坐标均跟随当前纵深 z 处的峡谷蜿蜒中心线 chasmMeanderX(z)，
+   * 始终处于无巨石、无断崖悬挑、无玄武岩柱的中央净空走廊内，彻底杜绝摄像机穿入岩石内部。
+   */
   private evalCameraPose(t: number, s: Shot, pos: THREE.Vector3, quat: THREE.Quaternion): number {
     const start = s.run?.start ?? s.start;
     const end = s.run?.end ?? s.end;
@@ -2539,31 +2657,35 @@ export class EclipseScene implements MvScene {
     const variant = s.variant || 'canyon';
 
     if (variant === 'corona') {
-      // 低机位大仰角穿透悬浮巨石直指日蚀天穹
-      const x = lerp(-3.2 * dir, 3.2 * dir, e);
-      const y = 1.45 + 0.08 * Math.sin(t * 0.4);
+      // 低机位大仰角直指日蚀天穹（沿蜿蜒中心安全走廊平滑推进，避开两侧悬浮巨石带）
       const z = lerp(-15.0, -28.0, e);
+      const meander = chasmMeanderX(z);
+      const x = meander + lerp(-1.5 * dir, 1.5 * dir, e);
+      const y = 1.45 + 0.08 * Math.sin(t * 0.4);
       poseLookAt(pos, quat, x, y, z, 0, 34.0, -120.0);
       return CAM_FOV + 2.0;
     } else if (variant === 'ridge') {
-      // 悬停于高位嶙峋断崖内侧边缘（避开岩体穿模），俯瞰深渊熔金河与对岸层叠柱状玄武岩壁
-      const x = lerp(8.6 * dir, 6.4 * dir, e);
-      const y = lerp(22.5, 18.2, e);
+      // 悬停于高位峡谷中轴净空区，俯瞰深渊熔金河与对岸层叠柱状玄武岩壁（|x - meander| <= 1.8m，严格处于巨石带内侧净空）
       const z = lerp(-24.0, -42.0, e);
-      poseLookAt(pos, quat, x, y, z, -2.5 * dir, 9.5, -96.0);
+      const meander = chasmMeanderX(z);
+      const x = meander + lerp(1.8 * dir, 1.2 * dir, e);
+      const y = lerp(22.5, 18.2, e);
+      poseLookAt(pos, quat, x, y, z, meander - 2.2 * dir, 9.5, -96.0);
       return CAM_FOV - 2.0;
     } else if (variant === 'abyss') {
-      // 深渊仰攻机位，贴近沸腾结壳熔金河面，仰望两侧刀削斧劈的黑曜石断崖与闪电
-      const x = lerp(-2.0 * dir, 2.0 * dir, e);
-      const y = -3.8 + 0.05 * Math.sin(t * 0.6);
+      // 深渊仰攻机位，贴近沸腾结壳熔金河面上方安全高度（与最高涌浪波峰保持 >= 1.3m 净空），仰望两侧黑曜石断崖与闪电
       const z = lerp(-8.0, -22.0, e);
+      const meander = chasmMeanderX(z);
+      const x = meander + lerp(-1.5 * dir, 1.5 * dir, e);
+      const y = -3.45 + 0.05 * Math.sin(t * 0.6);
       poseLookAt(pos, quat, x, y, z, 0, 18.5, -88.0);
       return CAM_FOV + 4.0;
     } else {
       // canyon: 穿梭于蜿蜒黑曜石大裂谷中轴（默认）
-      const x = lerp(-1.4 * dir, 1.4 * dir, e);
-      const y = 4.6 + 0.10 * Math.sin(t * 0.35);
       const z = lerp(12.0, -8.0, e);
+      const meander = chasmMeanderX(z);
+      const x = meander + lerp(-1.2 * dir, 1.2 * dir, e);
+      const y = 4.6 + 0.10 * Math.sin(t * 0.35);
       poseLookAt(pos, quat, x, y, z, 0, 24.5, -120.0);
       return CAM_FOV;
     }
@@ -2604,7 +2726,8 @@ export class EclipseScene implements MvScene {
 
     // 1. 相机更新并同步世界坐标至岩石与熔岩着色器
     this.updateCamera(t, shot);
-    this.uniforms.uCamPos.value.copy(this.camera.position);
+    const camPos = this.camera.position;
+    this.uniforms.uCamPos.value.copy(camPos);
 
     // 2. 音频包络与瞬态
     const kickPulse = this.evalPulse(this.kickTimes, this.kickAmps, t, 0.24);
@@ -2619,15 +2742,42 @@ export class EclipseScene implements MvScene {
       }
     }
 
-    // 3. 更新悬浮反重力碎裂黑曜石巨砾（底鼓高频震颤与 Drop 冲击波向外推开）
+    // 3. 更新悬浮反重力碎裂黑曜石巨砾（严格钳制在峡谷岩壁与相机航道之间的安全净空带，零穿模）
     const dummy = this.reusableDummy;
     for (let i = 0; i < NUM_FLOATING_ROCKS; i++) {
       const rs = this.rockStates[i];
-      const kickJolt = Math.sin(t * 32.0 + i) * 0.35 * kickPulse;
-      const pushX = (rs.x > 0 ? 1 : -1) * dropShock * 3.5;
-      const y = rs.y + Math.sin(t * 0.8 + rs.phase) * 0.6 + kickJolt;
+      const kickJolt = Math.sin(t * 32.0 + i) * 0.22 * kickPulse;
+      const y = rs.y + Math.sin(t * 0.8 + rs.phase) * 0.45 + kickJolt;
 
-      dummy.position.set(rs.x + pushX, y, rs.z);
+      // Drop 冲击波仅在真实峡谷内壁安全余量内温和外推，绝不把巨石推入两侧断崖或玄武岩柱
+      const wallSeed = rs.side < 0 ? this.wallSeedLeft : this.wallSeedRight;
+      const exactWallDist = evalExactCanyonWallInnerAbsX(rs.z, y, rs.side, wallSeed);
+      const wallLimit = Math.max(
+        rs.laneX,
+        exactWallDist - rs.maxRadius - 2.6,
+      );
+      const maxSafePush = Math.max(0.0, wallLimit - rs.laneX);
+      const pushAbs = Math.min(dropShock * 1.10, maxSafePush);
+
+      const meander = chasmMeanderX(rs.z);
+      const wx = meander + rs.side * (rs.laneX + pushAbs);
+      let wy = y;
+      let wz = rs.z;
+
+      // 相机近场球形安全护盾：若任何过渡运镜靠近巨石，仅沿高度 Y 与纵深 Z 平滑推开，绝不横向推入峡谷岩壁，100% 杜绝摄像机穿过石头内部
+      const dx = wx - camPos.x;
+      const dy = wy - camPos.y;
+      const dz = wz - camPos.z;
+      const safeCamDist = rs.maxRadius + 3.2;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq < safeCamDist * safeCamDist) {
+        const dist = Math.sqrt(Math.max(1e-4, distSq));
+        const repel = safeCamDist - dist;
+        wy += (dy >= -0.5 ? 1 : -1) * repel * 0.85;
+        wz += (dz <= 0 ? -1 : 1) * repel * 0.65;
+      }
+
+      dummy.position.set(wx, wy, wz);
       dummy.rotation.set(t * rs.rotSpeed, t * rs.rotSpeed * 0.8, rs.phase);
       dummy.scale.set(rs.scaleX, rs.scaleY, rs.scaleZ);
       dummy.updateMatrix();
