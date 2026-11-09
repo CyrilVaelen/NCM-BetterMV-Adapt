@@ -29,6 +29,79 @@ export async function loadSettings(file = SETTINGS) {
   return settings;
 }
 
+export async function saveSettings(settings, file = SETTINGS) {
+  try {
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await fsp.writeFile(file, JSON.stringify(settings, null, 2), 'utf8');
+  } catch (error) {
+    console.warn('保存导出配置失败:', error);
+  }
+}
+
+export async function pickFolderDialog(initialDir = '') {
+  if (process.platform !== 'win32') return null;
+  return new Promise(resolve => {
+    const psScript = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '请选择视频导出保存文件夹'
+$dialog.ShowNewFolderButton = $true
+$init = $args[0]
+if ($init -and (Test-Path -LiteralPath $init)) { $dialog.SelectedPath = $init }
+$form = New-Object System.Windows.Forms.Form
+$form.TopMost = $true
+$form.StartPosition = 'Manual'
+$form.Location = New-Object System.Drawing.Point(-32000, -32000)
+$form.Show()
+$result = $dialog.ShowDialog($form)
+$form.Close()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+`;
+    const child = spawn('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-STA',
+      '-Command',
+      psScript,
+      initialDir || ''
+    ], { windowsHide: true });
+    let stdout = '';
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); resolve(null); }, 120000);
+    child.stdout.on('data', d => { stdout += d.toString('utf8'); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      if (timedOut) return;
+      const res = stdout.trim();
+      resolve(res || null);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+export function openFolderInExplorer(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return false;
+  const clean = path.normalize(targetPath.trim());
+  if (!path.isAbsolute(clean)) return false;
+  try {
+    const isFile = fs.existsSync(clean) && fs.statSync(clean).isFile();
+    if (isFile) {
+      spawn('explorer.exe', [`/select,${clean}`], { windowsHide: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('explorer.exe', [clean], { windowsHide: true, stdio: 'ignore' }).unref();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function safeFilename(name) {
   const clean = String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 90);
   return !clean || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(clean) ? 'BetterMV' : clean;
@@ -48,7 +121,17 @@ export function validateMetadata(data) {
   if (data.lines !== undefined && (!Array.isArray(data.lines) || data.lines.length > 30000)) throw new Error('歌词数据不正确');
   if (data.analysisLines !== undefined && (!Array.isArray(data.analysisLines) || data.analysisLines.length > 30000)) throw new Error('歌词分析数据不正确');
   if (data.config !== undefined && (!data.config || typeof data.config !== 'object' || Array.isArray(data.config))) throw new Error('画面设置不正确');
-  return { ...data, song: { id:s.id, name:s.name, artists:s.artists, duration:s.duration }, format:{width,height,fps,encoding,start,...(duration === undefined ? {} : {duration}),...(visualLeadMs === undefined ? {} : {visualLeadMs: Math.round(visualLeadMs)})} };
+  if (data.outputDir !== undefined) {
+    if (typeof data.outputDir !== 'string' || !data.outputDir.trim() || data.outputDir.length > 300) throw new Error('导出文件夹路径不正确');
+    const cleanDir = path.normalize(data.outputDir.trim());
+    if (!path.isAbsolute(cleanDir) || /[<>:"|?*\x00-\x1f]/.test(cleanDir.replace(/^[a-zA-Z]:[\\/]/, ''))) throw new Error('导出文件夹必须是有效的绝对路径');
+  }
+  return {
+    ...data,
+    song: { id:s.id, name:s.name, artists:s.artists, duration:s.duration },
+    format: { width, height, fps, encoding, start, ...(duration === undefined ? {} : {duration}), ...(visualLeadMs === undefined ? {} : {visualLeadMs: Math.round(visualLeadMs)}) },
+    ...(data.outputDir ? { outputDir: path.normalize(data.outputDir.trim()) } : {})
+  };
 }
 
 function json(res, code, value) {
@@ -70,8 +153,8 @@ function tokenMatches(value, token) {
   return a.length === b.length && crypto.timingSafeEqual(a,b);
 }
 function publicJob(job) {
-  const {id,state,progress,name,outputName,error,createdAt,frames,totalFrames,result} = job;
-  return {id,state,progress,name,outputName,error,createdAt,frames,totalFrames,result};
+  const {id,state,progress,name,outputName,outputPath,outputDir,error,createdAt,frames,totalFrames,result} = job;
+  return {id,state,progress,name,outputName,outputPath,outputDir,error,createdAt,frames,totalFrames,result};
 }
 function stamp() {
   return new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date()).replace(/[^0-9]/g,'');
@@ -107,7 +190,8 @@ export async function startServer({ settings: supplied, settingsPath = SETTINGS,
     try {
       const dir = path.join(settings.jobDir,id), saved = JSON.parse(await fsp.readFile(path.join(dir,'status.json'),'utf8'));
       const input = JSON.parse(await fsp.readFile(path.join(dir,'input.json'),'utf8'));
-      const job = {...saved,id,dir,input,format:input.format,outputPath:path.join(settings.outputDir,path.basename(saved.outputName ?? 'invalid.mp4'))};
+      const targetDir = saved.outputDir || settings.outputDir;
+      const job = {...saved,id,dir,input,format:input.format,outputDir:targetDir,outputPath:path.join(targetDir,path.basename(saved.outputName ?? 'invalid.mp4'))};
       if (!terminal(job.state)) { job.state='failed';job.error='上次导出被中断，请重新导出';await save(job); }
       jobs.set(id,job);
     } catch { /* A partial submission is never treated as a completed export. */ }
@@ -148,8 +232,21 @@ export async function startServer({ settings: supplied, settingsPath = SETTINGS,
     await fsp.mkdir(dir);
     const input={...metadata,audioUrl:`/api/jobs/${id}/audio.bin`,coverUrl:`/api/jobs/${id}/cover.image`};
     await Promise.all([fsp.writeFile(path.join(dir,'audio.bin'),Buffer.from(await audio.arrayBuffer())),fsp.writeFile(path.join(dir,'cover.image'),coverBytes),fsp.writeFile(path.join(dir,'input.json'),JSON.stringify(input))]);
+    const targetDir = (metadata.outputDir && path.isAbsolute(metadata.outputDir))
+      ? path.resolve(metadata.outputDir)
+      : settings.outputDir;
+    await fsp.mkdir(targetDir, { recursive: true });
+    if (metadata.outputDir && targetDir !== settings.outputDir) {
+      settings.outputDir = targetDir;
+      void saveSettings(settings, settingsPath).catch(console.error);
+    }
     const outputName=`${safeFilename(metadata.song.name)}-${stamp()}-${id.slice(0,8)}.mp4`;
-    const job={id,dir,input,format:metadata.format,outputName,outputPath:path.join(settings.outputDir,outputName),name:metadata.song.name,state:'queued',progress:0,createdAt:new Date().toISOString()};
+    const job={
+      id,dir,input,format:metadata.format,outputName,
+      outputPath:path.join(targetDir,outputName),
+      outputDir:targetDir,
+      name:metadata.song.name,state:'queued',progress:0,createdAt:new Date().toISOString()
+    };
     jobs.set(id,job);queue.push(job);await save(job);json(res,202,publicJob(job));void drain();
   }
   function streamFile(req,res,file,type,downloadName) {
@@ -178,7 +275,38 @@ export async function startServer({ settings: supplied, settingsPath = SETTINGS,
         if(!headerOK&&!(req.method==='GET'&&tokenMatches(cookie,settings.token)))return json(res,401,{error:'导出工具连接验证失败'});
         if(p==='/api/health'&&req.method==='GET'){
           if(headerOK)res.setHeader('Set-Cookie',`bmv_export_session=${settings.token}; HttpOnly; SameSite=Strict; Path=/`);
-          return json(res,200,{ok:true,version:'3',outputDir:settings.outputDir});
+          return json(res,200,{ok:true,version:'4',outputDir:settings.outputDir});
+        }
+        if(p==='/api/select-folder'&&(req.method==='POST'||req.method==='GET')){
+          let initial = settings.outputDir;
+          if(req.method==='POST'){
+            try {
+              const body = await readBody(req);
+              if(body.length > 0){
+                const parsed = JSON.parse(body.toString('utf8'));
+                if(parsed?.initialDir && typeof parsed.initialDir === 'string') initial = parsed.initialDir;
+              }
+            }catch{}
+          }
+          const selected = await pickFolderDialog(initial);
+          if(selected){
+            settings.outputDir = path.resolve(selected);
+            void saveSettings(settings, settingsPath).catch(console.error);
+            return json(res, 200, { ok: true, path: settings.outputDir });
+          }
+          return json(res, 200, { ok: true, path: null, cancelled: true, current: settings.outputDir });
+        }
+        if(p==='/api/open-folder'&&req.method==='POST'){
+          let target = settings.outputDir;
+          try {
+            const body = await readBody(req);
+            if(body.length > 0){
+              const parsed = JSON.parse(body.toString('utf8'));
+              if(parsed?.path && typeof parsed.path === 'string') target = parsed.path;
+            }
+          }catch{}
+          const opened = openFolderInExplorer(target);
+          return json(res, 200, { ok: opened });
         }
         if(p==='/api/exports'&&req.method==='POST')return await submit(req,res);
         if(p==='/api/exports'&&req.method==='GET')return json(res,200,[...jobs.values()].map(publicJob).reverse());

@@ -38,12 +38,24 @@ test('local export API authenticates requests, rejects external origins and pers
     const response=await fetch(base+'/api/exports',{method:'POST',headers,body:form});
     assert.equal(response.status,202);const job=await response.json();
     assert.ok(!job.outputName.includes('/'));assert.ok(!job.outputName.includes('\\'));
+    const customDir = path.join(temp, 'custom-mv-dir');
+    const customMeta = { song: { id: 2, name: 'CustomDirSong', artists: ['Test'] }, format: { width: 1280, height: 720, fps: 30, duration: 1 }, lines: [], outputDir: customDir };
+    const customForm = new FormData(); customForm.append('metadata', JSON.stringify(customMeta));
+    customForm.append('audio', new Blob([Buffer.alloc(64)]), 'test.audio');
+    customForm.append('cover', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1kAAAAASUVORK5CYII=', 'base64')]), 'test.png');
+    const customResp = await fetch(base + '/api/exports', { method: 'POST', headers, body: customForm });
+    assert.equal(customResp.status, 202);
+    const customJob = await customResp.json();
+    assert.equal(customJob.outputDir, customDir);
+    assert.ok(customJob.outputPath.startsWith(customDir));
+    assert.equal((await fetch(base + '/api/open-folder', { method: 'POST', headers, body: JSON.stringify({ path: customDir }) })).status, 200);
+
     let result;
     for(let n=0;n<100;n++){
       result=await(await fetch(base+'/api/exports/'+job.id,{headers})).json();
       if(result.state==='completed')break;await new Promise(resolve=>setTimeout(resolve,10));
     }
-    assert.equal(result.state,'completed');assert.equal(result.progress,1);assert.equal(calls,1);
+    assert.equal(result.state,'completed');assert.equal(result.progress,1);assert.equal(calls,2);
     const input=await(await fetch(base+`/api/jobs/${job.id}/input.json`,{headers})).json();
     assert.equal(input.config.seed,12);assert.deepEqual(input.lines,[]);
     await app.jobs.get(job.id).saving;
@@ -65,6 +77,10 @@ test('local export API authenticates requests, rejects external origins and pers
 test('submission rejects unsupported format and unsafe output names stay inside output folder',async ()=>{
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1921,height:1080,fps:30}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{start:-1}}));
+  assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},outputDir:'../relative/dir'}));
+  assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},outputDir:'D:\\invalid\\*?<>|'}));
+  const withCustomDir=validateMetadata({song:{id:1,name:'A',artists:[]},outputDir:'D:\\MyMVs\\Folder'});
+  assert.equal(withCustomDir.outputDir,path.normalize('D:\\MyMVs\\Folder'));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:-5}}));
   assert.throws(()=>validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:250}}));
   const valid60=validateMetadata({song:{id:1,name:'A',artists:[]},format:{width:1280,height:720,fps:60,visualLeadMs:55},config:{exportLeadMs:55}});

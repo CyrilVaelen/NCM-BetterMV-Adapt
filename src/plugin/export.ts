@@ -35,6 +35,8 @@ interface ExportJob {
   /** Overall progress, 0..1. */
   progress?: number;
   outputName?: string;
+  outputPath?: string;
+  outputDir?: string;
   error?: string;
 }
 
@@ -116,6 +118,7 @@ export class VideoExporter {
   private message = '将当前歌曲的完整 MV 保存为带声音的 MP4。';
   private progress = 0;
   private outputName = '';
+  private outputPath = '';
   private error = false;
   /** 默认 1080p 全高清直出，对齐实时预览最高物理渲染精度，并支持 1440p（2K 超清）。 */
   private resolution: 720 | 1080 | 1440 = 1080;
@@ -125,6 +128,10 @@ export class VideoExporter {
   private fps: 24 | 30 | 60 = 60;
   /** 仅作用于导出视频的听感同步前瞻（毫秒），抵消脉冲爬升与本地播放器输出延迟，不影响实时观看时钟。 */
   private exportLeadMs: 0 | 55 | 85 = 55;
+  /** 用户选择或当前生效的保存目录。 */
+  private outputDir: string = typeof plugin !== 'undefined' && plugin?.getConfig
+    ? (plugin.getConfig('exportOutputDir', '') || '')
+    : '';
   private refresh: (() => void) | null = null;
 
   private rangeMode = 'full';
@@ -404,6 +411,97 @@ export class VideoExporter {
     timeEditRow.append(startInput, toSpan, endInput, btnCurTime, btnResetFull, rangeHint);
     rangeRow.append(rangeHeader, timeEditRow);
 
+    // 保存文件夹选择行
+    const folderRow = document.createElement('div');
+    folderRow.style.cssText = 'margin:0 0 16px;padding:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px';
+
+    const folderHeader = document.createElement('div');
+    folderHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px';
+    const folderLabel = document.createElement('span');
+    folderLabel.textContent = '保存文件夹';
+    folderLabel.style.cssText = 'font-weight:600';
+
+    const folderActions = document.createElement('div');
+    folderActions.style.cssText = 'display:flex;gap:6px;align-items:center';
+
+    const btnBrowseFolder = document.createElement('button');
+    btnBrowseFolder.type = 'button';
+    btnBrowseFolder.textContent = '选择文件夹…';
+    btnBrowseFolder.style.cssText = 'padding:3px 10px;border:1px solid rgba(255,255,255,.2);border-radius:5px;background:rgba(255,255,255,.08);color:#eee;font:inherit;font-size:12px;cursor:pointer';
+
+    const btnOpenFolder = document.createElement('button');
+    btnOpenFolder.type = 'button';
+    btnOpenFolder.textContent = '打开';
+    btnOpenFolder.title = '在 Windows 资源管理器中打开该文件夹';
+    btnOpenFolder.style.cssText = 'padding:3px 8px;border:1px solid rgba(255,255,255,.2);border-radius:5px;background:rgba(255,255,255,.08);color:#eee;font:inherit;font-size:12px;cursor:pointer';
+
+    folderActions.append(btnBrowseFolder, btnOpenFolder);
+    folderHeader.append(folderLabel, folderActions);
+
+    const folderInputRow = document.createElement('div');
+    folderInputRow.style.cssText = 'display:flex;align-items:center;gap:8px';
+
+    const folderInput = document.createElement('input');
+    folderInput.type = 'text';
+    folderInput.placeholder = OUTPUT;
+    folderInput.value = this.outputDir || OUTPUT;
+    folderInput.setAttribute('aria-label', '导出视频保存文件夹');
+    folderInput.style.cssText = 'flex:1;min-width:0;padding:5px 8px;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:#252430;color:#fff;font:inherit;font-size:13px';
+
+    folderInput.onchange = () => {
+      const val = folderInput.value.trim();
+      this.outputDir = val || OUTPUT;
+      folderInput.value = this.outputDir;
+      if (typeof plugin !== 'undefined' && plugin?.setConfig) {
+        plugin.setConfig('exportOutputDir', this.outputDir);
+      }
+      this.refresh?.();
+    };
+
+    btnBrowseFolder.onclick = async () => {
+      btnBrowseFolder.disabled = true;
+      btnBrowseFolder.textContent = '请在弹窗中选择…';
+      try {
+        const res = await request<{ ok: boolean; path?: string; cancelled?: boolean }>('/api/select-folder', {
+          method: 'POST',
+          body: JSON.stringify({ initialDir: this.outputDir || OUTPUT }),
+        }, 130000);
+        if (res?.path) {
+          this.outputDir = res.path;
+          folderInput.value = this.outputDir;
+          if (typeof plugin !== 'undefined' && plugin?.setConfig) {
+            plugin.setConfig('exportOutputDir', this.outputDir);
+          }
+          this.refresh?.();
+        }
+      } catch (err: any) {
+        this.update('连接导出服务失败。请先启动“MV导出工具”，或直接在上方文本框中粘贴目标文件夹。');
+      } finally {
+        btnBrowseFolder.disabled = false;
+        btnBrowseFolder.textContent = '选择文件夹…';
+      }
+    };
+
+    btnOpenFolder.onclick = async () => {
+      void this.openTarget(this.outputDir || OUTPUT);
+    };
+
+    folderInputRow.append(folderInput);
+    folderRow.append(folderHeader, folderInputRow);
+
+    if (!this.outputDir) {
+      void request<{ ok?: boolean; outputDir?: string }>('/api/health').then(health => {
+        if (health?.outputDir && !this.outputDir) {
+          this.outputDir = health.outputDir;
+          folderInput.value = this.outputDir;
+          if (typeof plugin !== 'undefined' && plugin?.setConfig) {
+            plugin.setConfig('exportOutputDir', this.outputDir);
+          }
+          this.refresh?.();
+        }
+      }).catch(() => {});
+    }
+
     const song = document.createElement('p');
     song.style.cssText = 'margin:0 0 12px;overflow-wrap:anywhere';
     const status = document.createElement('div');
@@ -443,7 +541,7 @@ export class VideoExporter {
     note.textContent = '视频保存在 ' + OUTPUT + '。请保持“MV导出工具”打开，生成时间取决于所选片段长度和电脑性能。';
     note.style.cssText = 'margin:18px 0 0;font-size:12px;color:var(--l3);overflow-wrap:anywhere';
 
-    root.append(format, description, resolutionRow, encodingRow, fpsRow, syncRow, resolutionHint, rangeRow, song, status, meter, saved, actions, note);
+    root.append(format, description, resolutionRow, encodingRow, fpsRow, syncRow, resolutionHint, rangeRow, folderRow, song, status, meter, saved, actions, note);
 
     this.refresh = () => {
       const snap = this.snapshot();
@@ -462,13 +560,37 @@ export class VideoExporter {
       endInput.disabled = locked;
       btnCurTime.disabled = locked;
       btnResetFull.disabled = locked;
+      folderInput.disabled = locked;
+      folderInput.style.opacity = locked ? '.5' : '1';
+      btnBrowseFolder.disabled = locked;
+      btnBrowseFolder.style.opacity = locked ? '.5' : '1';
+      btnOpenFolder.disabled = locked;
+      btnOpenFolder.style.opacity = locked ? '.5' : '1';
 
       song.textContent = this.busy || this.jobId || this.outputName ? this.songName : snap?.song.name || '请先播放一首歌曲';
       status.textContent = this.message + (this.busy && this.progress > 0 ? ` ${Math.floor(this.progress * 100)}%` : '');
       status.style.color = this.error ? '#ffb4ab' : 'var(--l2)';
       meter.value = this.progress;
       meter.style.display = this.busy ? 'block' : 'none';
-      saved.textContent = this.outputName ? `已保存：${OUTPUT}\\${this.outputName}` : '';
+
+      saved.innerHTML = '';
+      if (this.outputName) {
+        const fullSavePath = this.outputPath || `${this.outputDir || OUTPUT}\\${this.outputName}`;
+        const saveText = document.createElement('span');
+        saveText.textContent = `已保存：${fullSavePath} `;
+        const openLink = document.createElement('a');
+        openLink.href = '#';
+        openLink.textContent = '在文件夹中显示';
+        openLink.style.cssText = 'color:#70b0ff;text-decoration:underline;cursor:pointer;margin-left:6px';
+        openLink.onclick = (e) => {
+          e.preventDefault();
+          void this.openTarget(fullSavePath);
+        };
+        saved.append(saveText, openLink);
+      }
+
+      const curDir = this.outputDir || OUTPUT;
+      note.textContent = `视频保存在 ${curDir}。请保持“MV导出工具”打开，生成时间取决于所选片段长度和电脑性能。`;
 
       start.disabled = this.busy || (!this.jobId && !snap);
       start.style.opacity = start.disabled ? '.5' : '1';
@@ -518,8 +640,14 @@ export class VideoExporter {
     try {
       if (!TOKEN) throw new ServiceMismatch();
       this.update(this.jobId ? '正在读取导出进度…' : '正在连接 MV 导出工具…', this.jobId ? this.progress : 0);
-      const health = await request<{ ok?: boolean; version?: string }>('/api/health');
+      const health = await request<{ ok?: boolean; version?: string; outputDir?: string }>('/api/health');
       const ver = Number(health?.version ?? '1');
+      if (health?.outputDir && !this.outputDir) {
+        this.outputDir = health.outputDir;
+        if (typeof plugin !== 'undefined' && plugin?.setConfig) {
+          plugin.setConfig('exportOutputDir', this.outputDir);
+        }
+      }
       if (!this.jobId && ((this.resolution === 1440 && ver < 2) || (this.encoding === 'hevc' && ver < 3))) {
         throw new Error('请先关闭旧版“MV导出工具”窗口并重新运行“启动MV导出工具.cmd”，以启用 HEVC 10-bit 小体积与 2K 导出。');
       }
@@ -576,9 +704,11 @@ export class VideoExporter {
           formatConfig.duration = Math.max(1, durSec);
         }
 
+        const currentDir = (this.outputDir || '').trim();
         const metadata = {
           song, lyric, wiki, chorus, config, lines, analysisLines: snapshot.analysisLines,
           format: formatConfig,
+          ...(currentDir ? { outputDir: currentDir } : {}),
         };
         const body = new FormData();
         body.append('metadata', JSON.stringify(metadata));
@@ -655,6 +785,7 @@ export class VideoExporter {
       if (job.state === 'completed') {
         this.jobId = null;
         this.outputName = job.outputName || '视频.mp4';
+        this.outputPath = job.outputPath || `${this.outputDir || OUTPUT}\\${this.outputName}`;
         this.update('导出完成', 1);
         return;
       }
@@ -663,6 +794,20 @@ export class VideoExporter {
         throw new Error(readableError(job.error));
       }
       await delay(2000);
+    }
+  }
+
+  private async openTarget(targetPath: string): Promise<void> {
+    if (!targetPath) return;
+    try {
+      await request('/api/open-folder', {
+        method: 'POST',
+        body: JSON.stringify({ path: targetPath }),
+      });
+    } catch {
+      if (typeof betterncm !== 'undefined' && betterncm?.app?.exec) {
+        void betterncm.app.exec(`cmd /c explorer /select,"${targetPath}"`);
+      }
     }
   }
 }

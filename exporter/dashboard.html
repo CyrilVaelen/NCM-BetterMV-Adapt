@@ -2,11 +2,40 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MV 导出工具</title>
 <style>
 body{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;margin:0;background:#12121a;color:#ececf3}main{max-width:880px;margin:64px auto;padding:0 24px}h1{font-size:32px;margin-bottom:8px}p{color:#b9b9c8}.ready{color:#9de5be}article{background:#1f1f2c;border:1px solid #333345;border-radius:14px;padding:20px 24px;margin:16px 0}h2{font-size:18px;margin:0 0 8px;overflow-wrap:anywhere}progress{width:100%;height:10px;accent-color:#e76d83}a{color:#a7d5ff}small{color:#aaaabc}#error{color:#ffb0b0}.tag{font-size:13px;color:#a7a7ba}.path{font-family:monospace;color:#d9d9e4}
-</style></head><body><main><h1>MV 导出工具</h1><p id="connection">正在连接…</p><p>在网易云音乐中打开 MV，点击右上角的<strong>“导出视频”</strong>，即可保存当前歌曲的完整 MV。</p><p>MP4 · 1080p / 1440p (2K) / 720p · 60 帧/秒 · HEVC 10-bit 高清小体积带音乐<br>保存位置：<span class="path">D:\NCM\exports</span></p><p class="tag">导出会独立进行，你可以继续听歌。请保留导出工具窗口，直到任务完成。</p><div id="error" role="alert"></div><section id="jobs"></section></main>
+</style></head><body><main><h1>MV 导出工具</h1><p id="connection">正在连接…</p><p>在网易云音乐中打开 MV，点击右上角的<strong>“导出视频”</strong>，即可保存当前歌曲的完整 MV。</p><p>MP4 · 1080p / 1440p (2K) / 720p · 60 帧/秒 · HEVC 10-bit 高清小体积带音乐<br>默认保存位置：<span class="path" id="save-dir">D:\NCM\exports</span> <button id="btn-change-dir" style="margin-left:8px;padding:3px 10px;font-size:13px;border-radius:6px;border:1px solid #444455;background:#2a2a3b;color:#ececf3;cursor:pointer">选择文件夹…</button> <button id="btn-open-dir" style="margin-left:4px;padding:3px 10px;font-size:13px;border-radius:6px;border:1px solid #444455;background:#2a2a3b;color:#ececf3;cursor:pointer">打开文件夹</button></p><p class="tag">导出会独立进行，你可以继续听歌。请保留导出工具窗口，直到任务完成。</p><div id="error" role="alert"></div><section id="jobs"></section></main>
 <script type="module">
 const key='betterMVExporterToken';if(location.hash.length>1){sessionStorage.setItem(key,location.hash.slice(1));history.replaceState(null,'',location.pathname);}const token=sessionStorage.getItem(key)||'';
 const states={queued:'排队中',preparing:'正在分析歌曲',rendering:'正在生成画面',encoding:'正在保存 MP4',completed:'已保存',failed:'导出未完成'};
-let missCount=0;async function api(route){const r=await fetch(route,{headers:{'X-BetterMV-Token':token},cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)throw new Error('连接鉴权失效，请重新运行“启动MV导出工具.cmd”打开此页面。');return r.json();}
-function paint(jobs){const area=document.querySelector('#jobs');area.replaceChildren();if(!jobs.length){const p=document.createElement('p');p.textContent='还没有导出任务。';area.append(p);}for(const j of jobs){const card=document.createElement('article'),title=document.createElement('h2'),status=document.createElement('p');title.textContent=j.name;status.textContent=(states[j.state]||j.state)+(j.state==='completed'?'':` ${Math.floor((j.progress||0)*100)}%`);card.append(title,status);if(!['completed','failed'].includes(j.state)){const meter=document.createElement('progress');meter.max=1;meter.value=j.progress||0;card.append(meter);}if(j.error){const error=document.createElement('p');error.textContent=j.error;card.append(error);}if(j.state==='completed'){const link=document.createElement('a');link.href=`/api/exports/${j.id}/video`;link.textContent='保存一份 MP4';link.download=j.outputName;const note=document.createElement('p');note.textContent=j.outputName;card.append(link,note);}area.append(card);}}
-async function poll(){try{await api('/api/health');missCount=0;document.querySelector('#connection').textContent='● 工具已就绪';document.querySelector('#connection').className='ready';paint(await api('/api/exports'));document.querySelector('#error').textContent='';}catch(e){missCount++;if(missCount>=2){document.querySelector('#connection').textContent='工具暂未连接';document.querySelector('#connection').className='';const msg=String(e?.message||'');document.querySelector('#error').textContent=/failed to fetch|networkerror|abort|timeout/i.test(msg)?'无法连接本地导出服务，请确认“MV导出工具”黑色命令行窗口保持打开；若已关闭请重新运行“启动MV导出工具.cmd”。':msg;}}setTimeout(poll,2000);}poll();
+let currentDir = 'D:\\NCM\\exports';
+let missCount=0;async function api(route, options = {}){
+  const r=await fetch(route,{headers:{'X-BetterMV-Token':token,'Content-Type':'application/json'},cache:'no-store',signal:AbortSignal.timeout(options.timeout || 120000),...options});
+  if(!r.ok)throw new Error('连接鉴权失效，请重新运行“启动MV导出工具.cmd”打开此页面。');
+  return r.json();
+}
+document.querySelector('#btn-change-dir')?.addEventListener('click', async () => {
+  const btn = document.querySelector('#btn-change-dir');
+  btn.disabled = true;
+  btn.textContent = '请在弹窗中选择…';
+  try {
+    const res = await api('/api/select-folder', { method: 'POST', body: JSON.stringify({ initialDir: currentDir }) });
+    if (res?.path) {
+      currentDir = res.path;
+      document.querySelector('#save-dir').textContent = currentDir;
+    }
+  } catch (err) {
+    alert('选择文件夹失败：' + (err.message || err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '选择文件夹…';
+  }
+});
+document.querySelector('#btn-open-dir')?.addEventListener('click', async () => {
+  try {
+    await api('/api/open-folder', { method: 'POST', body: JSON.stringify({ path: currentDir }) });
+  } catch (err) {
+    alert('打开文件夹失败：' + (err.message || err));
+  }
+});
+function paint(jobs){const area=document.querySelector('#jobs');area.replaceChildren();if(!jobs.length){const p=document.createElement('p');p.textContent='还没有导出任务。';area.append(p);}for(const j of jobs){const card=document.createElement('article'),title=document.createElement('h2'),status=document.createElement('p');title.textContent=j.name;status.textContent=(states[j.state]||j.state)+(j.state==='completed'?'':` ${Math.floor((j.progress||0)*100)}%`);card.append(title,status);if(!['completed','failed'].includes(j.state)){const meter=document.createElement('progress');meter.max=1;meter.value=j.progress||0;card.append(meter);}if(j.error){const error=document.createElement('p');error.textContent=j.error;card.append(error);}if(j.state==='completed'){const actions=document.createElement('div');actions.style.cssText='display:flex;gap:12px;align-items:center;margin-top:8px';const link=document.createElement('a');link.href=`/api/exports/${j.id}/video`;link.textContent='下载一份 MP4';link.download=j.outputName;actions.append(link);if(j.outputPath){const openBtn=document.createElement('button');openBtn.type='button';openBtn.textContent='在文件夹中显示';openBtn.style.cssText='padding:3px 8px;font-size:12px;border-radius:4px;border:1px solid #444455;background:#2a2a3b;color:#ececf3;cursor:pointer';openBtn.onclick=()=>api('/api/open-folder',{method:'POST',body:JSON.stringify({path:j.outputPath})});actions.append(openBtn);}const note=document.createElement('p');note.textContent=j.outputPath||j.outputName;note.style.cssText='margin:6px 0 0;font-size:12px;color:#aaaabc;word-break:break-all';card.append(actions,note);}area.append(card);}}
+async function poll(){try{const health = await api('/api/health');missCount=0;document.querySelector('#connection').textContent='● 工具已就绪';document.querySelector('#connection').className='ready';if(health?.outputDir){currentDir=health.outputDir;document.querySelector('#save-dir').textContent=currentDir;}paint(await api('/api/exports'));document.querySelector('#error').textContent='';}catch(e){missCount++;if(missCount>=2){document.querySelector('#connection').textContent='工具暂未连接';document.querySelector('#connection').className='';const msg=String(e?.message||'');document.querySelector('#error').textContent=/failed to fetch|networkerror|abort|timeout/i.test(msg)?'无法连接本地导出服务，请确认“MV导出工具”黑色命令行窗口保持打开；若已关闭请重新运行“启动MV导出工具.cmd”。':msg;}}setTimeout(poll,2000);}poll();
 </script></body></html>
