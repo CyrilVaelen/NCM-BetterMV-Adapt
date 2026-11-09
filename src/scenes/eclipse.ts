@@ -1374,7 +1374,8 @@ export class EclipseScene implements MvScene {
     this.scene.add(this.coronaMesh);
 
     // 6. 谷底高真实感玄武岩绳状熔岩流（纯时间函数确定性、完全联动封面色彩、3D物理起伏与高能白炽裂隙）
-    const riverGeo = new THREE.PlaneGeometry(34, 190, 60, 120);
+    // 加密网格（z 向约 0.8 m/格），保证米级熔岩涌浪与压力脊的几何起伏平滑可见
+    const riverGeo = new THREE.PlaneGeometry(34, 190, 72, 240);
     this.magmaRiverMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: this.uniforms.uTime,
@@ -1397,34 +1398,62 @@ export class EclipseScene implements MvScene {
       vertexShader: /* glsl */ `
         varying vec2 vUv;
         varying vec3 vWorldPos;
+        varying vec3 vMacroN;
+        varying float vMacroWave;
         uniform float uTime;
         uniform float uKickPulse;
         uniform float uDropShock;
+
+        // 米制宏观熔岩地形（世界 x/z -> 相对河床基准面的高度，单位 m）
+        // 与片元着色器共享同一河道蜿蜒中心线与 2.1 m/s 平流速度，保证涌浪与表面硬壳同步向镜头流动
+        float lavaMacroWave(float x, float z) {
+          float meander = 2.2 * sin(z * 0.041 + 0.7) + 1.1 * cos(z * 0.089 + 2.1);
+          float xc = x - meander;
+          float flowZ = z - uTime * 2.1;
+          // 1. 帕霍伊霍伊熔岩舌前缘：向下游凸出的新月形大涌浪（压力脊），波峰锐利、波谷平缓
+          float lobeArg = flowZ * 0.24 + cos(xc * 0.21) * 1.5;
+          float lobe = pow(clamp(sin(lobeArg) * 0.5 + 0.5, 0.0, 1.0), 1.7) * 2.0 - 0.75;
+          // 2. 斜向交错次级涌浪（打破单一方向条纹，形成起伏丘陵）
+          float cross1 = sin(flowZ * 0.52 - xc * 0.36 + 1.3) * sin(xc * 0.47 + flowZ * 0.11 + 0.4);
+          // 3. 超长波熔岩丘（tumulus）缓慢隆起
+          float tumulus = sin(flowZ * 0.071 + xc * 0.13 + 2.0) * cos(xc * 0.19 - flowZ * 0.033);
+          return lobe * 0.42 + cross1 * 0.24 + tumulus * 0.32;
+        }
+
+        float lavaMacroHeight(float x, float z, out float wave) {
+          float meander = 2.2 * sin(z * 0.041 + 0.7) + 1.1 * cos(z * 0.089 + 2.1);
+          float xc = x - meander;
+          // 峡谷中央高温减粘翻涌膨胀（高斯拱形隆起），两岸冷壁阻力下自然沉降并嵌入岩壁根部
+          float centerHump = exp(-xc * xc * 0.012);
+          float bankFade = 1.0 - smoothstep(11.5, 16.5, abs(x));
+          wave = lavaMacroWave(x, z);
+          // 节拍底鼓 Kick / Drop 激发的熔岩脉冲热浪澎湃
+          float pulseHeave = (0.22 * uKickPulse + 0.35 * uDropShock) * centerHump;
+          return (wave * (0.35 + 0.65 * centerHump) + centerHump * 0.55 + pulseHeave) * bankFade;
+        }
 
         void main() {
           vUv = uv;
           vec3 p = position;
 
-          // 世界参考坐标：模型 modelMatrix 对 PlaneGeometry(x in [-17, 17], y in [-95, 95]) 旋转 X = -PI/2，平移 (0, -6, -62)
+          // 世界参考坐标：模型 modelMatrix 对 PlaneGeometry(x in [-17, 17], y in [-95, 95]) 旋转 X = -PI/2，平移 (0, -6.3, -62)
           // 局部 p.x 对应世界 X，局部 p.y 对应 (-世界 Z - 62.0)，局部 p.z 垂直于河面对应世界 Y（向上高度）
           float zWorldRef = -62.0 - p.y;
           float xWorldRef = p.x;
 
-          // 峡谷中央高温减粘翻涌膨胀（高斯拱形隆起），两岸由于冷壁阻力与岩壁嵌合自然沉降
-          float centerHump = exp(-xWorldRef * xWorldRef * 0.018);
+          float wave;
+          float h = lavaMacroHeight(xWorldRef, zWorldRef, wave);
+          p.z += h;
+          vMacroWave = wave;
 
-          // 1. 熔岩向下游深处的物理大尺度行波（流速约 2.2 m/s）
-          float waveFlow = sin(zWorldRef * 0.09 - uTime * 2.2) * 0.35
-                         + cos(zWorldRef * 0.18 + xWorldRef * 0.15 - uTime * 3.0) * 0.18;
-
-          // 2. 绳状熔岩褶皱微隆起（Pāhoehoe Ropy Folds Swell）
-          float ropySwell = sin(zWorldRef * 0.45 - uTime * 2.5 + cos(xWorldRef * 0.28) * 1.6) * 0.10 * centerHump;
-
-          // 3. 节拍底鼓 Kick / Drop 激发的熔岩脉冲热浪澎湃
-          float pulseHeave = (0.25 * uKickPulse + 0.65 * uDropShock) * centerHump;
-
-          float totalHeight = (waveFlow * 0.85 + ropySwell) * (0.60 + 0.40 * centerHump) + pulseHeave;
-          p.z += totalHeight;
+          // 中心差分求解宏观涌浪真实几何法线（世界空间），供片元着色器叠加微观硬壳浮雕
+          float e = 0.35;
+          float wTmp;
+          float hxp = lavaMacroHeight(xWorldRef + e, zWorldRef, wTmp);
+          float hxm = lavaMacroHeight(xWorldRef - e, zWorldRef, wTmp);
+          float hzp = lavaMacroHeight(xWorldRef, zWorldRef + e, wTmp);
+          float hzm = lavaMacroHeight(xWorldRef, zWorldRef - e, wTmp);
+          vMacroN = normalize(vec3(-(hxp - hxm) / (2.0 * e), 1.0, -(hzp - hzm) / (2.0 * e)));
 
           vec4 wp = modelMatrix * vec4(p, 1.0);
           vWorldPos = wp.xyz;
@@ -1450,6 +1479,8 @@ export class EclipseScene implements MvScene {
         uniform vec2 uBoltPower;
         varying vec2 vUv;
         varying vec3 vWorldPos;
+        varying vec3 vMacroN;
+        varying float vMacroWave;
 
         float hash21(vec2 p) {
           p = fract(p * vec2(123.34, 456.21));
@@ -1482,8 +1513,9 @@ export class EclipseScene implements MvScene {
           return v;
         }
 
-        // 解析 Voronoi 细胞边界与正交欧氏距离
-        vec2 voronoiBorders(vec2 p) {
+        // 解析 Voronoi 玄武岩硬壳板块：
+        // 返回 x = 到板块边界的正交欧氏距离；toCenter = 像素指向板块中心向量；cellId = 板块随机标识
+        float voronoiPlates(vec2 p, out vec2 toCenter, out float cellId) {
           vec2 n = floor(p);
           vec2 f = fract(p);
 
@@ -1515,30 +1547,49 @@ export class EclipseScene implements MvScene {
               }
             }
           }
-          return vec2(sqrt(dot(mr, mr)), md);
+          toCenter = mr;
+          cellId = hash21(n + mg + vec2(17.0, 31.0));
+          return md;
         }
 
-        // 综合高度场函数（用于有限差分求偏导计算微表面 3D 法线凹凸与立体浮雕）
-        float evalLavaHeight(vec2 flowCoord, float xMeander, float baseFlowZ) {
-          // 1. 夏威夷 Pāhoehoe 绳状流动褶皱（弧形挤压半月牙波纹）
-          float foldArg = baseFlowZ * 0.92 + cos(xMeander * 0.38) * 1.95;
-          float ropy1 = sin(foldArg);
-          float ropy2 = cos(foldArg * 2.15 + sin(xMeander * 0.65) * 0.85);
-          float ropyRelief = pow(clamp(ropy1 * 0.5 + 0.5, 0.0, 1.0), 2.4) * 0.65
-                           + clamp(ropy2 * 0.5 + 0.5, 0.0, 1.0) * 0.35;
-
-          // 2. 玄武岩浮渣断裂硬壳板块（Voronoi Slabs 边缘沉降、板块微隆起）
+        // 熔岩表面流动坐标（米制）-> 板块 Voronoi 空间（含低频扭曲，避免规则蜂窝感）
+        vec2 plateSpace(vec2 q) {
+          vec2 uv = vec2(q.x * 0.19, q.y * 0.125);
           vec2 warp = vec2(
-            noise2D(flowCoord * 1.5 + vec2(1.2, 3.4)),
-            noise2D(flowCoord * 1.5 + vec2(5.6, 7.8))
-          ) * 0.22;
-          vec2 vb = voronoiBorders(flowCoord * 1.28 + warp);
-          float plateDome = smoothstep(0.015, 0.24, vb.y);
+            noise2D(uv * 1.5 + vec2(1.2, 3.4)),
+            noise2D(uv * 1.5 + vec2(5.6, 7.8))
+          ) * 0.40;
+          return uv * 1.28 + warp;
+        }
 
-          // 3. 微观玄武岩浮渣孔隙与颗粒粗糙度
-          float microGrain = 0.12 * fbm2D(flowCoord * 6.2);
+        // 米制硬壳高度场（单位 m）：圆润倒角的枕状板块 + 板块独立倾斜/高差 + 绳状褶皱 + 浮渣颗粒
+        // q = (相对蜿蜒中心的横向坐标, 平流后的纵向坐标)；trough = 宏观涌浪波谷系数（波谷硬壳更薄、裂隙更宽）
+        float lavaCrustHeight(vec2 q, float trough, float poolW, float grainAmp, out float border, out float ropy) {
+          vec2 toC;
+          float cellId;
+          border = voronoiPlates(plateSpace(q), toC, cellId);
 
-          return plateDome * (0.62 + 0.38 * ropyRelief) + ropyRelief * 0.32 + microGrain;
+          // 板块边缘圆润倒角（越靠近裂隙越陡峭地沉入熔流），中心呈枕状微隆；熔池区域板块收缩成漂浮筏块
+          float e = clamp((border - poolW) / 0.30, 0.0, 1.0);
+          float edgeProfile = 1.0 - (1.0 - e) * (1.0 - e);
+          float dome = 1.0 - smoothstep(0.0, 0.80, length(toC));
+          // 每块硬壳独立的高差与倾斜（被下方熔流顶托、挤压后的错动筏块）
+          float ang = cellId * 6.2831853;
+          float tilt = dot(toC, vec2(cos(ang), sin(ang))) * (0.18 + 0.30 * fract(cellId * 7.13));
+          float plateH = edgeProfile * (0.30 + 0.20 * fract(cellId * 13.7) + 0.28 * dome + tilt);
+
+          // 夏威夷 Pāhoehoe 绳状流动褶皱（向下游凸出的半月牙挤压波纹）
+          float foldArg = q.y * 0.92 + cos(q.x * 0.38) * 1.95;
+          float ropy1 = sin(foldArg);
+          float ropy2 = cos(foldArg * 2.15 + sin(q.x * 0.65) * 0.85);
+          ropy = pow(clamp(ropy1 * 0.5 + 0.5, 0.0, 1.0), 2.4) * 0.65
+               + clamp(ropy2 * 0.5 + 0.5, 0.0, 1.0) * 0.35;
+
+          float h = plateH * (1.0 - 0.35 * trough) + ropy * 0.09 * edgeProfile;
+          if (grainAmp > 0.0) {
+            h += grainAmp * fbm2D(vec2(q.x * 0.19, q.y * 0.125) * 6.2);
+          }
+          return h;
         }
 
         // 自动化测试严格断言保留落雷电弧倒影高光函数
@@ -1552,64 +1603,66 @@ export class EclipseScene implements MvScene {
         }
 
         void main() {
-          // 1. 峡谷蜿蜒河道中心线与横向归一化距离
-          float meander = 2.2 * sin(vWorldPos.z * 0.041 + 0.7) + 1.1 * cos(vWorldPos.z * 0.089 + 2.1);
-          float distToCenter = abs(vWorldPos.x - meander);
-          float normDist = clamp(distToCenter / 12.5, 0.0, 1.0);
+          vec3 toCam = uCamPos - vWorldPos;
+          float dist = length(toCam);
+          vec3 V = toCam / max(dist, 1e-4);
 
-          // 2. 真实流动动力学：流动速度 2.1 m/s（彻底根除时间剪切拉伸退化）
+          // 1. 峡谷蜿蜒河道中心线与平流坐标（流速 2.1 m/s，与顶点涌浪严格同步）
+          float meander = 2.2 * sin(vWorldPos.z * 0.041 + 0.7) + 1.1 * cos(vWorldPos.z * 0.089 + 2.1);
           float baseFlowZ = vWorldPos.z - uTime * 2.1;
           float xMeander = (vWorldPos.x - meander) + 0.65 * sin(baseFlowZ * 0.082 - uTime * 0.45);
+          vec2 q = vec2(xMeander, baseFlowZ);
 
-          vec2 flowUv1 = vec2(xMeander * 0.19, baseFlowZ * 0.125);
-          vec2 flowUv2 = vec2(xMeander * 0.24 + 0.42, (vWorldPos.z - uTime * 1.5) * 0.16 + 3.1);
+          // 宏观涌浪波谷：熔流汇聚、硬壳更薄、裂隙更宽更亮（让大尺度起伏通过明暗分布被读出）
+          float trough = smoothstep(0.15, -0.55, vMacroWave);
+          // 大尺度熔池：局部硬壳被熔流冲散成漂浮筏块，打破规则蜂窝格局
+          float poolN = noise2D(q * vec2(0.055, 0.034) + vec2(3.7, 1.9)) * 0.65
+                      + noise2D(q * vec2(0.13, 0.08) + vec2(8.1, 4.4)) * 0.35;
+          float pool = smoothstep(0.50, 0.78, poolN + 0.16 * trough);
+          float poolW = pool * 0.17;
+          // 远景细节衰减，抑制高频浮雕在远处的闪烁走样
+          float detailFade = 1.0 - smoothstep(45.0, 120.0, dist);
 
-          // 3. 绳状熔岩褶皱（Pāhoehoe Ropy Folds）
-          float foldArg = baseFlowZ * 0.92 + cos(xMeander * 0.38) * 1.95;
-          float ropy1 = sin(foldArg);
-          float ropy2 = cos(foldArg * 2.15 + sin(xMeander * 0.65) * 0.85);
-          float ropyFolds = pow(clamp(ropy1 * 0.5 + 0.5, 0.0, 1.0), 2.4) * 0.65
-                          + clamp(ropy2 * 0.5 + 0.5, 0.0, 1.0) * 0.35;
+          // 2. 米制硬壳高度场与前向差分法线（真实世界坐标斜率，叠加宏观涌浪几何法线）
+          float borderDist, ropyFolds;
+          float hC = lavaCrustHeight(q, trough, poolW, 0.045, borderDist, ropyFolds);
+          float bTmp, rTmp;
+          float epsM = 0.07;
+          float hX = lavaCrustHeight(q + vec2(epsM, 0.0), trough, poolW, 0.045, bTmp, rTmp);
+          float hZ = lavaCrustHeight(q + vec2(0.0, epsM), trough, poolW, 0.045, bTmp, rTmp);
+          vec2 slope = vec2(hX - hC, hZ - hC) / epsM * (1.05 * detailFade + 0.25);
+          vec3 macroN = normalize(vMacroN);
+          vec3 norm = normalize(macroN + vec3(-slope.x, 0.0, -slope.y));
 
-          // 4. 玄武岩硬壳板块与狭窄裂隙（Voronoi Slabs & Narrow Fissures）
-          vec2 warp = vec2(
-            noise2D(flowUv1 * 1.5 + vec2(1.2, 3.4)),
-            noise2D(flowUv1 * 1.5 + vec2(5.6, 7.8))
-          ) * 0.22;
-          vec2 vb = voronoiBorders(flowUv1 * 1.28 + warp);
-          float borderDist = vb.y;
+          // 3. 裂隙开口与视差深度：沿视线下探 0.6 m 采样熔流底部，形成真实下陷的发光沟槽与被照亮的裂隙侧壁
+          float fissureWidth = (0.050 * (1.0 + 0.6 * trough) + poolW) * (1.0 + 0.25 * uKickPulse + 0.45 * uDropShock);
+          float openW = fissureWidth * 1.6 + 0.012;
+          float opening = 1.0 - smoothstep(0.004, openW, borderDist);
 
-          // 狭窄裂隙控制：绝不铺满整个河面，82%~88% 面积保持为暗色玄武岩坚硬结壳
-          float fissureWidth = 0.038 * (1.0 + 0.25 * uKickPulse + 0.45 * uDropShock);
-          float fissureMask = 1.0 - smoothstep(0.005, fissureWidth, borderDist);
-          float plateMask = smoothstep(0.012, fissureWidth * 1.45, borderDist);
+          float crackDepth = 0.60;
+          vec2 viewOff = -V.xz / max(V.y, 0.18) * crackDepth;
+          vec2 toCD;
+          float cellD;
+          float borderDeep = voronoiPlates(plateSpace(q + viewOff), toCD, cellD);
+          float floorVis = 1.0 - smoothstep(0.0, fissureWidth * 1.25, borderDeep);
+          float moltenSeen = opening * floorVis;
+          float wallSeen = opening * (1.0 - floorVis);
 
           // 板块内部极细毛细发光微裂痕（仅占板块极微小比例）
-          float microCrack = 1.0 - abs(noise2D(flowUv2 * 4.2 + warp * 1.5) * 2.0 - 1.0);
+          vec2 flowUv2 = vec2(xMeander * 0.24 + 0.42, (vWorldPos.z - uTime * 1.5) * 0.16 + 3.1);
+          float microCrack = 1.0 - abs(noise2D(flowUv2 * 4.2) * 2.0 - 1.0);
+          float plateMask = 1.0 - opening;
           float microFissures = pow(clamp(microCrack, 0.0, 1.0), 6.5) * (0.15 + 0.30 * uKickPulse) * plateMask;
 
-          // 综合发光活跃度（仅在真实裂隙内活跃，暗色硬壳区域严格为 0）
-          float incandescence = clamp(fissureMask + microFissures * 0.35, 0.0, 1.0);
+          // 综合发光活跃度（仅在真实下陷裂隙底部活跃，暗色硬壳顶面严格为 0）
+          float incandescence = clamp(moltenSeen + microFissures * 0.35, 0.0, 1.0);
+          float coreLine = 1.0 - smoothstep(0.0, fissureWidth * 0.55, borderDeep);
           float crackGlow = smoothstep(0.04, 0.45, incandescence);
 
-          // 5. 解析有限差分法线微扰（凹凸度 3.6，带来强烈明暗交界与立体感）
-          float eps = 0.032;
-          float hCenter = evalLavaHeight(flowUv1, xMeander, baseFlowZ);
-          float hXP = evalLavaHeight(flowUv1 + vec2(eps, 0.0), xMeander + eps / 0.19, baseFlowZ);
-          float hXM = evalLavaHeight(flowUv1 - vec2(eps, 0.0), xMeander - eps / 0.19, baseFlowZ);
-          float hZP = evalLavaHeight(flowUv1 + vec2(0.0, eps), xMeander, baseFlowZ + eps / 0.125);
-          float hZM = evalLavaHeight(flowUv1 - vec2(0.0, eps), xMeander, baseFlowZ - eps / 0.125);
-
-          vec3 norm = normalize(vec3(
-            -(hXP - hXM) / (2.0 * eps) * 3.6,
-            1.0,
-            -(hZP - hZM) / (2.0 * eps) * 3.6
-          ));
-
-          // 6. 严格封面同色系色彩体系（暗色结壳沉稳深邃，裂隙发光严格克制杜绝死白）
-          float slagGrain = fbm2D(flowUv1 * 5.8);
-          // 玄武岩暗色结壳（80%~85% 面积）：深沉玄武岩，呈现清晰的波纹高光与凹凸阴影，自发光严格为 0
-          vec3 crustColor = uRockDark * (0.12 + 0.38 * ropyFolds + 0.18 * slagGrain);
+          // 4. 严格封面同色系色彩体系（暗色结壳沉稳深邃，裂隙发光严格克制杜绝死白）
+          float slagGrain = fbm2D(vec2(xMeander * 0.19, baseFlowZ * 0.125) * 5.8);
+          // 结壳反照率：深色玄武岩，绳状褶皱脊与浮渣颗粒带来细腻明暗起伏
+          vec3 crustColor = uRockDark * (0.42 + 0.30 * ropyFolds + 0.36 * slagGrain);
 
           // 裂隙内部多层同色系炽热熔流：
           // (a) 裂缝边缘深层：饱和鲜艳的封面主色调
@@ -1619,57 +1672,89 @@ export class EclipseScene implements MvScene {
           // (c) 裂隙最核心超细微线（仅极小中心线）：温润白炽等离子体（峰值严格限制在 1.45，绝不引发 Bloom 爆炸）
           vec3 whiteHotCore = mix(uCoronaColor, vec3(1.0, 0.98, 0.96), 0.60) * 1.45;
 
-          vec3 plasmaCol = mix(moltenDeep, moltenActive, smoothstep(0.10, 0.60, incandescence));
-          plasmaCol = mix(plasmaCol, whiteHotCore, smoothstep(0.60, 0.95, incandescence));
+          vec3 plasmaCol = mix(moltenDeep, moltenActive, smoothstep(0.10, 0.60, incandescence) * (0.35 + 0.65 * coreLine));
+          plasmaCol = mix(plasmaCol, whiteHotCore, smoothstep(0.55, 1.0, coreLine) * smoothstep(0.6, 0.95, incandescence) * 0.85);
 
-          // 发光能量严格克制：结壳处为 0，裂缝深处适度泛光，底鼓仅带来温润律动
-          vec3 emission = plasmaCol * (0.92 + 0.30 * uKickPulse + 0.55 * uDropShock) * crackGlow;
+          // 发光能量严格克制：结壳处为 0，裂缝深处适度泛光，底鼓仅带来温润律动；波谷熔流更活跃
+          vec3 emission = plasmaCol * (0.92 + 0.30 * uKickPulse + 0.55 * uDropShock) * (0.85 + 0.25 * trough) * crackGlow;
+
+          // 裂隙侧壁：被下方熔流烘烤的半熔玄武岩，越深越炽热（形成"一侧亮、一侧暗"的沟槽纵深）
+          float wallDepthT = smoothstep(fissureWidth * 2.6, fissureWidth * 1.0, borderDeep);
+          vec3 wallCol = mix(uRockDark * 0.30, uMagmaColor * 0.62, wallDepthT * wallDepthT);
+
+          // 硬壳边缘热辐射晕（贴近裂隙的板块边缘仍呈暗红余热，向板块中心指数冷却）
+          float rimHeat = exp(-max(borderDist - openW, 0.0) / 0.075) * plateMask;
+          vec3 rimHeatCol = uMagmaColor * rimHeat * (0.34 + 0.22 * trough + 0.16 * pool + 0.14 * uKickPulse);
+
+          vec3 sunCol = uMono > 0.5 ? vec3(1.0) : uCoronaColor;
+          vec3 magmaTint = uMono > 0.5 ? vec3(0.62) : uMagmaColor;
 
           // 单色模式严格中性灰保护
           if (uMono > 0.5) {
             emission = vec3(dot(emission, vec3(0.299, 0.587, 0.114)));
             crustColor = vec3(dot(crustColor, vec3(0.299, 0.587, 0.114)));
+            wallCol = vec3(dot(wallCol, vec3(0.299, 0.587, 0.114)));
+            rimHeatCol = vec3(dot(rimHeatCol, vec3(0.299, 0.587, 0.114)));
           }
 
-          // 7. 环境光照与高光反射（凸显暗色硬壳的 3D 浮雕与波纹质感）
+          // 5. 多光源物理照明（凸显硬壳枕状板块、错动筏块与宏观涌浪的 3D 体积）
           vec3 L_sun = normalize(uCoronaPos - vWorldPos);
-          vec3 V = normalize(uCamPos - vWorldPos);
           vec3 H = normalize(L_sun + V);
-
           float NdotL = max(0.0, dot(norm, L_sun));
           float NdotH = max(0.0, dot(norm, H));
           float NdotV = max(0.0, dot(norm, V));
 
-          vec3 sunCol = uMono > 0.5 ? vec3(1.0) : uCoronaColor;
-          vec3 diffuse = crustColor * (0.22 + 0.78 * NdotL) * sunCol;
+          // (a) 板块自遮挡软阴影：沿日冕方向前探 0.55 m，若前方板块更高则落入阴影
+          vec2 lDir = normalize(L_sun.xz + vec2(1e-4));
+          float lRise = L_sun.y / max(length(L_sun.xz), 1e-3);
+          float bS, rS;
+          float hShadow = lavaCrustHeight(q + lDir * 0.55, trough, poolW, 0.0, bS, rS);
+          float sunShadow = 1.0 - smoothstep(0.02, 0.16, hShadow - (hC + 0.55 * lRise)) * 0.85;
 
-          // 黑曜石镜面高光与绳状流动波纹反光
-          float specIntensity = pow(NdotH, 28.0) * (0.30 + 0.70 * ropyFolds) * (0.50 + 0.50 * plateMask);
-          vec3 specular = (uMono > 0.5 ? vec3(1.0) : mix(vec3(1.0), uCoronaColor, 0.30)) * specIntensity * 1.5;
+          // (b) 高度场环境光遮蔽：板块之间的低洼缝隙与倒角根部自然压暗
+          float cavityAO = mix(0.38, 1.0, smoothstep(0.02, 0.32, hC));
 
-          float fresnel = pow(1.0 - NdotV, 3.5);
-          vec3 rim = (uMono > 0.5 ? vec3(0.5) : uCoronaColor) * fresnel * 0.40 * plateMask;
+          // (c) 日冕主逆光（半兰伯特包裹 + 明暗交界线锐化）
+          float wrapL = clamp((dot(norm, L_sun) + 0.15) / 1.15, 0.0, 1.0);
+          vec3 diffuse = crustColor * sunCol * (wrapL * wrapL * 1.55 * sunShadow);
 
-          // 裂缝内部熔浆对结壳侧壁的微表面向上漫反射照亮
-          float wallBounce = clamp((1.0 - norm.y) * 2.2, 0.0, 1.0) * plateMask;
-          vec3 bounceCol = (uMono > 0.5 ? vec3(0.35) : uMagmaColor) * wallBounce * 0.95;
+          // (d) 冷暗苍穹顶光：朝上的板块顶面获得微弱冷调填充，侧面与背光面沉入暗部
+          vec3 skyCol = uMono > 0.5 ? vec3(0.20) : mix(uFogColor * 2.0, uCoronaColor * 0.26, 0.45);
+          vec3 skyFill = crustColor * skyCol * (0.30 + 0.70 * clamp(norm.y, 0.0, 1.0)) * 0.95;
 
-          vec3 litCrust = diffuse + specular + rim + bounceCol;
+          // (e) 裂隙熔流对邻近板块倒角侧壁的仰射照明（陡峭侧面 + 靠近裂隙 -> 被照亮的橙色边缘）
+          float flank = clamp((1.0 - dot(norm, macroN)) * 3.2, 0.0, 1.0);
+          float nearCrack = exp(-max(borderDist - openW, 0.0) / 0.13);
+          vec3 magmaBounce = magmaTint * (crustColor * 2.5 + vec3(0.10)) * flank * nearCrack * plateMask * (0.90 + 0.40 * uKickPulse);
 
-          // 最终颜色合成：暗色结壳（占据 80%+ 面积）与狭窄裂缝发光平滑过渡
-          vec3 col = mix(litCrust, emission, crackGlow);
+          // (f) 粗糙玄武岩 + 玻璃质绳状脊的破碎高光（不再是整片镜面眩光，只在朝向合适的板块斜面与褶皱脊闪烁）
+          float glassMask = (0.12 + 0.88 * ropyFolds * ropyFolds) * (0.35 + 0.65 * slagGrain) * plateMask;
+          float specBroad = pow(NdotH, 22.0) * 0.06;
+          float specSharp = pow(NdotH, 140.0) * 0.42;
+          float specIntensity = (specBroad + specSharp) * glassMask * sunShadow * cavityAO;
+          vec3 specular = (uMono > 0.5 ? vec3(1.0) : mix(vec3(1.0), uCoronaColor, 0.35)) * specIntensity;
+
+          // (g) 掠射轮廓光：分离前后层叠的涌浪波峰
+          float fresnel = pow(1.0 - NdotV, 4.0);
+          vec3 rim = (uMono > 0.5 ? vec3(0.5) : uCoronaColor) * fresnel * 0.16 * plateMask * sunShadow;
+
+          vec3 litCrust = (diffuse + skyFill) * cavityAO + magmaBounce + specular + rim + rimHeatCol;
+
+          // 6. 最终颜色合成：板块顶面 -> 烘烤侧壁 -> 下陷熔流底部
+          vec3 col = litCrust;
+          col = mix(col, wallCol, clamp(wallSeen * 1.15, 0.0, 1.0));
+          col = mix(col, emission, crackGlow);
           // 仅在最核心纤细高温处微幅叠加白炽高光
-          col += emission * smoothstep(0.78, 1.0, incandescence) * 0.25;
+          col += emission * smoothstep(0.78, 1.0, incandescence) * coreLine * 0.22;
 
-          // 8. 落雷电弧倒影
+          // 7. 落雷电弧倒影
           vec3 wpPerturbed = vWorldPos + norm * 0.35;
           float boltGlint = evalRiverBoltGlint(wpPerturbed, slagGrain, uBoltB0, uBoltPower.x)
                           + evalRiverBoltGlint(wpPerturbed, slagGrain, uBoltB1, uBoltPower.y);
           vec3 lightningCol = uMono > 0.5 ? vec3(1.0) : mix(uLightningColor, vec3(0.98), 0.42);
-          col += lightningCol * boltGlint;
+          col += lightningCol * boltGlint * (0.55 + 0.45 * cavityAO);
 
-          // 9. 远景平滑收敛（近景无雾保证高对比度与清晰度，远景自然融入裂谷天际线）
-          float dist = length(vWorldPos - uCamPos);
+          // 8. 远景平滑收敛（近景无雾保证高对比度与清晰度，远景自然融入裂谷天际线）
           float fogFactor = 1.0 - exp(-pow(dist * 0.0042, 2.0));
           vec3 fogTarget = uMono > 0.5
             ? vec3(dot(uFogColor, vec3(0.299, 0.587, 0.114)))
@@ -1682,7 +1767,7 @@ export class EclipseScene implements MvScene {
     });
     this.magmaRiverMesh = new THREE.Mesh(riverGeo, this.magmaRiverMaterial);
     this.magmaRiverMesh.rotation.x = -Math.PI / 2;
-    this.magmaRiverMesh.position.set(0, -6.0, -62);
+    this.magmaRiverMesh.position.set(0, -6.3, -62);
     this.scene.add(this.magmaRiverMesh);
 
     // 7. 构建蜿蜒分层的火山黑曜石/柱状玄武岩大裂谷两侧峭壁与凸出岩柱群
