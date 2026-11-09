@@ -247,7 +247,7 @@ export class MvPlayer {
     const make: Record<SceneId, () => MvScene> = {
       relief: () => new Relief(init), shatter: () => new Shatter(init), diorama: () => new Diorama(init), bokeh: () => new Bokeh(init),
       tunnel: () => new Tunnel(init, look), drive: () => new Drive(init), kaleido: () => new Kaleido(init, look), flip: () => new Flip(init, look),
-      rings: () => new Rings(init, look), poster: () => new Poster(init, look), ridges: () => new Ridges(init, paper), halftone: () => new Halftone(init, look), particles: () => new Particles(init, look),
+      rings: () => new Rings(init, look), poster: () => { const p = new Poster(init, look); p.showSectionLabel = this.hud.visible; return p; }, ridges: () => new Ridges(init, paper), halftone: () => new Halftone(init, look), particles: () => new Particles(init, look),
       typewall: () => new TypeWall(init), ink: () => new Ink(init, song.name), crystal: () => new ArmillaryScene(init), cards: () => new CardsScene(init), debug: () => new DebugScene(init), subdivide: () => new SubdivideScene(init, look), align: () => new AlignScene(init), scope: () => new ScopeScene(init),
       vinyl: () => new Vinyl(init, look), clouds: () => new Clouds(init, paper), city: () => new City(init, look), aurora: () => new Aurora(init, look),
       canvas: () => new CanvasScene(init, paper, init.seed), pillars: () => new Pillars(init, look, init.seed),
@@ -320,6 +320,8 @@ export class MvPlayer {
     if (!this.director || this.warming || this.engine.isContextLost()) return null;
     this.lastPlayTime = t;
     this.director.overlay.showBadge = this.hud.visible;
+    this.director.overlay.showTitleCard = this.hud.visible;
+    if (this.loadedScenes.poster) (this.loadedScenes.poster as Poster).showSectionLabel = this.hud.visible;
     const { scene, fx, shot, transition } = this.director.frame(t, dt, this.engine.aspect);
     // 若用户手动跳转到了后台渐进预热尚未抵达的镜头，在首帧上屏前即时完成单场景离屏预热
     if (!this.warmedScenes.has(shot.scene)) {

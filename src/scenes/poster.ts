@@ -38,6 +38,8 @@ export class Poster implements MvScene {
   private sig = new THREE.Color();
   private W = 16;
   private plates: Mesh[] = [];
+  /** 是否显示右上角段落名称标签（离线导出 MV 时隐藏阶段名称如“高潮”）。 */
+  showSectionLabel = true;
 
   constructor(private init: SceneInit, private look: 'pulse' | 'ballad' = 'pulse') {
     this.scene.add(this.page);
@@ -136,7 +138,8 @@ export class Poster implements MvScene {
     const rule = flat(this.fg, 0.5);
     this.rect(W - 2 * M, 0.02, rule, 0, -H / 2 + M * 0.8, 0.02);
     this.tick = this.rect(H * 0.03, H * 0.03, flat(this.sig), -W / 2 + M, -H / 2 + M * 0.8, 0.03);
-    this.label(`${LABELS[shot.section.label]}\u3000${Math.round(this.init.music.shownBpm(shot.start + 0.01))} BPM`, H * 0.028, W / 2 - M, H / 2 - M * 0.7, 'right');
+    const bpmText = `${Math.round(this.init.music.shownBpm(shot.start + 0.01))} BPM`;
+    this.label(this.showSectionLabel ? `${LABELS[shot.section.label]}\u3000${bpmText}` : bpmText, H * 0.028, W / 2 - M, H / 2 - M * 0.7, 'right');
   }
 
   private layoutLine(state: LineState): Line {

@@ -81,6 +81,8 @@ export class MgOverlay {
 
   /** The badge shows with the HUD (the player hides both while the playback controls are up). */
   showBadge = true;
+  /** 是否显示左上角段落标题卡（如“高潮 01”、“副歌 02”）；离线导出 MV 时默认关闭以保持画面纯净。 */
+  showTitleCard = true;
 
   constructor(private palette: Palette, private style: Style, private music: Music, private badge: Armillary | null = null) {
     this.camera = new THREE.OrthographicCamera(-this.aspect, this.aspect, 1, -1, 0.1, 20);
@@ -319,7 +321,7 @@ export class MgOverlay {
     const idx = shot.sectionIndex, sec = shot.section;
     const age = t - sec.start, life = beat * this.music.meter * 1.6;
     // (The type wall and the poster set their own type up there.)
-    const show = vis > 0 && idx > 0 && age >= 0 && age < life && shot.scene !== 'typewall' && shot.scene !== 'poster';
+    const show = this.showTitleCard && vis > 0 && idx > 0 && age >= 0 && age < life && shot.scene !== 'typewall' && shot.scene !== 'poster';
     if (!show) {
       if (this.card) this.card.label.visible = false;
       return;
