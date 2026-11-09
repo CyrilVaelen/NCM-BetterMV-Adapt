@@ -1304,8 +1304,10 @@ export class EclipseScene implements MvScene {
         uCover: this.uniforms.uCover,
         uTime: this.uniforms.uTime,
         uCoronaColor: this.uniforms.uCoronaColor,
+        uMagmaColor: this.uniforms.uMagmaColor,
         uRockDark: this.uniforms.uRockDark,
         uDropShock: this.uniforms.uDropShock,
+        uKickPulse: this.uniforms.uKickPulse,
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -1318,19 +1320,35 @@ export class EclipseScene implements MvScene {
         uniform sampler2D uCover;
         uniform float uTime;
         uniform vec3 uCoronaColor;
+        uniform vec3 uMagmaColor;
         uniform vec3 uRockDark;
         uniform float uDropShock;
+        uniform float uKickPulse;
         varying vec2 vUv;
 
         void main() {
           vec2 p = vUv - vec2(0.5);
           float r = length(p) * 2.0;
-          // 保持原封面空间拓扑结构，叠加微妙的月表环形山暗调浮雕与日冕内缘背光
+          // 保持原封面空间拓扑结构，提升封面纹理清晰度与温润环境光底色，消除死黑硬洞反差
           vec3 coverRgb = texture2D(uCover, vUv).rgb;
           float lum = dot(coverRgb, vec3(0.299, 0.587, 0.114));
-          float limbBacklight = smoothstep(0.76, 1.0, r);
-          vec3 baseDisc = uRockDark * 0.26 + coverRgb * (0.11 + 0.05 * uDropShock) + vec3(lum * 0.035);
-          vec3 col = baseDisc + uCoronaColor * limbBacklight * (0.24 + 0.25 * uDropShock);
+
+          // 1) 柔和提升封面暗部基底（融合暖调岩石与微弱日冕散射），同时保留原图色彩层次
+          vec3 warmBase = mix(uRockDark * 0.42, uMagmaColor * 0.22, 0.38) + uCoronaColor * 0.08;
+          vec3 liftedCover = coverRgb * (0.34 + 0.10 * uDropShock) + vec3(lum * 0.06);
+          vec3 baseDisc = warmBase + liftedCover;
+
+          // 2) 多层渐进式日冕内渗大气散射（从 r = 0.25 柔和过渡至月缘 r = 1.0，彻底消除封面与周围光晕的断层反差）
+          float innerHaze = smoothstep(0.20, 0.96, r);
+          float midGlow = pow(clamp((r - 0.42) / 0.58, 0.0, 1.0), 1.85);
+          float limbHalo = pow(clamp((r - 0.72) / 0.28, 0.0, 1.0), 2.6);
+
+          vec3 scatterCol = mix(uMagmaColor, uCoronaColor, 0.68);
+          vec3 rimCol = mix(uCoronaColor, vec3(1.0, 0.98, 0.95), 0.32);
+
+          vec3 col = baseDisc * (1.0 - 0.22 * limbHalo)
+                   + scatterCol * (innerHaze * 0.16 + midGlow * (0.28 + 0.16 * uDropShock + 0.06 * uKickPulse))
+                   + rimCol * limbHalo * (0.58 + 0.34 * uDropShock + 0.10 * uKickPulse);
           gl_FragColor = vec4(col, 1.0);
         }
       `,
@@ -1414,19 +1432,19 @@ export class EclipseScene implements MvScene {
           float farFade = smoothstep(110.0, 42.0, r); // 在 42m 到 110m 间平滑递减至严格 0
           float radialEnvelope = nearFalloff * farFade;
 
-          // 9. 综合强度合成
-          float innerCoreGlow = exp(-rNorm * 2.4) * 1.75;
-          float streamerLayer = (macroStreamer * 0.35 + tyndallRays * 0.88 + microFilament) * radialEnvelope;
-          float dynamicBreath = 1.0 + 0.48 * uKickPulse + 1.35 * uDropShock;
+          // 9. 综合强度合成（温润克制内冕峰值，使月轮边缘与周围日冕光晕自然衔接，避免刺眼过曝反差）
+          float innerCoreGlow = exp(-rNorm * 2.15) * 1.18;
+          float streamerLayer = (macroStreamer * 0.34 + tyndallRays * 0.82 + microFilament) * radialEnvelope;
+          float dynamicBreath = 1.0 + 0.36 * uKickPulse + 0.72 * uDropShock;
           float totalCorona = (innerCoreGlow + streamerLayer) * dynamicBreath;
 
-          float finalIntensity = innerMask * (totalCorona + bailyBeads * 2.2 + diamondCore * 3.6 + diamondSpike * 1.8);
+          float finalIntensity = innerMask * (totalCorona + bailyBeads * 1.45 + diamondCore * 2.2 + diamondSpike * 1.25);
 
-          // 10. 出光色彩合成 (核心白炽高光 + 边缘纯正色调)
-          vec3 coreHotWhite = mix(uCoronaColor, vec3(1.0), clamp(innerCoreGlow * 0.55 + (diamondCore + diamondSpike) * 0.75, 0.0, 1.0));
-          vec3 finalColor = mix(uCoronaColor, coreHotWhite, clamp(finalIntensity * 0.38, 0.0, 1.0));
+          // 10. 出光色彩合成 (柔和过渡至日冕主色，抑制死白亮圈)
+          vec3 coreHotWhite = mix(uCoronaColor, vec3(1.0), clamp(innerCoreGlow * 0.38 + (diamondCore + diamondSpike) * 0.55, 0.0, 0.82));
+          vec3 finalColor = mix(uCoronaColor, coreHotWhite, clamp(finalIntensity * 0.28, 0.0, 0.85));
 
-          gl_FragColor = vec4(finalColor * (1.06 + 0.40 * uDropShock), clamp(finalIntensity * 0.86, 0.0, 1.0));
+          gl_FragColor = vec4(finalColor * (0.96 + 0.24 * uDropShock), clamp(finalIntensity * 0.78, 0.0, 1.0));
         }
       `,
       transparent: true,
@@ -2005,27 +2023,48 @@ export class EclipseScene implements MvScene {
     this.scene.add(this.lightningFlaresMesh);
 
     // 10. Drop 日冕冲击波环 (Corona Shockwave Ring)
-    const shockGeo = new THREE.RingGeometry(1.0, 3.5, 48);
+    // 采用真实极径解析高斯软波前 + 多束日冕流光调制，使内外边缘如气体星云般无痕消融，彻底消除生硬的同心白圈边缘
+    const shockGeo = new THREE.RingGeometry(0.65, 4.4, 96);
     this.shockwaveMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uDropShock: this.uniforms.uDropShock,
         uCoronaColor: this.uniforms.uCoronaColor,
+        uMagmaColor: this.uniforms.uMagmaColor,
+        uTime: this.uniforms.uTime,
       },
       vertexShader: /* glsl */ `
-        varying vec2 vUv;
+        varying vec2 vLocalPos;
         void main() {
-          vUv = uv;
+          vLocalPos = position.xy;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: /* glsl */ `
         uniform float uDropShock;
         uniform vec3 uCoronaColor;
-        varying vec2 vUv;
+        uniform vec3 uMagmaColor;
+        uniform float uTime;
+        varying vec2 vLocalPos;
         void main() {
-          float rim = 1.0 - abs(vUv.x - 0.5) * 2.0;
-          float alpha = pow(max(0.0, rim), 2.0) * uDropShock;
-          gl_FragColor = vec4(uCoronaColor * 2.0, alpha * 0.85);
+          float r = length(vLocalPos);
+          // 归一化极径 t in [0, 1]，在几何内外边界 (0.65 与 4.4) 附近使用高阶平滑窗严格归零，杜绝几何多边形硬边
+          float t = clamp((r - 0.65) / (4.4 - 0.65), 0.0, 1.0);
+          float edgeGuard = smoothstep(0.0, 0.34, t) * smoothstep(1.0, 0.52, t);
+
+          // 非对称软高斯气浪剖面（波峰偏内侧 t = 0.36，向外侧长尾指数消散，绝无锐利外圈边界）
+          float sigma = mix(0.16, 0.28, smoothstep(0.30, 0.85, t));
+          float waveProfile = exp(-pow((t - 0.36) / sigma, 2.0)) * edgeGuard;
+
+          // 沿圆周方向的日冕丝缕呼吸调制，打破机械纯圆环感
+          float ang = atan(vLocalPos.y, vLocalPos.x);
+          float wisp = 0.72 + 0.16 * sin(ang * 7.0 + uTime * 1.4) + 0.12 * cos(ang * 13.0 - uTime * 1.9);
+
+          // 随扩散半径增大（uDropShock 衰减），外扩气浪迅速羽化变淡
+          float shockEnv = pow(clamp(uDropShock, 0.0, 1.0), 1.35);
+          float alpha = waveProfile * wisp * shockEnv * 0.34;
+
+          vec3 col = mix(uMagmaColor, uCoronaColor, 0.72) * (0.92 + 0.25 * waveProfile);
+          gl_FragColor = vec4(col, alpha);
         }
       `,
       transparent: true,
